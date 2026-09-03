@@ -228,6 +228,12 @@ pub async fn create_invite(
     invited_by: Option<UserId>,
     admin: bool,
 ) -> std::result::Result<Token, AccountError> {
+    // Inviting an address that already has an account is refused here, not
+    // at acceptance time — the admin learns immediately, and the account is
+    // never shadowed by a pending invite.
+    if user_by_email(store, email).await?.is_some() {
+        return Err(AccountError::EmailTaken);
+    }
     let token = Token::mint();
     let now = store::now();
     let expires = now + time::Duration::days(INVITE_DAYS);
@@ -479,6 +485,20 @@ pub async fn set_disabled(store: &Store, user: &UserId, disabled: bool) -> Resul
     Ok(())
 }
 
+/// Grants or revokes im's admin flag. Never crosses a token — this is im's
+/// own panel, not a claim apps ever see.
+pub async fn set_admin(store: &Store, user: &UserId, admin: bool) -> Result<()> {
+    store
+        .conn
+        .execute(
+            "UPDATE users SET admin = ?1 WHERE id = ?2",
+            turso::params![admin as i64, user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,6 +508,30 @@ mod tests {
     }
 
     use std::path::Path;
+    #[tokio::test]
+    async fn invite_refuses_existing_account_and_admin_toggles() {
+        let store = fixture().await;
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        assert!(!user.admin);
+
+        // Inviting an address that already has an account is refused at
+        // creation, not at acceptance.
+        assert!(matches!(
+            create_invite(&store, "ann@example.com", None, false).await,
+            Err(AccountError::EmailTaken)
+        ));
+
+        set_admin(&store, &user.id, true).await.unwrap();
+        let promoted = user_by_id(&store, &user.id).await.unwrap().unwrap();
+        assert!(promoted.admin);
+        set_admin(&store, &user.id, false).await.unwrap();
+        assert!(!user_by_id(&store, &user.id).await.unwrap().unwrap().admin);
+    }
 
     #[test]
     fn password_roundtrip() {
@@ -563,11 +607,10 @@ mod tests {
         create_user_from_invite(&store, first.expose(), "Ann", "tDLr9!mZQ2xv")
             .await
             .unwrap();
-        let second = create_invite(&store, "ann@example.com", None, false)
-            .await
-            .unwrap();
+        // The second invite never exists: the refusal moved from acceptance
+        // time to creation time.
         assert!(matches!(
-            create_user_from_invite(&store, second.expose(), "Ann Two", "tDLr9!mZQ2xv").await,
+            create_invite(&store, "ann@example.com", None, false).await,
             Err(AccountError::EmailTaken)
         ));
     }

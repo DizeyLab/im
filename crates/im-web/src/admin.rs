@@ -275,9 +275,13 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Result<Response> {
     let store = &app(cx).store;
     let email = input.email.trim().to_string();
     let admin = input.admin.as_deref() == Some("yes");
-    let token = accounts::create_invite(store, &email, Some(me.id.clone()), admin)
-        .await
-        .map_err(|e| topcoat::Error::from(std::io::Error::other(e.to_string())))?;
+    let token = match accounts::create_invite(store, &email, Some(me.id.clone()), admin).await {
+        Ok(token) => token,
+        Err(accounts::AccountError::EmailTaken) => {
+            return back(cx, "users", "&error=email_taken");
+        }
+        Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
+    };
     // Mailed when a sender is configured; shown once on the page otherwise.
     let mailed = mailer::send_invite(store, &app(cx).config.issuer, &email, token.expose())
         .await

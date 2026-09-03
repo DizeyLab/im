@@ -77,13 +77,56 @@ async fn main() {
             }
             create_client(config, name, uris).await;
         }
+        Some("promote") => {
+            let Some(email) = args.get(2) else {
+                eprintln!("usage: im-web promote <email>");
+                std::process::exit(2);
+            };
+            set_admin_cli(config, email, true).await;
+        }
+        Some("demote") => {
+            let Some(email) = args.get(2) else {
+                eprintln!("usage: im-web demote <email>");
+                std::process::exit(2);
+            };
+            set_admin_cli(config, email, false).await;
+        }
         Some(other) => {
             eprintln!(
-                "im: unknown command {other:?} (expected: invite, revoke, create-client, or none to serve)"
+                "im: unknown command {other:?} (expected: invite, revoke, promote, demote, create-client, or none to serve)"
             );
             std::process::exit(2);
         }
     }
+}
+
+/// `im-web promote|demote <email>`: the admin flag for an account that
+/// already exists — the migration path's way in, since invites refuse
+/// addresses with accounts.
+async fn set_admin_cli(config: Config, email: &str, admin: bool) {
+    let store = open_store(&config).await;
+    let Some(user) = im_core::accounts::user_by_email(&store, email)
+        .await
+        .expect("failed to read users")
+    else {
+        eprintln!("im: no account for {email}");
+        std::process::exit(1);
+    };
+    im_core::accounts::set_admin(&store, &user.id, admin)
+        .await
+        .expect("failed to update");
+    im_core::events::log(
+        &store,
+        if admin {
+            "user_promoted"
+        } else {
+            "user_demoted"
+        },
+        Some("cli"),
+        Some(email),
+    )
+    .await;
+    println!("im      {email}: admin = {admin}");
 }
 
 async fn open_store(config: &Config) -> Arc<Store> {
@@ -101,9 +144,16 @@ async fn open_store(config: &Config) -> Arc<Store> {
 /// process would hold the same file.
 async fn invite(config: Config, email: &str, admin: bool) {
     let store = open_store(&config).await;
-    let token = im_core::accounts::create_invite(&store, email, None, admin)
-        .await
-        .expect("failed to create the invite");
+    let token = match im_core::accounts::create_invite(&store, email, None, admin).await {
+        Ok(token) => token,
+        Err(im_core::accounts::AccountError::EmailTaken) => {
+            eprintln!(
+                "im: {email} already has an account — `im-web promote {email}` if you mean admin"
+            );
+            std::process::exit(1);
+        }
+        Err(e) => panic!("failed to create the invite: {e}"),
+    };
     im_core::events::log(
         &store,
         "invite_created",
