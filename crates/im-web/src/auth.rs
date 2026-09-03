@@ -76,7 +76,7 @@ async fn login(cx: &Cx, Form(input): Form<LoginForm>) -> Redirect {
         Err(_) => {
             // The failure is logged against the address tried, never the
             // password — and never whether the address exists.
-            im_core::events::log(store, "login_fail", Some(&input.email), None).await;
+            server::log_event(cx, "login_fail", Some(&input.email), None).await;
             see(format!("/login?error=bad_login&back={}", urlencode(&back)))
         }
     }
@@ -112,14 +112,14 @@ async fn login_totp(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
         None => false,
     };
     if !ok {
-        im_core::events::log(store, "totp_fail", None, Some("login")).await;
+        server::log_event(cx, "totp_fail", None, Some("login")).await;
         return see("/login/totp?error=bad_code".to_string());
     }
     let token = im_core::sessions::create_session(store, &user_id).await?;
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
-    im_core::events::log(store, "login_ok", email.as_deref(), Some("2fa")).await;
+    server::log_event(cx, "login_ok", email.as_deref(), Some("2fa")).await;
     server::clear_pending_cookie(cx);
     server::set_session_cookie(cx, token.expose());
     see(pending.back)
@@ -175,7 +175,7 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Redirect {
     im_core::totp::set_totp(store, &user.id, &secret).await?;
     let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, "/".to_string());
     server::set_pending_cookie(cx, sealed);
-    im_core::events::log(store, "invite_accepted", Some(&user.email), None).await;
+    server::log_event(cx, "invite_accepted", Some(&user.email), None).await;
     see("/enroll".to_string())
 }
 
@@ -200,7 +200,7 @@ async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
-    im_core::events::log(store, "enrolled", email.as_deref(), None).await;
+    server::log_event(cx, "enrolled", email.as_deref(), None).await;
     server::clear_pending_cookie(cx);
     server::set_session_cookie(cx, token.expose());
     // A migrated user who was mid-`/authorize` continues to their app; a
@@ -221,7 +221,7 @@ async fn logout(cx: &Cx) -> Redirect {
             .await?
             .map(|u| u.email);
         im_core::sessions::revoke_session(&server::app(cx).store, &token).await?;
-        im_core::events::log(&server::app(cx).store, "logout", email.as_deref(), None).await;
+        server::log_event(cx, "logout", email.as_deref(), None).await;
     }
     server::clear_session_cookie(cx);
     see("/".to_string())

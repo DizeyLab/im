@@ -586,6 +586,40 @@ body:has(.admin-shell) {
   &:hover { background: var(--danger-tint-alt); }
 }
 
+// The two-step row action, iz's confirm-details: the summary wears the
+// button skin; the popover names the cost and holds the real button.
+.admin-confirm {
+  position: relative;
+
+  summary {
+    list-style: none;
+
+    &::-webkit-details-marker { display: none; }
+  }
+
+  &[open] summary { background: var(--panel-sunken); }
+}
+
+.admin-confirm-pop {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  width: 240px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+
+  .admin-action { width: 100%; height: 30px; }
+}
+
+.admin-confirm-title { font-weight: 600; color: var(--ink); }
+
 input[type="checkbox"] { accent-color: var(--accent); }
 
 @media (max-width: 720px) {

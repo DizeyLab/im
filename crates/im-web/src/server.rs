@@ -26,6 +26,23 @@ pub const PENDING_MINUTES: i64 = 10;
 pub struct App {
     pub store: Arc<Store>,
     pub config: Config,
+    /// The live channel's ticker: any mutation announces itself here, and
+    /// every open admin tab re-reads what it is showing. Carries no data —
+    /// a tick says "re-fetch", nothing more.
+    pub live: tokio::sync::broadcast::Sender<()>,
+}
+
+/// Announce that the panel's data moved. Sends are lossy on purpose: nobody
+/// listening is not an error, and a lagging tab gets a resync tick.
+pub fn note(cx: &Cx) {
+    let _ = app(cx).live.send(());
+}
+
+/// Log the event, then tick the live channel — the two travel together so
+/// the Logs page (and any watching panel) catches up without a reload.
+pub async fn log_event(cx: &Cx, kind: &str, actor: Option<&str>, detail: Option<&str>) {
+    im_core::events::log(&app(cx).store, kind, actor, detail).await;
+    note(cx);
 }
 
 pub fn app(cx: &Cx) -> &App {

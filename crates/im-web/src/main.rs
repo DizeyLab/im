@@ -14,6 +14,7 @@ mod admin;
 mod auth;
 mod config;
 mod layout;
+mod live;
 mod mailer;
 mod oidc;
 mod pages;
@@ -204,19 +205,21 @@ async fn create_client(config: Config, name: &str, uris: &[String]) {
     println!("  client_secret {}", secret.expose());
     println!("  (the secret is shown once; its digest is all the database keeps)");
 }
-
 async fn serve(config: Config) {
     for line in config.report() {
         println!("im      {line}");
     }
     let store = open_store(&config).await;
+    let (live, _) = tokio::sync::broadcast::channel(64);
+    // Told when the process is stopping, so the live streams end instead of
+    // being waited out — see `live::Shutdown`.
+    let (stop, stopping) = tokio::sync::watch::channel(false);
     let app = server::App {
         store,
         config: config.clone(),
+        live,
     };
 
-    // The bundle beside the executable is the only stylesheet this process
-    // can serve — `topcoat asset bundle -p im-web` produces it.
     let bundle = topcoat::asset::AssetBundle::load().unwrap_or_else(|err| {
         eprintln!("im: the asset bundle beside the executable failed to load: {err}");
         eprintln!("im: run `topcoat asset bundle -p im-web` first");
@@ -228,6 +231,7 @@ async fn serve(config: Config) {
         .cookies()
         .assets(bundle)
         .app_context(app)
+        .app_context(live::Shutdown(stopping))
         .build();
 
     // `topcoat::start` binds HOST/PORT from the environment; the listen
@@ -236,14 +240,15 @@ async fn serve(config: Config) {
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
         .expect("failed to bind the listen address");
-    topcoat::serve_until(listener, router, shutdown_signal())
+    topcoat::serve_until(listener, router, shutdown_signal(stop))
         .await
         .expect("server error");
 }
 
 /// Resolves when the process is asked to stop: Ctrl+C, or `SIGTERM` from a
-/// service manager.
-async fn shutdown_signal() {
+/// service manager. The live streams hear it first, so the graceful shutdown
+/// does not sit waiting on one long-lived connection per open tab.
+async fn shutdown_signal(stop: tokio::sync::watch::Sender<bool>) {
     let ctrl_c = async {
         tokio::signal::ctrl_c()
             .await
@@ -262,4 +267,6 @@ async fn shutdown_signal() {
         () = ctrl_c => {},
         () = terminate => {},
     }
+    // Streams end on their own; the browser reconnects when we are back.
+    let _ = stop.send(true);
 }

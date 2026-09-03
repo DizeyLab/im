@@ -45,6 +45,63 @@ fn escape(raw: &str) -> String {
         .replace('"', "&quot;")
 }
 
+/// One row action as a two-step disclosure — iz's `confirm-details` idiom:
+/// the summary is the word ("Delete"), the opened panel says what it costs
+/// and holds the button that actually does it. Works with no script at all;
+/// the live script adds outside-click closing.
+fn confirm_action(
+    id: &str,
+    action: &str,
+    word: &str,
+    extra_class: &str,
+    title: &str,
+    cost: &str,
+    confirm: &str,
+) -> String {
+    format!(
+        r#"<details class="admin-confirm"><summary class="admin-action{extra_class}">{word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{title}</div><div class="muted">{cost}</div><form method="post" action="{action}"><input type="hidden" name="user" value="{id}"><button class="admin-action{extra_class}" type="submit">{confirm}</button></form></div></details>"#
+    )
+}
+/// The panel's live wiring, the client half of `live.rs`. One EventSource
+/// per tab; a tick re-fetches the page and swaps the panel's body. iz's
+/// lesson is honored in miniature: the swap must not throw away what someone
+/// is doing, so a focused field suspends the refresh until the next tick,
+/// and the morph is one innerHTML swap of the column — small DOM, no diffing
+/// library needed.
+///
+/// The same script closes an open confirm disclosure on outside click and
+/// Escape — the one bit of behavior the no-script markup cannot do itself.
+const LIVE_SCRIPT: &str = r#"<script>(function () {
+  if (window.__imLive) { return; }
+  window.__imLive = true;
+  var timer = null;
+  function refresh() {
+    timer = null;
+    var active = document.activeElement;
+    if (active && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) { return; }
+    fetch(location.href).then(function (r) { return r.text(); }).then(function (html) {
+      var fresh = new DOMParser().parseFromString(html, 'text/html');
+      var here = document.querySelector('.admin-column');
+      var there = fresh.querySelector('.admin-column');
+      if (here && there) { here.innerHTML = there.innerHTML; }
+    }).catch(function () {});
+  }
+  var source = new EventSource('/admin/live');
+  source.onmessage = function () {
+    if (timer) { return; }
+    timer = setTimeout(refresh, 200);
+  };
+  document.addEventListener('click', function (e) {
+    document.querySelectorAll('.admin-confirm[open]').forEach(function (d) {
+      if (!d.contains(e.target)) { d.removeAttribute('open'); }
+    });
+  }, true);
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') { return; }
+    document.querySelectorAll('.admin-confirm[open]').forEach(function (d) { d.removeAttribute('open'); });
+  }, true);
+})();</script>"#;
+
 fn back(cx: &Cx, section: &str, extra: &str) -> Result<Response> {
     (
         StatusCode::SEE_OTHER,
@@ -136,6 +193,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                     (topcoat::view::Unescaped::new_unchecked(banner))
                 }
                 (topcoat::view::Unescaped::new_unchecked(section_html))
+                (topcoat::view::Unescaped::new_unchecked(LIVE_SCRIPT.to_string()))
             </div>
         </main>
     };
@@ -191,17 +249,43 @@ async fn users_section(
             r#"<span class="muted">you</span>"#.to_string()
         } else {
             let id = escape(&user.id.to_string());
+            let email = escape(&user.email);
+            // Every row action is a two-step disclosure — iz's
+            // confirm-details idiom: the summary is the word, the panel holds
+            // the button that actually does it. No script required; the live
+            // script adds outside-click closing on top.
             let toggle = if user.disabled {
-                format!(
-                    r#"<form method="post" action="/admin/enable"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">Enable</button></form>"#
+                confirm_action(
+                    &id,
+                    "/admin/enable",
+                    "Enable",
+                    "",
+                    &format!("Enable {email}?"),
+                    "They can sign in again.",
+                    "Confirm enable",
                 )
             } else {
-                format!(
-                    r#"<form method="post" action="/admin/disable"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">Disable</button></form>"#
+                confirm_action(
+                    &id,
+                    "/admin/disable",
+                    "Disable",
+                    "",
+                    &format!("Disable {email}?"),
+                    "They cannot sign in, and every live session ends.",
+                    "Confirm disable",
                 )
             };
+            let remove = confirm_action(
+                &id,
+                "/admin/delete",
+                "Delete",
+                " admin-danger",
+                &format!("Delete {email}?"),
+                "The account, its sessions and every app token go with it. The address can be invited again, as somebody new.",
+                "Confirm delete",
+            );
             format!(
-                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">Sign out everywhere</button></form><form method="post" action="/admin/delete"><input type="hidden" name="user" value="{id}"><button class="admin-action admin-danger" type="submit">Delete</button></form>"#
+                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">Sign out everywhere</button></form>{remove}"#
             )
         };
         rows.push_str(&format!(
@@ -322,8 +406,10 @@ async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
       <input class="auth-input auth-input-mono" type="text" name="username" value="{}"></label>
     <label class="auth-field"><span class="auth-label">Password</span>
       <input class="auth-input auth-input-mono" type="password" name="password" placeholder="{password_note}" autocomplete="off"></label>
-    <label class="auth-field"><span class="auth-label">From</span>
-      <input class="auth-input auth-input-mono" type="text" name="from" value="{}" placeholder="im &lt;auth@example.com&gt;"></label>
+    <label class="auth-field"><span class="auth-label">From name</span>
+      <input class="auth-input auth-input-mono" type="text" name="from_name" value="{}" placeholder="im"></label>
+    <label class="auth-field"><span class="auth-label">From address</span>
+      <input class="auth-input auth-input-mono" type="text" name="from" value="{}" placeholder="auth@example.com"></label>
     <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Save</span></button>
   </form>
   {lede_html}
@@ -335,6 +421,7 @@ async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
         escape(&smtp.host),
         smtp.port,
         escape(&smtp.username),
+        escape(&smtp.from_name),
         escape(&smtp.from)
     ))
 }
@@ -393,8 +480,8 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Result<Response> {
     let mailed = mailer::send_invite(store, &app(cx).config.issuer, &email, token.expose())
         .await
         .is_ok();
-    events::log(
-        store,
+    server::log_event(
+        cx,
         "invite_created",
         Some(&me.email),
         Some(&format!(
@@ -429,7 +516,7 @@ async fn uninvite(cx: &Cx, Form(input): Form<InviteAction>) -> Result<Response> 
     };
     let store = &app(cx).store;
     let email = accounts::revoke_invite(store, &input.invite).await?;
-    events::log(store, "invite_revoked", Some(&me.email), email.as_deref()).await;
+    server::log_event(cx, "invite_revoked", Some(&me.email), email.as_deref()).await;
     back(cx, "users", "&ok=uninvited")
 }
 
@@ -448,7 +535,7 @@ async fn delete(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
         .await?
         .map(|u| u.email);
     accounts::delete_user(store, &user_id).await?;
-    events::log(store, "user_deleted", Some(&me.email), email.as_deref()).await;
+    server::log_event(cx, "user_deleted", Some(&me.email), email.as_deref()).await;
     back(cx, "users", "&ok=deleted")
 }
 
@@ -488,7 +575,7 @@ async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Result<Response> 
     if let Some(token) = server::presented_session(cx) {
         im_core::sessions::revoke_user_sessions_except(store, &me.id, &token).await?;
     }
-    events::log(store, "password_changed", Some(&me.email), None).await;
+    server::log_event(cx, "password_changed", Some(&me.email), None).await;
     back(cx, "account", "&ok=password")
 }
 #[derive(Deserialize)]
@@ -508,8 +595,8 @@ async fn revoke(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
-    events::log(
-        store,
+    server::log_event(
+        cx,
         "sessions_revoked",
         Some(&me.email),
         Some(&format!(
@@ -546,8 +633,8 @@ async fn set_disabled(cx: &Cx, input: UserAction, disabled: bool) -> Result<Resp
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
-    events::log(
-        store,
+    server::log_event(
+        cx,
         if disabled {
             "user_disabled"
         } else {
@@ -574,6 +661,8 @@ struct SmtpForm {
     port: u16,
     username: String,
     password: Option<String>,
+    #[serde(default)]
+    from_name: String,
     from: String,
 }
 
@@ -589,13 +678,14 @@ async fn smtp_save(cx: &Cx, Form(input): Form<SmtpForm>) -> Result<Response> {
         port: input.port,
         username: input.username.trim().to_string(),
         from: input.from.trim().to_string(),
+        from_name: input.from_name.trim().to_string(),
         password: None,
     };
     settings::set_smtp(store, &value, input.password.as_deref()).await?;
-    events::log(store, "smtp_updated", Some(&me.email), None).await;
+    server::log_event(cx, "smtp_updated", Some(&me.email), None).await;
     // The saved sender gets re-probed in the background — the standing line
     // on the Mail section catches up on the next view, like izlek's panel.
-    tokio::spawn(probe(store_of(cx)));
+    tokio::spawn(probe(store_of(cx), app(cx).live.clone()));
     back(cx, "mail", "&ok=smtp")
 }
 
@@ -607,12 +697,12 @@ async fn smtp_test(cx: &Cx) -> Result<Response> {
     };
     match mailer::send_test(&app(cx).store, &me.email).await {
         Ok(()) => {
-            events::log(&app(cx).store, "smtp_test_sent", Some(&me.email), None).await;
+            server::log_event(cx, "smtp_test_sent", Some(&me.email), None).await;
             back(cx, "mail", "&ok=smtp_test")
         }
         Err(e) => {
-            events::log(
-                &app(cx).store,
+            server::log_event(
+                cx,
                 "smtp_test_failed",
                 Some(&me.email),
                 Some(&e.to_string()),
@@ -638,8 +728,8 @@ async fn smtp_check(cx: &Cx) -> Result<Response> {
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
     };
-    probe(store_of(cx)).await;
-    events::log(&app(cx).store, "smtp_checked", Some(&me.email), None).await;
+    probe(store_of(cx), app(cx).live.clone()).await;
+    server::log_event(cx, "smtp_checked", Some(&me.email), None).await;
     back(cx, "mail", "")
 }
 
@@ -651,7 +741,10 @@ fn store_of(cx: &Cx) -> std::sync::Arc<im_core::store::Store> {
 /// and the after-save probe: a saved sender is re-probed in the background,
 /// so the standing line catches up on the next view without making the save
 /// itself wait on a mail server.
-async fn probe(store: std::sync::Arc<im_core::store::Store>) {
+async fn probe(
+    store: std::sync::Arc<im_core::store::Store>,
+    live: tokio::sync::broadcast::Sender<()>,
+) {
     let check = match mailer::check(&store).await {
         Ok(took_ms) => settings::SenderCheck {
             at: time::OffsetDateTime::now_utc(),
@@ -667,4 +760,6 @@ async fn probe(store: std::sync::Arc<im_core::store::Store>) {
     if let Err(problem) = settings::record_check(&store, &check).await {
         eprintln!("im: failed to record the sender check: {problem}");
     }
+    // The chip changed; watching tabs re-read it on the next tick.
+    let _ = live.send(());
 }

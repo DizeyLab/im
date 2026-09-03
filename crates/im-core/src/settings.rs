@@ -13,13 +13,27 @@ pub struct Smtp {
     pub host: String,
     pub port: u16,
     pub username: String,
+    /// The address mail goes out as.
     pub from: String,
+    /// The name the address wears in a mail client's list — iz keeps the two
+    /// apart, and so do we: "im <auth@…>" is a header built from two settings,
+    /// not one string somebody has to get right.
+    pub from_name: String,
     pub password: Option<String>,
 }
 
 impl Smtp {
     pub fn configured(&self) -> bool {
         !self.host.is_empty() && self.port > 0 && !self.from.is_empty()
+    }
+
+    /// The From header: `Name <address>` when a name is set, the bare
+    /// address otherwise.
+    pub fn from_header(&self) -> String {
+        match self.from_name.trim() {
+            "" => self.from.clone(),
+            name => format!("{name} <{}>", self.from),
+        }
     }
 }
 
@@ -62,6 +76,7 @@ pub async fn smtp(store: &Store) -> Result<Smtp> {
         .unwrap_or(587);
     let username = get(store, "smtp_username").await?.unwrap_or_default();
     let from = get(store, "smtp_from").await?.unwrap_or_default();
+    let from_name = get(store, "smtp_from_name").await?.unwrap_or_default();
     let password = get(store, "smtp_password")
         .await?
         .and_then(|sealed| secret::open(store.key(), &sealed))
@@ -71,6 +86,7 @@ pub async fn smtp(store: &Store) -> Result<Smtp> {
         port,
         username,
         from,
+        from_name,
         password,
     })
 }
@@ -180,7 +196,7 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
             "smtp_port",
             "smtp_username",
             "smtp_from",
-            "smtp_password",
+            "smtp_from_name",
             "smtp_check_at",
             "smtp_check_ms",
             "smtp_check_error",
@@ -199,6 +215,7 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
     set(store, "smtp_port", &smtp.port.to_string()).await?;
     set(store, "smtp_username", &smtp.username).await?;
     set(store, "smtp_from", &smtp.from).await?;
+    set(store, "smtp_from_name", &smtp.from_name).await?;
     if let Some(password) = password {
         if !password.is_empty() {
             set(
@@ -227,7 +244,8 @@ mod tests {
             host: "smtp.example.com".into(),
             port: 465,
             username: "im".into(),
-            from: "im <auth@example.com>".into(),
+            from: "auth@example.com".into(),
+            from_name: "im".into(),
             password: None,
         };
         set_smtp(&store, &value, Some("s3cret")).await.unwrap();
@@ -259,6 +277,7 @@ mod tests {
                 port: 465,
                 username: String::new(),
                 from: "a@b.c".into(),
+                from_name: String::new(),
                 password: None,
             };
             set_smtp(&store, &value, Some("s3cret")).await.unwrap();
@@ -282,7 +301,8 @@ mod tests {
             host: "smtp.example.com".into(),
             port: 587,
             username: "auth@example.com".into(),
-            from: "im <auth@example.com>".into(),
+            from: "auth@example.com".into(),
+            from_name: "im".into(),
             password: None,
         };
         set_smtp(&store, &value, Some("s3cret")).await.unwrap();

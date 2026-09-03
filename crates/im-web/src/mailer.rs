@@ -53,7 +53,7 @@ async fn send(store: &Store, to: &str, subject: &str, body: String) -> Result<()
     let smtp = settings::smtp(store).await?;
     let message = lettre::Message::builder()
         .from(
-            smtp.from
+            smtp.from_header()
                 .parse()
                 .map_err(|e| MailError::Backend(format!("smtp from: {e}")))?,
         )

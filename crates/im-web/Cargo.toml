@@ -17,7 +17,9 @@ topcoat = { version = "0.6.2", default-features = false, features = [
   "discover",
   "serve",
   "compression",
+  "sse",
 ] }
+futures-util = { version = "0.3", default-features = false }
 im-core = { workspace = true, features = ["server"] }
 serde.workspace = true
 serde_json.workspace = true

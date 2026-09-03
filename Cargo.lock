@@ -1823,6 +1823,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "data-encoding",
+ "futures-util",
  "grass",
  "http",
  "im-core",
