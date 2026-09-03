@@ -108,6 +108,8 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                 "smtp" => "Mail settings saved.",
                 "smtp_test" => "Test mail sent.",
                 "password" => "Password changed — every other device is signed out.",
+                "uninvited" => "Invite invalidated — the link is dead.",
+                "deleted" => "Account deleted.",
                 _ => "Done.",
             }
         )),
@@ -172,6 +174,7 @@ async fn users_section(
     invited: Option<&str>,
 ) -> Result<String, topcoat::Error> {
     let users = accounts::list_users(&app(cx).store).await?;
+    let pending = accounts::list_pending_invites(&app(cx).store).await?;
     let mut rows = String::new();
     for user in &users {
         let flags = [
@@ -198,7 +201,7 @@ async fn users_section(
                 )
             };
             format!(
-                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">Sign out everywhere</button></form>"#
+                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">Sign out everywhere</button></form><form method="post" action="/admin/delete"><input type="hidden" name="user" value="{id}"><button class="admin-action admin-danger" type="submit">Delete</button></form>"#
             )
         };
         rows.push_str(&format!(
@@ -207,6 +210,26 @@ async fn users_section(
             escape(&user.name),
             flags,
             actions
+        ));
+    }
+    // Invites still waiting on their person sit in the same table — "waiting"
+    // instead of a name, and the one action an outstanding link understands:
+    for row in &pending {
+        let flags = [Some("invited"), row.admin.then_some("admin")]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+        let expires = row
+            .expires_at
+            .format(&time::macros::format_description!("[year]-[month]-[day]"))
+            .unwrap_or_default();
+        rows.push_str(&format!(
+            r#"<tr><td class="mono">{}</td><td class="muted">waiting · until {}</td><td class="muted">{}</td><td class="actions"><form method="post" action="/admin/uninvite"><input type="hidden" name="invite" value="{}"><button class="admin-action" type="submit">Invalidate</button></form></td></tr>"#,
+            escape(&row.email),
+            expires,
+            flags,
+            escape(&row.token_hash),
         ));
     }
     let invited_html = invited
@@ -245,31 +268,50 @@ async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
     } else {
         "no password set"
     };
-    // The standing line, izlek's chip as a sentence: what the last probe
-    // proved, and when. Saving settings wipes the record, so this can never
-    // claim "connected" for settings that changed since.
+    // The standing chip, izlek's idiom: one colored chip that says what the
+    // last probe proved, with the server's own words under it on a refusal.
+    // Saving settings wipes the record, so the chip can never claim
+    // "connected" for settings that changed since.
     let stamp = |at: time::OffsetDateTime| {
         at.format(&time::macros::format_description!(
             "[year]-[month]-[day] [hour]:[minute] UTC"
         ))
         .unwrap_or_default()
     };
-    let standing = match settings::standing(store).await? {
-        settings::Standing::NotConfigured => "No sender configured.".to_string(),
-        settings::Standing::Unchecked => {
+    let (chip_class, chip_text, lede) = match settings::standing(store).await? {
+        settings::Standing::NotConfigured => (
+            "chip chip-muted",
+            "not configured".to_string(),
+            String::new(),
+        ),
+        settings::Standing::Unchecked => (
+            "chip chip-muted",
+            "unchecked".to_string(),
             "Saved, but never checked — the check dials the server and stops before sending."
-                .to_string()
-        }
-        settings::Standing::Connected { at, took_ms } => {
-            format!("Connected · {took_ms} ms · {}", stamp(at))
-        }
-        settings::Standing::Refused { at, said } => {
-            format!("Refused · {} — {}", stamp(at), escape(&said))
-        }
+                .to_string(),
+        ),
+        settings::Standing::Connected { at, took_ms } => (
+            "chip chip-connected",
+            format!("connected · {took_ms} ms"),
+            format!(
+                "Checked {} — TLS, hello, password: all accepted.",
+                stamp(at)
+            ),
+        ),
+        settings::Standing::Refused { at, said } => (
+            "chip chip-refused",
+            "refused".to_string(),
+            format!("{} — {}", stamp(at), escape(&said)),
+        ),
+    };
+    let lede_html = if lede.is_empty() {
+        String::new()
+    } else {
+        format!(r#"<div class="admin-standing">{lede}</div>"#)
     };
     Ok(format!(
         r#"<div class="admin-card">
-  <div class="auth-title">Mail</div>
+  <div class="admin-card-head"><div class="auth-title">Mail</div><span class="{chip_class}">{chip_text}</span></div>
   <div class="auth-sub">Invites go out through this sender. The password is sealed under <span class="mono">im.key</span>; without a sender, invite links are shown here instead of mailed.</div>
   <form method="post" action="/admin/smtp" class="admin-form">
     <label class="auth-field"><span class="auth-label">Host</span>
@@ -284,7 +326,7 @@ async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
       <input class="auth-input auth-input-mono" type="text" name="from" value="{}" placeholder="im &lt;auth@example.com&gt;"></label>
     <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Save</span></button>
   </form>
-  <div class="admin-standing">{standing}</div>
+  {lede_html}
   <div class="admin-pair">
     <form method="post" action="/admin/smtp_check"><button class="admin-action" type="submit">Check connection</button></form>
     <form method="post" action="/admin/smtp_test"><button class="admin-action" type="submit">Send a test mail to myself</button></form>
@@ -371,6 +413,43 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Result<Response> {
             &format!("&ok=invited&invited={}", crate::oidc::urlencode(&link)),
         )
     }
+}
+
+#[derive(Deserialize)]
+struct InviteAction {
+    invite: String,
+}
+
+/// Invalidates an outstanding invite: the link dies now, not at expiry.
+#[route(POST "/admin/uninvite")]
+async fn uninvite(cx: &Cx, Form(input): Form<InviteAction>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let store = &app(cx).store;
+    let email = accounts::revoke_invite(store, &input.invite).await?;
+    events::log(store, "invite_revoked", Some(&me.email), email.as_deref()).await;
+    back(cx, "users", "&ok=uninvited")
+}
+
+/// Deletes the account outright — user, sessions, app tokens. Disable is
+/// the reversible door; this one is for "should not exist". The admin's own
+/// row never carries the button, so there is no self-delete to guard here.
+#[route(POST "/admin/delete")]
+async fn delete(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let store = &app(cx).store;
+    let user_id = UserId::from(input.user);
+    let email = accounts::user_by_id(store, &user_id)
+        .await?
+        .map(|u| u.email);
+    accounts::delete_user(store, &user_id).await?;
+    events::log(store, "user_deleted", Some(&me.email), email.as_deref()).await;
+    back(cx, "users", "&ok=deleted")
 }
 
 #[derive(Deserialize)]

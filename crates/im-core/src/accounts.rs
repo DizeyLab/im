@@ -18,6 +18,7 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
+use time::OffsetDateTime;
 
 use crate::model::{Invite, User, UserId};
 use crate::store::{self, Result, Store, StoreError, backend};
@@ -287,6 +288,69 @@ pub async fn invite_by_token(store: &Store, token: &str) -> Result<Option<Invite
     }))
 }
 
+/// An invite still waiting on its person, as the People section lists it.
+/// `token_hash` is the row's identity — the digest, never the raw token, so
+/// the panel can carry it in a form without a live invite leaking into HTML
+/// anyone can view-source.
+#[derive(Debug, Clone)]
+pub struct PendingInvite {
+    pub token_hash: String,
+    pub email: String,
+    pub admin: bool,
+    pub created_at: OffsetDateTime,
+    pub expires_at: OffsetDateTime,
+}
+
+/// Invites not yet accepted and not yet expired, oldest first.
+pub async fn list_pending_invites(store: &Store) -> Result<Vec<PendingInvite>> {
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT token, email, admin, created_at, expires_at FROM invites \
+             WHERE accepted_at IS NULL AND expires_at > ?1 ORDER BY created_at",
+            turso::params![store::stamp(store::now())?],
+        )
+        .await
+        .map_err(backend)?;
+    let mut pending = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        pending.push(PendingInvite {
+            token_hash: store::text(&row, 0)?,
+            email: store::text(&row, 1)?,
+            admin: store::int(&row, 2)? != 0,
+            created_at: store::parse_stamp(&store::text(&row, 3)?)?,
+            expires_at: store::parse_stamp(&store::text(&row, 4)?)?,
+        });
+    }
+    Ok(pending)
+}
+
+/// Invalidates an invite: the row is gone, the link reads "not valid" from
+/// that moment on. Returns the address it was made out to, for the log line.
+pub async fn revoke_invite(store: &Store, token_hash: &str) -> Result<Option<String>> {
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT email FROM invites WHERE token = ?1",
+            turso::params![token_hash],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    let email = store::text(&row, 0)?;
+    store
+        .conn
+        .execute(
+            "DELETE FROM invites WHERE token = ?1",
+            turso::params![token_hash],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(Some(email))
+}
+
 /// Turns a valid invite into a user. The invite is marked accepted in the
 /// same transaction as the user insert, so a token can never mint two
 /// accounts.
@@ -486,6 +550,28 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
         disabled: store::int(&row, 5)? != 0,
         created_at: store::parse_stamp(&store::text(&row, 6)?)?,
     }))
+}
+
+/// Deletes an account outright: the user row, its sessions, and every app
+/// token born of them. Disable is the reversible door; this is for "this
+/// account should not exist" — the OIDC subject dies with it, and if the
+/// person returns they get a fresh one.
+pub async fn delete_user(store: &Store, user: &UserId) -> Result<()> {
+    let id = user.to_string();
+    for sql in [
+        "DELETE FROM app_sessions WHERE user_id = ?1",
+        "DELETE FROM refresh_tokens WHERE user_id = ?1",
+        "DELETE FROM sessions WHERE user_id = ?1",
+        "UPDATE invites SET invited_by = NULL WHERE invited_by = ?1",
+        "DELETE FROM users WHERE id = ?1",
+    ] {
+        store
+            .conn
+            .execute(sql, turso::params![id.clone()])
+            .await
+            .map_err(backend)?;
+    }
+    Ok(())
 }
 
 /// Every user, oldest first — the admin panel's roster.
@@ -698,5 +784,65 @@ mod tests {
             create_invite(&store, "ann@example.com", None, false).await,
             Err(AccountError::EmailTaken)
         ));
+    }
+
+    #[tokio::test]
+    async fn pending_invites_list_and_revoke() {
+        let store = fixture().await;
+        let token = create_invite(&store, "bob@example.com", None, true)
+            .await
+            .unwrap();
+
+        let pending = list_pending_invites(&store).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].email, "bob@example.com");
+        assert!(pending[0].admin);
+
+        let email = revoke_invite(&store, &pending[0].token_hash).await.unwrap();
+        assert_eq!(email.as_deref(), Some("bob@example.com"));
+        assert!(list_pending_invites(&store).await.unwrap().is_empty());
+        // The link is dead: the token resolves to nothing.
+        assert!(
+            invite_by_token(&store, token.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // Revoking the same invite twice is a quiet no-op.
+        assert!(
+            revoke_invite(&store, &pending[0].token_hash)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_user_takes_sessions_with_it() {
+        let store = fixture().await;
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let session = crate::sessions::create_session(&store, &user.id)
+            .await
+            .unwrap();
+
+        delete_user(&store, &user.id).await.unwrap();
+        assert!(user_by_id(&store, &user.id).await.unwrap().is_none());
+        assert!(
+            crate::sessions::resolve_session(&store, session.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        // The address is free again: a fresh invite can be made for it.
+        assert!(
+            create_invite(&store, "ann@example.com", None, false)
+                .await
+                .is_ok()
+        );
     }
 }
