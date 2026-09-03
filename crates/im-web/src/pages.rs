@@ -112,7 +112,7 @@ async fn login_card(cx: &Cx) -> Result {
                 <div class="auth-card">
                     <div class="auth-head">
                         <div class="auth-title">"Sign in"</div>
-                        <div class="auth-sub">"One account for everything IzlekLab."</div>
+                        <div class="auth-sub">"One account for everything Dizey."</div>
                     </div>
                     if let Some(code) = error {
                         <div class="auth-problem">(error_text(&code))</div>
@@ -144,7 +144,7 @@ async fn login_card(cx: &Cx) -> Result {
                         </button>
                     </form>
                 </div>
-                <div class="auth-footer">"im · IzlekLab SSO"</div>
+                <div class="auth-footer">"im · Dizey SSO"</div>
             </div>
         </main>
     };
@@ -190,7 +190,7 @@ async fn totp(cx: &Cx) -> Result<Response> {
                                 </button>
                             </form>
                         </div>
-                        <div class="auth-footer">"im · IzlekLab SSO"</div>
+                        <div class="auth-footer">"im · Dizey SSO"</div>
                     </div>
                 </main>
             };
@@ -273,7 +273,7 @@ async fn invite(cx: &Cx) -> Result<Response> {
                             </button>
                         </form>
                     </div>
-                    <div class="auth-footer">"im · IzlekLab SSO"</div>
+                    <div class="auth-footer">"im · Dizey SSO"</div>
                 </div>
             </main>
         }
@@ -376,7 +376,7 @@ async fn enroll(cx: &Cx) -> Result<Response> {
                         </button>
                     </form>
                 </div>
-                <div class="auth-footer">"im · IzlekLab SSO"</div>
+                <div class="auth-footer">"im · Dizey SSO"</div>
             </div>
         </main>
     };
@@ -412,7 +412,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                         <a class="auth-alt" href="/admin">"Admin panel"</a>
                     }
                 </div>
-                <div class="auth-footer">"im · IzlekLab SSO"</div>
+                <div class="auth-footer">"im · Dizey SSO"</div>
             </div>
         </main>
     };

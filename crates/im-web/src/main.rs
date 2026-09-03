@@ -1,4 +1,4 @@
-//! im — the IzlekLab SSO. Server by default; the CLI covers bootstrapping
+//! im — the Dizey SSO. Server by default; the CLI covers bootstrapping
 //! (the first admin invite) and the two admin actions that must work even
 //! when the panel cannot be reached. Everything else lives in /admin.
 

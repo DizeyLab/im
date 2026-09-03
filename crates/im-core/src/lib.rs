@@ -1,4 +1,4 @@
-//! im-core: domain model and storage for im, the IzlekLab SSO.
+//! im-core: domain model and storage for im, the Dizey SSO.
 //!
 //! `model` is the shared vocabulary (id wrappers, record shapes) and compiles
 //! anywhere. Everything that touches a database, a password, a signing key or
