@@ -1,0 +1,45 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/im-core",
+    "crates/im-web",
+    "crates/im-client",
+    "crates/im-migrate",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/DizeyLab/im"
+
+[workspace.dependencies]
+im-core = { path = "crates/im-core", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.145"
+thiserror = "2.0.20"
+ulid = "1"
+time = { version = "0.3.55", features = ["serde", "formatting", "parsing", "macros"] }
+tokio = { version = "1.53.1", features = ["full"] }
+turso = "=0.8.0-pre.7"
+argon2 = "0.6.0"
+rand = "0.10.2"
+sha2 = "0.11.0"
+subtle = "2.6.1"
+chacha20poly1305 = "0.10.1"
+base64 = "0.22.1"
+toml = "1"
+async-trait = "0.1.92"
+
+[profile.release]
+codegen-units = 1
+lto = true
+
+# What the deploy builds. Fat LTO and one codegen unit buy the last few
+# percent by optimizing the whole program in a single non-parallel pass —
+# worth it for something CPU-bound, not for a server whose time goes to
+# SQLite, TLS and the network. Thin LTO still optimizes across crates, in
+# parallel, so `release` stays available for when the trade is worth making.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

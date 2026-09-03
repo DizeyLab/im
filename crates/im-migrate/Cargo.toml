@@ -1,0 +1,17 @@
+[package]
+name = "im-migrate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "One-time import of izlek.db accounts into an im database"
+
+[dependencies]
+turso.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+time.workspace = true
+ulid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

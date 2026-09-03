@@ -1,0 +1,12 @@
+database = "im.db"
+listen = "127.0.0.1:7650"
+issuer = "http://127.0.0.1:7650"
+
+# Without an [smtp] table the server runs in dev mode: invite links are
+# printed to stdout instead of mailed.
+# [smtp]
+# host = "smtp.example.com"
+# port = 465
+# username = "..."
+# password = "..."
+# from = "im <auth@example.com>"

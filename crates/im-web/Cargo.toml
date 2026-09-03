@@ -1,0 +1,47 @@
+[package]
+name = "im-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "im web app: topcoat UI, OIDC endpoints and the server"
+build = "build.rs"
+
+[dependencies]
+topcoat = { version = "0.6.2", default-features = false, features = [
+  "router",
+  "view",
+  "runtime",
+  "asset",
+  "cookie",
+  "discover",
+  "serve",
+  "compression",
+] }
+im-core = { workspace = true, features = ["server"] }
+serde.workspace = true
+serde_json.workspace = true
+time.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+ulid.workspace = true
+base64.workspace = true
+toml.workspace = true
+data-encoding = "2.11.1"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+# TLS through rustls with the ring provider: no OpenSSL on the deployment box,
+# and no system certificate store to be missing inside a container.
+lettre = { version = "0.11.23", default-features = false, features = [
+  "smtp-transport",
+  "builder",
+  "tokio1-rustls",
+  "ring",
+  "webpki-roots",
+  "pool",
+] }
+
+[build-dependencies]
+grass = "0.13"
+
+[dev-dependencies]
+http = "1.5"
