@@ -70,6 +70,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
     let section = query_value(&query, "section").unwrap_or_else(|| "users".to_string());
     let error = query_value(&query, "error");
     let ok = query_value(&query, "ok");
+    let why = query_value(&query, "why");
     let invited = query_value(&query, "invited");
 
     let nav = |current: &str| {
@@ -104,8 +105,11 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
             }
         )),
         (_, Some(code)) => Some(format!(
-            r#"<div class="auth-problem">{}</div>"#,
-            error_text(code)
+            r#"<div class="auth-problem">{}{}</div>"#,
+            error_text(code),
+            why.as_deref()
+                .map(|detail| format!("<div class=\"muted\">{}</div>", escape(detail)))
+                .unwrap_or_default(),
         )),
         _ => None,
     };
@@ -432,7 +436,14 @@ async fn smtp_test(cx: &Cx) -> Result<Response> {
                 Some(&e.to_string()),
             )
             .await;
-            back(cx, "mail", "&error=smtp_test")
+            back(
+                cx,
+                "mail",
+                &format!(
+                    "&error=smtp_test&why={}",
+                    crate::oidc::urlencode(&e.to_string())
+                ),
+            )
         }
     }
 }

@@ -30,6 +30,7 @@ pub fn error_text(code: &str) -> &'static str {
         "password_personal" => "The password can't contain your address or your name.",
         "passwords_differ" => "The two passwords don't match.",
         "enroll_first" => "Set up your second factor first.",
+        "smtp_test" => "The test mail could not be sent.",
         _ => "Something went wrong. Try again.",
     }
 }

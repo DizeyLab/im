@@ -59,7 +59,7 @@ pub async fn smtp(store: &Store) -> Result<Smtp> {
     let port = get(store, "smtp_port")
         .await?
         .and_then(|raw| raw.parse().ok())
-        .unwrap_or(465);
+        .unwrap_or(587);
     let username = get(store, "smtp_username").await?.unwrap_or_default();
     let from = get(store, "smtp_from").await?.unwrap_or_default();
     let password = get(store, "smtp_password")
@@ -120,6 +120,7 @@ mod tests {
     async fn smtp_roundtrip_with_sealed_password() {
         let store = Store::open(Path::new(":memory:")).await.unwrap();
         assert!(!smtp(&store).await.unwrap().configured());
+        assert_eq!(smtp(&store).await.unwrap().port, 587);
 
         let value = Smtp {
             host: "smtp.example.com".into(),

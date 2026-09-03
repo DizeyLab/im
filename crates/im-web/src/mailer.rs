@@ -21,9 +21,18 @@ fn transport(smtp: &Smtp) -> Result<lettre::AsyncSmtpTransport<lettre::Tokio1Exe
     if !smtp.configured() {
         return Err(MailError::NotConfigured);
     }
-    let mut builder = lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp.host)
-        .map_err(|e| MailError::Backend(e.to_string()))?
-        .port(smtp.port);
+    // 465 is implicit TLS — the handshake wraps the connection from the first
+    // byte. Everything else (587 above all) is submission: the session starts
+    // in the clear and STARTTLS upgrades it. Picking the wrong one is the
+    // classic "something went wrong": relay() against a 587 port hangs the TLS
+    // handshake on a server waiting for plaintext EHLO.
+    let mut builder = if smtp.port == 465 {
+        lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp.host)
+    } else {
+        lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::starttls_relay(&smtp.host)
+    }
+    .map_err(|e| MailError::Backend(e.to_string()))?
+    .port(smtp.port);
     if !smtp.username.is_empty() {
         builder = builder.credentials(lettre::transport::smtp::authentication::Credentials::new(
             smtp.username.clone(),
