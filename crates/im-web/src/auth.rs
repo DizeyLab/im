@@ -62,12 +62,16 @@ async fn login(cx: &Cx, Form(input): Form<LoginForm>) -> Redirect {
             see("/login/totp".to_string())
         }
         Ok(user) => {
-            // Accounts enrol TOTP at invite time, so this is the path for one
-            // created before that rule — sign it in, enrolment comes next.
-            let token = im_core::sessions::create_session(store, &user.id).await?;
-            im_core::events::log(store, "login_ok", Some(&user.email), None).await;
-            server::set_session_cookie(cx, token.expose());
-            see(back)
+            // An account without confirmed 2FA — everyone who migrated from
+            // İzlek — enrols before any session exists: same bar as an
+            // invited account.
+            if im_core::totp::totp_secret(store, &user.id).await?.is_none() {
+                let secret = im_core::totp::generate_secret();
+                im_core::totp::set_totp(store, &user.id, &secret).await?;
+            }
+            let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, back);
+            server::set_pending_cookie(cx, sealed);
+            see("/enroll".to_string())
         }
         Err(_) => {
             // The failure is logged against the address tried, never the
@@ -199,7 +203,13 @@ async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
     im_core::events::log(store, "enrolled", email.as_deref(), None).await;
     server::clear_pending_cookie(cx);
     server::set_session_cookie(cx, token.expose());
-    see("/?ok=enrolled".to_string())
+    // A migrated user who was mid-`/authorize` continues to their app; a
+    // fresh invite lands on the welcome banner.
+    if pending.back == "/" {
+        see("/?ok=enrolled".to_string())
+    } else {
+        see(pending.back)
+    }
 }
 
 /// "Sign out everywhere": the central session dies, and with it every
