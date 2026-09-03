@@ -142,6 +142,56 @@ pub async fn revoke_user_sessions(store: &Store, user: &UserId) -> Result<u64> {
     Ok(count)
 }
 
+/// A password change's revoke: every session dies except the one holding the
+/// form — the browser that just proved the old password stays signed in, and
+/// every other device (and every app token born of them) is out.
+pub async fn revoke_user_sessions_except(
+    store: &Store,
+    user: &UserId,
+    keep_token: &str,
+) -> Result<u64> {
+    let keep = hash_token(keep_token);
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT token_hash FROM sessions \
+             WHERE user_id = ?1 AND revoked_at IS NULL AND token_hash != ?2",
+            turso::params![user.to_string(), keep.clone()],
+        )
+        .await
+        .map_err(backend)?;
+    let mut hashes = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        hashes.push(store::text(&row, 0)?);
+    }
+    let count = hashes.len() as u64;
+    for hash in &hashes {
+        revoke_session_hash(store, hash).await?;
+    }
+    // The kept session is the only one allowed to keep its app sessions and
+    // refresh tokens; everything else of this user's is swept.
+    let now = store::stamp(store::now())?;
+    store
+        .conn
+        .execute(
+            "UPDATE app_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL \
+             AND session_hash != ?3",
+            turso::params![now.clone(), user.to_string(), keep.clone()],
+        )
+        .await
+        .map_err(backend)?;
+    store
+        .conn
+        .execute(
+            "UPDATE refresh_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL \
+             AND session_hash != ?3",
+            turso::params![now, user.to_string(), keep],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +228,30 @@ mod tests {
         );
         assert!(
             resolve_session(&store, "not-a-token")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_except_keeps_the_asking_session() {
+        let (store, user_id) = fixture().await;
+        let mine = create_session(&store, &user_id).await.unwrap();
+        let other = create_session(&store, &user_id).await.unwrap();
+
+        let count = revoke_user_sessions_except(&store, &user_id, mine.expose())
+            .await
+            .unwrap();
+        assert_eq!(count, 1);
+        assert!(
+            resolve_session(&store, mine.expose())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            resolve_session(&store, other.expose())
                 .await
                 .unwrap()
                 .is_none()

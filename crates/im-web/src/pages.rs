@@ -31,6 +31,8 @@ pub fn error_text(code: &str) -> &'static str {
         "passwords_differ" => "The two passwords don't match.",
         "enroll_first" => "Set up your second factor first.",
         "smtp_test" => "The test mail could not be sent.",
+        "password_wrong" => "That's not your current password.",
+        "password_same" => "That's already your password.",
         _ => "Something went wrong. Try again.",
     }
 }

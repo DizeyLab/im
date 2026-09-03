@@ -49,6 +49,9 @@ pub enum PasswordProblem {
     TooShort,
     #[error("not your address or your name")]
     LooksLikeYou,
+    /// The current password given at change time is not the one in force.
+    #[error("that's not your current password")]
+    WrongCurrent,
     /// The "new" password is the one already in force — the walk-away
     /// mistake, refused by name rather than silently succeeding.
     #[error("that's your current password")]
@@ -403,6 +406,47 @@ pub async fn verify_login(
     Ok(user)
 }
 
+/// The panel's "change password": proves the current one, enforces the same
+/// rules the invite screen does, refuses the walk-away "new = old", then
+/// hashes and stores. Sessions are the caller's business — the web layer
+/// revokes every session but the one holding the form, so a stolen device
+/// loses its access the moment the password moves.
+pub async fn change_password(
+    store: &Store,
+    user: &User,
+    current: &str,
+    new: &str,
+) -> std::result::Result<(), AccountError> {
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT password_hash FROM users WHERE id = ?1",
+            turso::params![user.id.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Err(AccountError::InvalidCredentials);
+    };
+    let phc = store::text(&row, 0)?;
+    if !verify_password(current, &phc) {
+        return Err(PasswordProblem::WrongCurrent.into());
+    }
+    check_password(new, &user.email, &user.name)?;
+    if verify_password(new, &phc) {
+        return Err(PasswordProblem::IsCurrent.into());
+    }
+    store
+        .conn
+        .execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            turso::params![hash_password(new)?, user.id.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
 /// Looks a user up by email — the CLI's revoke path resolves names this way.
 pub async fn user_by_email(store: &Store, email: &str) -> Result<Option<User>> {
     let mut rows = store
@@ -596,6 +640,47 @@ mod tests {
             verify_login(&store, "nobody@example.com", "tDLr9!mZQ2xv").await,
             Err(AccountError::InvalidCredentials)
         ));
+    }
+
+    #[tokio::test]
+    async fn change_password_proves_current_and_applies_rules() {
+        let store = fixture().await;
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+
+        // Wrong current password is refused by name.
+        assert!(matches!(
+            change_password(&store, &user, "not-the-password", "Xk9#mQ2vLpR7").await,
+            Err(AccountError::Password(PasswordProblem::WrongCurrent))
+        ));
+        // The rules the invite screen enforces apply here too.
+        assert!(matches!(
+            change_password(&store, &user, "tDLr9!mZQ2xv", "short").await,
+            Err(AccountError::Password(PasswordProblem::TooShort))
+        ));
+        // New = old is the walk-away mistake, refused.
+        assert!(matches!(
+            change_password(&store, &user, "tDLr9!mZQ2xv", "tDLr9!mZQ2xv").await,
+            Err(AccountError::Password(PasswordProblem::IsCurrent))
+        ));
+
+        change_password(&store, &user, "tDLr9!mZQ2xv", "Xk9#mQ2vLpR7")
+            .await
+            .unwrap();
+        assert!(
+            verify_login(&store, "ann@example.com", "Xk9#mQ2vLpR7")
+                .await
+                .is_ok()
+        );
+        assert!(
+            verify_login(&store, "ann@example.com", "tDLr9!mZQ2xv")
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

@@ -491,19 +491,37 @@ body:has(.admin-shell) {
 .admin-invite {
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: stretch;
+  // One control height for the whole row — email, role and Invite all stand
+  // on the same line, the way izlek's member-invite row does.
+  --control-h: 36px;
 
-  .auth-input { flex: 1; }
-  .admin-action-wide { width: auto; padding: 0 20px; }
-}
+  .auth-input {
+    flex: 1;
+    height: var(--control-h);
+    box-sizing: border-box;
+  }
 
-.admin-check {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
+  // The role picker: same field skin as the inputs, just narrower — izlek's
+  // invite row uses a select here too, not a checkbox.
+  .admin-role {
+    flex: 0 0 auto;
+    width: auto;
+    padding: 0 28px 0 12px;
+    appearance: none;
+    background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 16px) 50%, calc(100% - 11px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    cursor: pointer;
+  }
+
+  .admin-invite-go {
+    width: auto;
+    height: var(--control-h);
+    padding: 0 20px;
+  }
 }
 
 .admin-form {

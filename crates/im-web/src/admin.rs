@@ -67,28 +67,34 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         .query()
         .unwrap_or("")
         .to_string();
-    let section = query_value(&query, "section").unwrap_or_else(|| "users".to_string());
+    let section = query_value(&query, "section").unwrap_or_else(|| "account".to_string());
     let error = query_value(&query, "error");
     let ok = query_value(&query, "ok");
     let why = query_value(&query, "why");
     let invited = query_value(&query, "invited");
 
     let nav = |current: &str| {
-        [("users", "Users"), ("mail", "Mail"), ("logs", "Logs")]
-            .into_iter()
-            .map(|(id, label)| {
-                format!(
-                    r#"<a class="admin-nav{}" href="/admin?section={id}">{label}</a>"#,
-                    if id == current { " admin-nav-on" } else { "" }
-                )
-            })
-            .collect::<String>()
+        [
+            ("account", "Account"),
+            ("users", "Users"),
+            ("mail", "Mail"),
+            ("logs", "Logs"),
+        ]
+        .into_iter()
+        .map(|(id, label)| {
+            format!(
+                r#"<a class="admin-nav{}" href="/admin?section={id}">{label}</a>"#,
+                if id == current { " admin-nav-on" } else { "" }
+            )
+        })
+        .collect::<String>()
     };
 
     let section_html = match section.as_str() {
         "mail" => mail_section(cx).await?,
         "logs" => logs_section(cx).await?,
-        _ => users_section(cx, &me, invited.as_deref()).await?,
+        "users" => users_section(cx, &me, invited.as_deref()).await?,
+        _ => account_section(&me),
     };
 
     let banner = match (ok.as_deref(), error.as_deref()) {
@@ -101,6 +107,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                 "enabled" => "Account enabled.",
                 "smtp" => "Mail settings saved.",
                 "smtp_test" => "Test mail sent.",
+                "password" => "Password changed — every other device is signed out.",
                 _ => "Done.",
             }
         )),
@@ -131,6 +138,32 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         </main>
     };
     shell(cx, "Admin · im", stage).await?.into_response(cx)
+}
+/// The self-service half of the panel: the account the panel is signed in
+/// as. Izlek keeps this on the settings rail's first tab; so do we.
+fn account_section(me: &User) -> String {
+    let two_factor = if me.totp_confirmed {
+        "two-factor is on"
+    } else {
+        "two-factor is NOT on — sign out and back in to set it up"
+    };
+    format!(
+        r#"<div class="admin-card">
+  <div class="auth-title">Account</div>
+  <div class="auth-sub">Signed in as <span class="mono">{}</span> · {two_factor}.</div>
+  <form method="post" action="/admin/password" class="admin-form">
+    <label class="auth-field"><span class="auth-label">Current password</span>
+      <input class="auth-input auth-input-mono" type="password" name="current" autocomplete="current-password" required></label>
+    <label class="auth-field"><span class="auth-label">New password</span>
+      <input class="auth-input auth-input-mono" type="password" name="password" autocomplete="new-password" minlength="10" required></label>
+    <label class="auth-field"><span class="auth-label">New password, again</span>
+      <input class="auth-input auth-input-mono" type="password" name="password_confirm" autocomplete="new-password" minlength="10" required></label>
+    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Change password</span></button>
+  </form>
+  <div class="auth-sub">Changing it signs every other device out — this one stays.</div>
+</div>"#,
+        escape(&me.email)
+    )
 }
 
 async fn users_section(
@@ -194,8 +227,11 @@ async fn users_section(
   </table>
   <form method="post" action="/admin/invite" class="admin-invite">
     <input class="auth-input auth-input-mono" type="email" name="email" placeholder="person@example.com" required>
-    <label class="admin-check"><input type="checkbox" name="admin" value="yes"> admin</label>
-    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Invite</span></button>
+    <select class="auth-input admin-role" name="role">
+      <option value="member">member</option>
+      <option value="admin">admin</option>
+    </select>
+    <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">Invite</span></button>
   </form>
 </div>"#
     ))
@@ -267,7 +303,7 @@ async fn logs_section(cx: &Cx) -> Result<String, topcoat::Error> {
 #[derive(Deserialize)]
 struct InviteForm {
     email: String,
-    admin: Option<String>,
+    role: Option<String>,
 }
 
 #[route(POST "/admin/invite")]
@@ -278,7 +314,7 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Result<Response> {
     };
     let store = &app(cx).store;
     let email = input.email.trim().to_string();
-    let admin = input.admin.as_deref() == Some("yes");
+    let admin = input.role.as_deref() == Some("admin");
     let token = match accounts::create_invite(store, &email, Some(me.id.clone()), admin).await {
         Ok(token) => token,
         Err(accounts::AccountError::EmailTaken) => {
@@ -312,6 +348,45 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Result<Response> {
     }
 }
 
+#[derive(Deserialize)]
+struct PasswordForm {
+    current: String,
+    password: String,
+    password_confirm: String,
+}
+
+#[route(POST "/admin/password")]
+async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    if input.password != input.password_confirm {
+        return back(cx, "account", "&error=passwords_differ");
+    }
+    let store = &app(cx).store;
+    match accounts::change_password(store, &me, &input.current, &input.password).await {
+        Ok(()) => {}
+        Err(accounts::AccountError::Password(problem)) => {
+            use im_core::accounts::PasswordProblem::*;
+            let code = match problem {
+                TooShort => "password_too_short",
+                LooksLikeYou => "password_personal",
+                WrongCurrent => "password_wrong",
+                IsCurrent => "password_same",
+            };
+            return back(cx, "account", &format!("&error={code}"));
+        }
+        Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
+    }
+    // Every other device is out; the browser holding this form proved the
+    // old password and keeps its session.
+    if let Some(token) = server::presented_session(cx) {
+        im_core::sessions::revoke_user_sessions_except(store, &me.id, &token).await?;
+    }
+    events::log(store, "password_changed", Some(&me.email), None).await;
+    back(cx, "account", "&ok=password")
+}
 #[derive(Deserialize)]
 struct UserAction {
     user: String,
