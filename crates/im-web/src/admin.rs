@@ -238,11 +238,34 @@ async fn users_section(
 }
 
 async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
-    let smtp = settings::smtp(&app(cx).store).await?;
+    let store = &app(cx).store;
+    let smtp = settings::smtp(store).await?;
     let password_note = if smtp.password.is_some() {
         "password is set — fill to replace, leave empty to keep"
     } else {
         "no password set"
+    };
+    // The standing line, izlek's chip as a sentence: what the last probe
+    // proved, and when. Saving settings wipes the record, so this can never
+    // claim "connected" for settings that changed since.
+    let stamp = |at: time::OffsetDateTime| {
+        at.format(&time::macros::format_description!(
+            "[year]-[month]-[day] [hour]:[minute] UTC"
+        ))
+        .unwrap_or_default()
+    };
+    let standing = match settings::standing(store).await? {
+        settings::Standing::NotConfigured => "No sender configured.".to_string(),
+        settings::Standing::Unchecked => {
+            "Saved, but never checked — the check dials the server and stops before sending."
+                .to_string()
+        }
+        settings::Standing::Connected { at, took_ms } => {
+            format!("Connected · {took_ms} ms · {}", stamp(at))
+        }
+        settings::Standing::Refused { at, said } => {
+            format!("Refused · {} — {}", stamp(at), escape(&said))
+        }
     };
     Ok(format!(
         r#"<div class="admin-card">
@@ -261,9 +284,11 @@ async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
       <input class="auth-input auth-input-mono" type="text" name="from" value="{}" placeholder="im &lt;auth@example.com&gt;"></label>
     <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Save</span></button>
   </form>
-  <form method="post" action="/admin/smtp_test" class="admin-form">
-    <button class="admin-action" type="submit">Send a test mail to myself</button>
-  </form>
+  <div class="admin-standing">{standing}</div>
+  <div class="admin-pair">
+    <form method="post" action="/admin/smtp_check"><button class="admin-action" type="submit">Check connection</button></form>
+    <form method="post" action="/admin/smtp_test"><button class="admin-action" type="submit">Send a test mail to myself</button></form>
+  </div>
 </div>"#,
         escape(&smtp.host),
         smtp.port,
@@ -489,6 +514,9 @@ async fn smtp_save(cx: &Cx, Form(input): Form<SmtpForm>) -> Result<Response> {
     };
     settings::set_smtp(store, &value, input.password.as_deref()).await?;
     events::log(store, "smtp_updated", Some(&me.email), None).await;
+    // The saved sender gets re-probed in the background — the standing line
+    // on the Mail section catches up on the next view, like izlek's panel.
+    tokio::spawn(probe(store_of(cx)));
     back(cx, "mail", "&ok=smtp")
 }
 
@@ -520,5 +548,44 @@ async fn smtp_test(cx: &Cx) -> Result<Response> {
                 ),
             )
         }
+    }
+}
+/// Dials the mail server without sending, on an admin's say-so, and writes
+/// down what it said. The result shows on the Mail section as the standing
+/// line; the panel redirects straight back.
+#[route(POST "/admin/smtp_check")]
+async fn smtp_check(cx: &Cx) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    probe(store_of(cx)).await;
+    events::log(&app(cx).store, "smtp_checked", Some(&me.email), None).await;
+    back(cx, "mail", "")
+}
+
+fn store_of(cx: &Cx) -> std::sync::Arc<im_core::store::Store> {
+    app(cx).store.clone()
+}
+
+/// Runs the probe and records whatever it saw. Shared by the check button
+/// and the after-save probe: a saved sender is re-probed in the background,
+/// so the standing line catches up on the next view without making the save
+/// itself wait on a mail server.
+async fn probe(store: std::sync::Arc<im_core::store::Store>) {
+    let check = match mailer::check(&store).await {
+        Ok(took_ms) => settings::SenderCheck {
+            at: time::OffsetDateTime::now_utc(),
+            took_ms,
+            error: None,
+        },
+        Err(problem) => settings::SenderCheck {
+            at: time::OffsetDateTime::now_utc(),
+            took_ms: 0,
+            error: Some(problem.to_string()),
+        },
+    };
+    if let Err(problem) = settings::record_check(&store, &check).await {
+        eprintln!("im: failed to record the sender check: {problem}");
     }
 }

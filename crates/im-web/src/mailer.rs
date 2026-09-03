@@ -15,6 +15,13 @@ pub enum MailError {
     Settings(#[from] im_core::store::StoreError),
 }
 
+/// How long to wait on a mail server before writing the attempt off. Long
+/// enough for a slow but healthy server on a bad link, short enough that an
+/// admin who mistyped the port is told while still looking at the screen.
+/// izlek measured that lettre's own timeout does not catch a socket that
+/// accepts and then says nothing — this outer bound is the backstop.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub type Result<T, E = MailError> = std::result::Result<T, E>;
 
 fn transport(smtp: &Smtp) -> Result<lettre::AsyncSmtpTransport<lettre::Tokio1Executor>> {
@@ -78,6 +85,33 @@ pub async fn send_invite(store: &Store, issuer: &str, email: &str, token: &str) 
     )
     .await?;
     Ok(link)
+}
+
+/// Dials the mail server without sending anything: connect, TLS, hello,
+/// authenticate, NOOP, hang up. A pass proves the host, the port, the
+/// encryption and the password; it says nothing about whether the
+/// from-address may send — a server that accepts the login can still refuse
+/// the envelope, which is what the test mail is for.
+///
+/// Returns the handshake's milliseconds on a pass. The error text is built
+/// from what the server said, never from what we sent it, so it is safe to
+/// store and show.
+pub async fn check(store: &Store) -> Result<u64> {
+    let smtp = settings::smtp(store).await?;
+    let transport = transport(&smtp)?;
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(PROBE_TIMEOUT, transport.test_connection()).await {
+        Ok(Ok(true)) => Ok(started.elapsed().as_millis() as u64),
+        // Connected, then would not answer a NOOP — nothing about the
+        // settings is proven wrong, but nothing is proven right either.
+        Ok(Ok(false)) => Err(MailError::Backend(
+            "the mail server accepted the connection and then went quiet".into(),
+        )),
+        Ok(Err(e)) => Err(MailError::Backend(e.to_string())),
+        Err(_) => Err(MailError::Backend(
+            "the mail server did not answer in time".into(),
+        )),
+    }
 }
 
 /// The panel's test button: proves the sender end to end, to the admin's own

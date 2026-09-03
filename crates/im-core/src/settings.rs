@@ -75,6 +75,102 @@ pub async fn smtp(store: &Store) -> Result<Smtp> {
     })
 }
 
+/// One probe of the sender, as izlek records it: when it ran, how long the
+/// handshake took, and what the server said if it refused. `error: None` is
+/// a pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SenderCheck {
+    pub at: time::OffsetDateTime,
+    pub took_ms: u64,
+    pub error: Option<String>,
+}
+
+/// What the panel can claim about the sender right now. Saved settings wipe
+/// the recorded check, so "Connected" can never outlive the settings it
+/// proved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Standing {
+    NotConfigured,
+    Unchecked,
+    Connected {
+        at: time::OffsetDateTime,
+        took_ms: u64,
+    },
+    Refused {
+        at: time::OffsetDateTime,
+        said: String,
+    },
+}
+
+/// The sender's standing: settings plus the last probe, folded.
+pub async fn standing(store: &Store) -> Result<Standing> {
+    if !smtp(store).await?.configured() {
+        return Ok(Standing::NotConfigured);
+    }
+    let Some(check) = last_check(store).await? else {
+        return Ok(Standing::Unchecked);
+    };
+    Ok(match check.error {
+        None => Standing::Connected {
+            at: check.at,
+            took_ms: check.took_ms,
+        },
+        Some(said) => Standing::Refused { at: check.at, said },
+    })
+}
+
+/// Writes down what a probe saw. The error text is built from what the
+/// server said, never from the credentials we sent — safe to store and show.
+pub async fn record_check(store: &Store, check: &SenderCheck) -> Result<()> {
+    set(
+        store,
+        "smtp_check_at",
+        &check
+            .at
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(backend)?,
+    )
+    .await?;
+    set(store, "smtp_check_ms", &check.took_ms.to_string()).await?;
+    set(
+        store,
+        "smtp_check_error",
+        check.error.as_deref().unwrap_or(""),
+    )
+    .await?;
+    Ok(())
+}
+
+/// The last recorded probe, if any.
+pub async fn last_check(store: &Store) -> Result<Option<SenderCheck>> {
+    let Some(at) = get(store, "smtp_check_at").await? else {
+        return Ok(None);
+    };
+    let at = time::OffsetDateTime::parse(&at, &time::format_description::well_known::Rfc3339)
+        .map_err(backend)?;
+    let took_ms = get(store, "smtp_check_ms")
+        .await?
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(0);
+    let error = get(store, "smtp_check_error")
+        .await?
+        .filter(|said| !said.is_empty());
+    Ok(Some(SenderCheck { at, took_ms, error }))
+}
+
+/// A saved sender cannot borrow the last probe's verdict: the check is
+/// cleared on every settings write, like izlek's.
+async fn clear_check(store: &Store) -> Result<()> {
+    for key in ["smtp_check_at", "smtp_check_ms", "smtp_check_error"] {
+        store
+            .conn
+            .execute("DELETE FROM settings WHERE key = ?1", turso::params![key])
+            .await
+            .map_err(backend)?;
+    }
+    Ok(())
+}
+
 /// Writes the SMTP settings. `password: None` keeps the stored one — the
 /// panel's password field is write-only, like izlek's.
 pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Result<()> {
@@ -85,6 +181,9 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
             "smtp_username",
             "smtp_from",
             "smtp_password",
+            "smtp_check_at",
+            "smtp_check_ms",
+            "smtp_check_error",
         ] {
             store
                 .conn
@@ -94,6 +193,8 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
         }
         return Ok(());
     }
+    // A saved sender cannot borrow the last probe's verdict.
+    clear_check(store).await?;
     set(store, "smtp_host", &smtp.host).await?;
     set(store, "smtp_port", &smtp.port.to_string()).await?;
     set(store, "smtp_username", &smtp.username).await?;
@@ -143,6 +244,7 @@ mod tests {
 
         // An empty host clears the sender.
         set_smtp(&store, &Smtp::default(), None).await.unwrap();
+
         assert!(!smtp(&store).await.unwrap().configured());
     }
 
@@ -169,5 +271,56 @@ mod tests {
         assert!(secret::is_sealed(&sealed));
         let wrong_key = [9u8; 32];
         assert!(secret::open(&wrong_key, &sealed).is_none());
+    }
+
+    #[tokio::test]
+    async fn check_records_and_a_save_wipes_it() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        assert_eq!(standing(&store).await.unwrap(), Standing::NotConfigured);
+
+        let value = Smtp {
+            host: "smtp.example.com".into(),
+            port: 587,
+            username: "auth@example.com".into(),
+            from: "im <auth@example.com>".into(),
+            password: None,
+        };
+        set_smtp(&store, &value, Some("s3cret")).await.unwrap();
+        assert_eq!(standing(&store).await.unwrap(), Standing::Unchecked);
+
+        record_check(
+            &store,
+            &SenderCheck {
+                at: time::OffsetDateTime::now_utc(),
+                took_ms: 142,
+                error: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            standing(&store).await.unwrap(),
+            Standing::Connected { took_ms: 142, .. }
+        ));
+
+        record_check(
+            &store,
+            &SenderCheck {
+                at: time::OffsetDateTime::now_utc(),
+                took_ms: 0,
+                error: Some("the mail server did not answer in time".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            standing(&store).await.unwrap(),
+            Standing::Refused { .. }
+        ));
+
+        // A new save cannot borrow the old probe's verdict.
+        set_smtp(&store, &value, None).await.unwrap();
+        assert_eq!(standing(&store).await.unwrap(), Standing::Unchecked);
+        assert!(last_check(&store).await.unwrap().is_none());
     }
 }
