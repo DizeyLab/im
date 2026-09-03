@@ -1,6 +1,11 @@
 //! `config/im.toml`: read before anything is opened, written with development
 //! defaults if it is not there yet — the same contract izlek-core's `Config`
 //! keeps. A broken key stops the boot with its name in the message.
+//!
+//! TOML holds deployment facts only — database, listen, issuer. Secrets an
+//! admin rotates (the SMTP password) live sealed in the database under
+//! `im.key`, set from the admin panel; nothing in this file is worth
+//! stealing, which is what lets it stay in git.
 
 use std::path::{Path, PathBuf};
 
@@ -20,16 +25,6 @@ pub struct Config {
     /// The OIDC issuer — the public base URL every endpoint address and every
     /// `iss` claim derives from.
     pub issuer: String,
-    pub smtp: Option<Smtp>,
-}
-
-#[derive(Clone, Deserialize)]
-pub struct Smtp {
-    pub host: String,
-    pub port: u16,
-    pub username: String,
-    pub password: String,
-    pub from: String,
 }
 
 #[derive(Deserialize)]
@@ -37,7 +32,6 @@ struct Raw {
     database: Option<String>,
     listen: Option<String>,
     issuer: Option<String>,
-    smtp: Option<Smtp>,
 }
 
 impl Config {
@@ -66,7 +60,6 @@ impl Config {
                 .parse()
                 .map_err(|e| format!("{PATH}: listen: {e}"))?,
             issuer: issuer.trim_end_matches('/').to_string(),
-            smtp: raw.smtp,
         })
     }
 
@@ -82,14 +75,6 @@ impl Config {
             format!("database {}", self.database.display()),
             format!("listen   {}", self.listen),
             format!("issuer   {}", self.issuer),
-            format!(
-                "mail     {}",
-                if self.smtp.is_some() {
-                    "smtp"
-                } else {
-                    "stdout (dev)"
-                }
-            ),
         ]
     }
 }

@@ -8,6 +8,8 @@
 #[cfg(feature = "server")]
 pub mod accounts;
 #[cfg(feature = "server")]
+pub mod events;
+#[cfg(feature = "server")]
 pub mod keys;
 #[cfg(feature = "server")]
 pub mod oidc;
@@ -15,6 +17,8 @@ pub mod oidc;
 mod secret;
 #[cfg(feature = "server")]
 pub mod sessions;
+#[cfg(feature = "server")]
+pub mod settings;
 #[cfg(feature = "server")]
 pub mod store;
 #[cfg(feature = "server")]

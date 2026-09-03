@@ -51,6 +51,9 @@ pub struct User {
     pub email: String,
     pub name: String,
     pub totp_confirmed: bool,
+    /// im's own admin flag — never crosses a token; AuthN stays the only
+    /// thing apps receive.
+    pub admin: bool,
     pub disabled: bool,
     pub created_at: OffsetDateTime,
 }
@@ -61,6 +64,8 @@ pub struct User {
 pub struct Invite {
     pub email: String,
     pub invited_by: Option<UserId>,
+    /// An admin invite mints an admin.
+    pub admin: bool,
     pub created_at: OffsetDateTime,
     pub expires_at: OffsetDateTime,
     pub accepted_at: Option<OffsetDateTime>,

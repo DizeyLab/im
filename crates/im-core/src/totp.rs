@@ -179,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn store_roundtrip_and_confirm() {
         let store = Store::open(Path::new(":memory:")).await.unwrap();
-        let invite = create_invite(&store, "ann@example.com", None)
+        let invite = create_invite(&store, "ann@example.com", None, false)
             .await
             .unwrap();
         let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")

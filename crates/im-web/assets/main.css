@@ -339,3 +339,164 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
     padding: 0 16px 24px;
   }
 }
+body:has(.admin-shell) {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+.admin-shell {
+  display: flex;
+  justify-content: center;
+  padding: 24px 24px 48px;
+}
+
+.admin-column {
+  width: 760px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  height: var(--control-h-lg);
+}
+.admin-bar .wordmark-text {
+  font-size: 15px;
+}
+
+.admin-tabs {
+  display: flex;
+  gap: 16px;
+}
+
+.admin-nav {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  text-decoration: none;
+  padding-bottom: 2px;
+}
+.admin-nav:hover {
+  color: var(--ink);
+}
+.admin-nav-on {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+.admin-bar .auth-alt {
+  margin-left: auto;
+  align-self: auto;
+}
+
+.admin-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.admin-table th {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted-soft);
+  text-align: left;
+  padding: 0 12px 6px 0;
+}
+.admin-table td {
+  padding: 8px 12px 8px 0;
+  border-top: 1px solid var(--border-soft);
+  vertical-align: middle;
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.actions form {
+  display: inline;
+}
+
+.admin-action {
+  height: var(--control-h);
+  --control-h: 32px;
+  padding: 0 10px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+.admin-action:hover {
+  background: var(--row-hover, var(--panel-sunken));
+}
+
+.admin-action-wide {
+  width: 100%;
+}
+
+.admin-invite {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.admin-invite .auth-input {
+  flex: 1;
+}
+.admin-invite .admin-action-wide {
+  width: auto;
+  padding: 0 20px;
+}
+
+.admin-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.admin-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+input[type=checkbox] {
+  accent-color: var(--accent);
+}
+
+@media (max-width: 720px) {
+  .admin-shell {
+    padding: 16px 12px 32px;
+  }
+  .admin-invite {
+    flex-wrap: wrap;
+  }
+}

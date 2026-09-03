@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   totp_secret BLOB,
   totp_confirmed INTEGER NOT NULL DEFAULT 0,
+  admin INTEGER NOT NULL DEFAULT 0,
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS invites (
   token TEXT PRIMARY KEY,
   email TEXT NOT NULL,
   invited_by TEXT,
+  admin INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
   accepted_at TEXT
@@ -85,6 +87,26 @@ CREATE TABLE IF NOT EXISTS signing_keys (
   public_der BLOB NOT NULL,
   created_at TEXT NOT NULL,
   active INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS app_sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  client_id TEXT NOT NULL REFERENCES oidc_clients(client_id),
+  session_hash TEXT NOT NULL REFERENCES sessions(token_hash),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  at TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  actor TEXT,
+  detail TEXT
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 ";
 

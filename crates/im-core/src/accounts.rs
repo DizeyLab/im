@@ -226,6 +226,7 @@ pub async fn create_invite(
     store: &Store,
     email: &str,
     invited_by: Option<UserId>,
+    admin: bool,
 ) -> std::result::Result<Token, AccountError> {
     let token = Token::mint();
     let now = store::now();
@@ -233,12 +234,13 @@ pub async fn create_invite(
     store
         .conn
         .execute(
-            "INSERT INTO invites (token, email, invited_by, created_at, expires_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO invites (token, email, invited_by, admin, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             turso::params![
                 token.hash(),
                 email,
                 invited_by.map(|id| id.to_string()),
+                admin as i64,
                 store::stamp(now)?,
                 store::stamp(expires)?,
             ],
@@ -254,7 +256,7 @@ pub async fn invite_by_token(store: &Store, token: &str) -> Result<Option<Invite
     let mut rows = store
         .conn
         .query(
-            "SELECT email, invited_by, created_at, expires_at, accepted_at \
+            "SELECT email, invited_by, admin, created_at, expires_at, accepted_at \
              FROM invites WHERE token = ?1",
             turso::params![hash_token(token)],
         )
@@ -266,9 +268,10 @@ pub async fn invite_by_token(store: &Store, token: &str) -> Result<Option<Invite
     Ok(Some(Invite {
         email: store::text(&row, 0)?,
         invited_by: store::opt_text(&row, 1)?.map(UserId::from),
-        created_at: store::parse_stamp(&store::text(&row, 2)?)?,
-        expires_at: store::parse_stamp(&store::text(&row, 3)?)?,
-        accepted_at: match store::opt_text(&row, 4)? {
+        admin: store::int(&row, 2)? != 0,
+        created_at: store::parse_stamp(&store::text(&row, 3)?)?,
+        expires_at: store::parse_stamp(&store::text(&row, 4)?)?,
+        accepted_at: match store::opt_text(&row, 5)? {
             Some(raw) => Some(store::parse_stamp(&raw)?),
             None => None,
         },
@@ -299,6 +302,7 @@ pub async fn create_user_from_invite(
         email: invite.email.clone(),
         name: name.to_string(),
         totp_confirmed: false,
+        admin: invite.admin,
         disabled: false,
         created_at: store::now(),
     };
@@ -313,13 +317,14 @@ pub async fn create_user_from_invite(
         store
             .conn
             .execute(
-                "INSERT INTO users (id, email, name, password_hash, created_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO users (id, email, name, password_hash, admin, created_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 turso::params![
                     user.id.to_string(),
                     user.email.clone(),
                     user.name.clone(),
                     password_hash,
+                    user.admin as i64,
                     store::stamp(user.created_at)?,
                 ],
             )
@@ -366,7 +371,7 @@ pub async fn verify_login(
     let mut rows = store
         .conn
         .query(
-            "SELECT id, email, name, password_hash, totp_confirmed, disabled, created_at \
+            "SELECT id, email, name, password_hash, totp_confirmed, admin, disabled, created_at \
              FROM users WHERE email = ?1 COLLATE NOCASE",
             turso::params![email],
         )
@@ -381,8 +386,9 @@ pub async fn verify_login(
         email: store::text(&row, 1)?,
         name: store::text(&row, 2)?,
         totp_confirmed: store::int(&row, 4)? != 0,
-        disabled: store::int(&row, 5)? != 0,
-        created_at: store::parse_stamp(&store::text(&row, 6)?)?,
+        admin: store::int(&row, 5)? != 0,
+        disabled: store::int(&row, 6)? != 0,
+        created_at: store::parse_stamp(&store::text(&row, 7)?)?,
     };
     let phc = store::text(&row, 3)?;
     if !verify_password(password, &phc) || user.disabled {
@@ -391,12 +397,28 @@ pub async fn verify_login(
     Ok(user)
 }
 
-/// Looks a user up by id — what sessions and tokens resolve to.
+/// Looks a user up by email — the CLI's revoke path resolves names this way.
+pub async fn user_by_email(store: &Store, email: &str) -> Result<Option<User>> {
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT id FROM users WHERE email = ?1 COLLATE NOCASE",
+            turso::params![email],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    let id = UserId::from(store::text(&row, 0)?);
+    user_by_id(store, &id).await
+}
+
 pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
     let mut rows = store
         .conn
         .query(
-            "SELECT id, email, name, totp_confirmed, disabled, created_at \
+            "SELECT id, email, name, totp_confirmed, admin, disabled, created_at \
              FROM users WHERE id = ?1",
             turso::params![id.to_string()],
         )
@@ -410,9 +432,51 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
         email: store::text(&row, 1)?,
         name: store::text(&row, 2)?,
         totp_confirmed: store::int(&row, 3)? != 0,
-        disabled: store::int(&row, 4)? != 0,
-        created_at: store::parse_stamp(&store::text(&row, 5)?)?,
+        admin: store::int(&row, 4)? != 0,
+        disabled: store::int(&row, 5)? != 0,
+        created_at: store::parse_stamp(&store::text(&row, 6)?)?,
     }))
+}
+
+/// Every user, oldest first — the admin panel's roster.
+pub async fn list_users(store: &Store) -> Result<Vec<User>> {
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT id, email, name, totp_confirmed, admin, disabled, created_at \
+             FROM users ORDER BY created_at",
+            (),
+        )
+        .await
+        .map_err(backend)?;
+    let mut users = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        users.push(User {
+            id: UserId::from(store::text(&row, 0)?),
+            email: store::text(&row, 1)?,
+            name: store::text(&row, 2)?,
+            totp_confirmed: store::int(&row, 3)? != 0,
+            admin: store::int(&row, 4)? != 0,
+            disabled: store::int(&row, 5)? != 0,
+            created_at: store::parse_stamp(&store::text(&row, 6)?)?,
+        });
+    }
+    Ok(users)
+}
+
+/// Enables or disables an account. A disabled account cannot log in, its
+/// sessions resolve to nobody, and introspection says inactive — every door
+/// closes on the same flag.
+pub async fn set_disabled(store: &Store, user: &UserId, disabled: bool) -> Result<()> {
+    store
+        .conn
+        .execute(
+            "UPDATE users SET disabled = ?1 WHERE id = ?2",
+            turso::params![disabled as i64, user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -455,7 +519,7 @@ mod tests {
     #[tokio::test]
     async fn invite_to_user_to_login() {
         let store = fixture().await;
-        let token = create_invite(&store, "ann@example.com", None)
+        let token = create_invite(&store, "ann@example.com", None, false)
             .await
             .unwrap();
         let invite = invite_by_token(&store, token.expose())
@@ -493,13 +557,13 @@ mod tests {
     #[tokio::test]
     async fn duplicate_email_is_refused() {
         let store = fixture().await;
-        let first = create_invite(&store, "ann@example.com", None)
+        let first = create_invite(&store, "ann@example.com", None, false)
             .await
             .unwrap();
         create_user_from_invite(&store, first.expose(), "Ann", "tDLr9!mZQ2xv")
             .await
             .unwrap();
-        let second = create_invite(&store, "ann@example.com", None)
+        let second = create_invite(&store, "ann@example.com", None, false)
             .await
             .unwrap();
         assert!(matches!(

@@ -91,25 +91,56 @@ fn client(cx: &Cx) -> &ImClient {
     try_app_context::<ImClient>(cx).expect("im_client::mount was called on the router")
 }
 
-/// The authenticated person, if this browser has one. Transparently refreshes
-/// against im when the access token has aged out; `None` means signed out.
+/// The authenticated person, if this browser has one. Every call asks im:
+/// the cookie holds an opaque session token, introspected per request, so an
+/// admin revoking the person signs them out of this app immediately — there
+/// is no token-validity window in which a ghost lives.
 pub async fn current_user(cx: &Cx) -> Option<User> {
     let state = client(cx);
     let sealed = cookies(cx).get(&state.config.cookie_name)?;
-    let mut session: Session = open_json(&state.config.cookie_key, sealed.value())?;
-    if session.access_exp > OffsetDateTime::now_utc().unix_timestamp() {
-        return Some(session.user());
+    let session: Session = open_json(&state.config.cookie_key, sealed.value())?;
+    if session.exp <= OffsetDateTime::now_utc().unix_timestamp() {
+        clear_cookie(cx, &state.config.cookie_name);
+        return None;
     }
-    match refresh(cx, state, &mut session).await {
-        Ok(()) => {
-            set_session_cookie(cx, state, &session);
-            Some(session.user())
-        }
-        Err(_) => {
+    match introspect(state, &session.app_session).await {
+        Some((user, _exp)) => Some(user),
+        None => {
             clear_cookie(cx, &state.config.cookie_name);
             None
         }
     }
+}
+
+/// POSTs the session token to im's `/introspect` with this app's credentials.
+/// Network failure reads as signed-out for this request — the cookie stays,
+/// so the next request tries again.
+async fn introspect(state: &ImClient, token: &str) -> Option<(User, i64)> {
+    let answer: serde_json::Value = state
+        .http
+        .post(format!("{}/introspect", state.config.issuer))
+        .form(&[
+            ("token", token),
+            ("client_id", &state.config.client_id),
+            ("client_secret", &state.config.client_secret),
+        ])
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    if answer["active"] != true {
+        return None;
+    }
+    Some((
+        User {
+            sub: answer["sub"].as_str()?.to_string(),
+            email: answer["email"].as_str()?.to_string(),
+            name: answer["name"].as_str()?.to_string(),
+        },
+        answer["exp"].as_i64()?,
+    ))
 }
 
 /// Who this browser is, from the claims.
@@ -126,15 +157,10 @@ pub struct User {
 
 #[derive(Serialize, Deserialize)]
 struct Session {
-    user: User,
-    refresh_token: String,
-    access_exp: i64,
-}
-
-impl Session {
-    fn user(&self) -> User {
-        self.user.clone()
-    }
+    /// The opaque token im issued at the code exchange; introspected per
+    /// request, never trusted on its own.
+    app_session: String,
+    exp: i64,
 }
 
 /// The in-flight login: PKCE verifier, state, nonce, and where to land after.
@@ -394,13 +420,12 @@ fn urlencoded(raw: &str) -> String {
 
 #[derive(Deserialize)]
 struct TokenAnswer {
-    /// Present on the wire; the app reads identity from the id_token and
-    /// never calls userinfo, so the access token is carried, not used.
-    #[serde(rename = "access_token")]
-    _access_token: String,
-    refresh_token: String,
+    /// Validated for its nonce and signature; the identity the app serves
+    /// comes from introspection, not from these claims.
     id_token: String,
-    expires_in: i64,
+    /// Not OIDC — im's own: the opaque session this crate introspects per
+    /// request. Absent means the issuer is not a current im.
+    app_session: Option<String>,
 }
 
 async fn exchange_code(state: &ImClient, code: &str, flight: &InFlight) -> Result<Session> {
@@ -427,43 +452,15 @@ async fn exchange_code(state: &ImClient, code: &str, flight: &InFlight) -> Resul
     if claims["nonce"].as_str() != Some(flight.nonce.as_str()) {
         return Err(Error::Token("nonce mismatch".into()));
     }
-    Ok(session_from(&answer, claims))
-}
-
-async fn refresh(cx: &Cx, state: &ImClient, session: &mut Session) -> Result<()> {
-    let _ = cx;
-    let answer: TokenAnswer = state
-        .http
-        .post(format!("{}/token", state.config.issuer))
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("refresh_token", &session.refresh_token),
-            ("client_id", &state.config.client_id),
-            ("client_secret", &state.config.client_secret),
-        ])
-        .send()
+    let app_session = answer
+        .app_session
+        .ok_or_else(|| Error::Token("issuer gave no app session".into()))?;
+    // The session's expiry and identity come from a live introspection, not
+    // from the token answer — the same check every later request will make.
+    let (_user, exp) = introspect(state, &app_session)
         .await
-        .map_err(|e| Error::Http(e.to_string()))?
-        .error_for_status()
-        .map_err(|e| Error::Refused(e.to_string()))?
-        .json()
-        .await
-        .map_err(|e| Error::Http(e.to_string()))?;
-    let claims = validate_id_token(state, &answer.id_token).await?;
-    *session = session_from(&answer, claims);
-    Ok(())
-}
-
-fn session_from(answer: &TokenAnswer, claims: serde_json::Value) -> Session {
-    Session {
-        user: User {
-            sub: claims["sub"].as_str().unwrap_or_default().to_string(),
-            email: claims["email"].as_str().unwrap_or_default().to_string(),
-            name: claims["name"].as_str().unwrap_or_default().to_string(),
-        },
-        refresh_token: answer.refresh_token.clone(),
-        access_exp: OffsetDateTime::now_utc().unix_timestamp() + answer.expires_in,
-    }
+        .ok_or_else(|| Error::Refused("fresh app session does not introspect".into()))?;
+    Ok(Session { app_session, exp })
 }
 
 /// Validates an id_token: RS256 against im's JWKS, issuer, audience, expiry.
@@ -693,17 +690,12 @@ mod tests {
     fn cookie_seal_roundtrip() {
         let key = [7u8; 32];
         let session = Session {
-            user: User {
-                sub: "u".into(),
-                email: "e".into(),
-                name: "n".into(),
-            },
-            refresh_token: "r".into(),
-            access_exp: 1,
+            app_session: "opaque-token".into(),
+            exp: 1,
         };
         let sealed = seal_json(&key, &session);
         let back: Session = open_json(&key, &sealed).unwrap();
-        assert_eq!(back.refresh_token, "r");
+        assert_eq!(back.app_session, "opaque-token");
         assert!(open_json::<Session>(&[8u8; 32], &sealed).is_none());
         assert!(open_json::<Session>(&key, "garbage").is_none());
     }

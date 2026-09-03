@@ -54,7 +54,8 @@ pub struct LoginForm {
 #[route(POST "/login")]
 async fn login(cx: &Cx, Form(input): Form<LoginForm>) -> Redirect {
     let back = safe_back(input.back.as_deref().unwrap_or("/")).to_string();
-    match accounts::verify_login(&server::app(cx).store, &input.email, &input.password).await {
+    let store = &server::app(cx).store;
+    match accounts::verify_login(store, &input.email, &input.password).await {
         Ok(user) if user.totp_confirmed => {
             let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Login, back);
             server::set_pending_cookie(cx, sealed);
@@ -63,11 +64,17 @@ async fn login(cx: &Cx, Form(input): Form<LoginForm>) -> Redirect {
         Ok(user) => {
             // Accounts enrol TOTP at invite time, so this is the path for one
             // created before that rule — sign it in, enrolment comes next.
-            let token = im_core::sessions::create_session(&server::app(cx).store, &user.id).await?;
+            let token = im_core::sessions::create_session(store, &user.id).await?;
+            im_core::events::log(store, "login_ok", Some(&user.email), None).await;
             server::set_session_cookie(cx, token.expose());
             see(back)
         }
-        Err(_) => see(format!("/login?error=bad_login&back={}", urlencode(&back))),
+        Err(_) => {
+            // The failure is logged against the address tried, never the
+            // password — and never whether the address exists.
+            im_core::events::log(store, "login_fail", Some(&input.email), None).await;
+            see(format!("/login?error=bad_login&back={}", urlencode(&back)))
+        }
     }
 }
 
@@ -101,9 +108,14 @@ async fn login_totp(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
         None => false,
     };
     if !ok {
+        im_core::events::log(store, "totp_fail", None, Some("login")).await;
         return see("/login/totp?error=bad_code".to_string());
     }
     let token = im_core::sessions::create_session(store, &user_id).await?;
+    let email = accounts::user_by_id(store, &user_id)
+        .await?
+        .map(|u| u.email);
+    im_core::events::log(store, "login_ok", email.as_deref(), Some("2fa")).await;
     server::clear_pending_cookie(cx);
     server::set_session_cookie(cx, token.expose());
     see(pending.back)
@@ -159,6 +171,7 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Redirect {
     im_core::totp::set_totp(store, &user.id, &secret).await?;
     let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, "/".to_string());
     server::set_pending_cookie(cx, sealed);
+    im_core::events::log(store, "invite_accepted", Some(&user.email), None).await;
     see("/enroll".to_string())
 }
 
@@ -180,6 +193,10 @@ async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
     }
     im_core::totp::confirm_totp(store, &user_id).await?;
     let token = im_core::sessions::create_session(store, &user_id).await?;
+    let email = accounts::user_by_id(store, &user_id)
+        .await?
+        .map(|u| u.email);
+    im_core::events::log(store, "enrolled", email.as_deref(), None).await;
     server::clear_pending_cookie(cx);
     server::set_session_cookie(cx, token.expose());
     see("/?ok=enrolled".to_string())
@@ -190,7 +207,11 @@ async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
 #[route(POST "/logout")]
 async fn logout(cx: &Cx) -> Redirect {
     if let Some(token) = server::presented_session(cx) {
+        let email = im_core::sessions::resolve_session(&server::app(cx).store, &token)
+            .await?
+            .map(|u| u.email);
         im_core::sessions::revoke_session(&server::app(cx).store, &token).await?;
+        im_core::events::log(&server::app(cx).store, "logout", email.as_deref(), None).await;
     }
     server::clear_session_cookie(cx);
     see("/".to_string())

@@ -1,5 +1,6 @@
-//! im — the IzlekLab SSO. Server by default; `invite` and `create-client`
-//! are the admin surface until there is a settings screen.
+//! im — the IzlekLab SSO. Server by default; the CLI covers bootstrapping
+//! (the first admin invite) and the two admin actions that must work even
+//! when the panel cannot be reached. Everything else lives in /admin.
 
 use std::sync::Arc;
 
@@ -9,9 +10,11 @@ use topcoat::asset::RouterBuilderAssetExt;
 use topcoat::cookie::RouterBuilderCookieExt;
 use topcoat::router::{Router, RouterBuilderDiscoverExt, route};
 
+mod admin;
 mod auth;
 mod config;
 mod layout;
+mod mailer;
 mod oidc;
 mod pages;
 mod server;
@@ -37,11 +40,31 @@ async fn main() {
     match args.get(1).map(String::as_str) {
         None => serve(config).await,
         Some("invite") => {
-            let Some(email) = args.get(2) else {
-                eprintln!("usage: im-web invite <email>");
+            let mut email = None;
+            let mut admin = false;
+            for arg in &args[2..] {
+                match arg.as_str() {
+                    "--admin" => admin = true,
+                    other if email.is_none() => email = Some(other.to_string()),
+                    other => {
+                        eprintln!("usage: im-web invite <email> [--admin]");
+                        eprintln!("im: unexpected argument {other}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            let Some(email) = email else {
+                eprintln!("usage: im-web invite <email> [--admin]");
                 std::process::exit(2);
             };
-            invite(config, email).await;
+            invite(config, &email, admin).await;
+        }
+        Some("revoke") => {
+            let Some(email) = args.get(2) else {
+                eprintln!("usage: im-web revoke <email>");
+                std::process::exit(2);
+            };
+            revoke(config, email).await;
         }
         Some("create-client") => {
             let (Some(name), uris) = (args.get(2), args.get(3..).unwrap_or(&[])) else {
@@ -56,7 +79,7 @@ async fn main() {
         }
         Some(other) => {
             eprintln!(
-                "im: unknown command {other:?} (expected: invite, create-client, or none to serve)"
+                "im: unknown command {other:?} (expected: invite, revoke, create-client, or none to serve)"
             );
             std::process::exit(2);
         }
@@ -71,42 +94,52 @@ async fn open_store(config: &Config) -> Arc<Store> {
     )
 }
 
-/// `im-web invite <email>`: creates the invite, mails it when SMTP is
-/// configured, prints the link otherwise (dev mode).
-async fn invite(config: Config, email: &str) {
+/// `im-web invite <email> [--admin]`: creates the invite, mails it when the
+/// panel has configured a sender, prints the link otherwise (dev mode).
+///
+/// Needs the server stopped: Turso is a single-writer engine, and this
+/// process would hold the same file.
+async fn invite(config: Config, email: &str, admin: bool) {
     let store = open_store(&config).await;
-    let token = im_core::accounts::create_invite(&store, email, None)
+    let token = im_core::accounts::create_invite(&store, email, None, admin)
         .await
         .expect("failed to create the invite");
-    let link = format!("{}/invite/{}", config.issuer, token.expose());
-    match build_mailer(&config) {
-        Some(mailer) => {
-            let message = lettre::Message::builder()
-                .from(
-                    config
-                        .smtp
-                        .as_ref()
-                        .unwrap()
-                        .from
-                        .parse()
-                        .expect("smtp.from"),
-                )
-                .to(email.parse().expect("invite email"))
-                .subject("You're invited")
-                .body(format!(
-                    "You've been invited. This link is yours for {} days:\n\n{link}\n",
-                    im_core::accounts::INVITE_DAYS
-                ))
-                .expect("invite mail");
-            use lettre::AsyncTransport;
-            mailer
-                .send(message)
-                .await
-                .expect("failed to send the invite");
-            println!("im      invite mailed to {email}");
-        }
-        None => println!("im      invite for {email}: {link}"),
+    im_core::events::log(
+        &store,
+        "invite_created",
+        Some("cli"),
+        Some(&format!(
+            "for {email}{}",
+            if admin { " (admin)" } else { "" }
+        )),
+    )
+    .await;
+    match mailer::send_invite(&store, &config.issuer, email, token.expose()).await {
+        Ok(link) => println!("im      invite mailed to {email}\nim      {link}"),
+        Err(_) => println!(
+            "im      invite for {email}: {}/invite/{}",
+            config.issuer,
+            token.expose()
+        ),
     }
+}
+
+/// `im-web revoke <email>`: signs the person out everywhere — central
+/// sessions, refresh tokens, and the app sessions introspection answers for.
+async fn revoke(config: Config, email: &str) {
+    let store = open_store(&config).await;
+    let Some(user) = im_core::accounts::user_by_email(&store, email)
+        .await
+        .expect("failed to read users")
+    else {
+        eprintln!("im: no account for {email}");
+        std::process::exit(1);
+    };
+    let count = im_core::sessions::revoke_user_sessions(&store, &user.id)
+        .await
+        .expect("failed to revoke");
+    im_core::events::log(&store, "sessions_revoked", Some("cli"), Some(email)).await;
+    println!("im      {email}: {count} session(s) revoked, everywhere, now");
 }
 
 /// `im-web create-client <name> <uris...>`: registers a relying party and
@@ -120,21 +153,6 @@ async fn create_client(config: Config, name: &str, uris: &[String]) {
     println!("  client_id     {id}");
     println!("  client_secret {}", secret.expose());
     println!("  (the secret is shown once; its digest is all the database keeps)");
-}
-
-fn build_mailer(config: &Config) -> Option<lettre::AsyncSmtpTransport<lettre::Tokio1Executor>> {
-    let smtp = config.smtp.as_ref()?;
-    let creds = lettre::transport::smtp::authentication::Credentials::new(
-        smtp.username.clone(),
-        smtp.password.clone(),
-    );
-    Some(
-        lettre::AsyncSmtpTransport::<lettre::Tokio1Executor>::relay(&smtp.host)
-            .expect("smtp relay")
-            .port(smtp.port)
-            .credentials(creds)
-            .build(),
-    )
 }
 
 async fn serve(config: Config) {

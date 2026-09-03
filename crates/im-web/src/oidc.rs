@@ -81,7 +81,7 @@ fn bad_request(cx: &Cx) -> Result<Response> {
 
 /// Percent-encodes a value for a query pair — the `back` a login carries is
 /// a local `/authorize?...` URL, full of `?&=` of its own.
-fn urlencode(raw: &str) -> String {
+pub(crate) fn urlencode(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for byte in raw.bytes() {
         match byte {
@@ -228,13 +228,22 @@ async fn mint_tokens(
     ))
 }
 
-fn token_answer(cx: &Cx, access: String, id: String, refresh: String) -> Result<Response> {
+fn token_answer(
+    cx: &Cx,
+    access: String,
+    id: String,
+    refresh: String,
+    app_session: Option<String>,
+) -> Result<Response> {
     Json(serde_json::json!({
         "access_token": access,
         "token_type": "Bearer",
         "expires_in": oidc::TOKEN_SECONDS,
         "refresh_token": refresh,
         "id_token": id,
+        // Not OIDC — ours: the opaque, introspected session im-client holds.
+        // Standard clients ignore it; ours never leaves its ghost window.
+        "app_session": app_session,
     }))
     .into_response(cx)
 }
@@ -286,7 +295,27 @@ async fn exchange(cx: &Cx, Form(input): Form<TokenForm>) -> Result<Response> {
                 &consumed.session_hash,
             )
             .await?;
-            token_answer(cx, access, id, refresh.expose().to_string())
+            let app_session = oidc::issue_app_session(
+                &app(cx).store,
+                &user.id,
+                &client.client_id,
+                &consumed.session_hash,
+            )
+            .await?;
+            im_core::events::log(
+                &app(cx).store,
+                "code_exchanged",
+                Some(&user.email),
+                Some(&format!("via {}", client.name)),
+            )
+            .await;
+            token_answer(
+                cx,
+                access,
+                id,
+                refresh.expose().to_string(),
+                Some(app_session.expose().to_string()),
+            )
         }
         "refresh_token" => {
             let Some(presented) = input.refresh_token else {
@@ -306,10 +335,41 @@ async fn exchange(cx: &Cx, Form(input): Form<TokenForm>) -> Result<Response> {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
             }
             let (access, id) = mint_tokens(cx, &user, &client.client_id, None).await?;
-            token_answer(cx, access, id, fresh.expose().to_string())
+            token_answer(cx, access, id, fresh.expose().to_string(), None)
         }
         _ => oidc_error(cx, StatusCode::BAD_REQUEST, "unsupported_grant_type"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// /introspect (RFC 7662): the per-request liveness check im-client makes
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct IntrospectForm {
+    token: String,
+    client_id: Option<String>,
+    client_secret: Option<String>,
+}
+
+/// The app asks, per request: is this session alive, and whose is it? The
+/// answer is never cached server-side, so a revoked user is inactive on the
+/// very next call.
+#[route(POST "/introspect")]
+async fn introspect(cx: &Cx, Form(input): Form<IntrospectForm>) -> Result<Response> {
+    let (Some(client_id), Some(secret)) = (input.client_id, input.client_secret) else {
+        return oidc_error(cx, StatusCode::UNAUTHORIZED, "invalid_client");
+    };
+    let Some(client) = oidc::client_by_id(&app(cx).store, &client_id).await? else {
+        return oidc_error(cx, StatusCode::UNAUTHORIZED, "invalid_client");
+    };
+    if !oidc::verify_client_secret(&client, &secret) {
+        return oidc_error(cx, StatusCode::UNAUTHORIZED, "invalid_client");
+    }
+    let answer = oidc::introspect_app_session(&app(cx).store, &input.token, &client_id)
+        .await?
+        .unwrap_or_else(|| serde_json::json!({ "active": false }));
+    Json(answer).into_response(cx)
 }
 
 // ---------------------------------------------------------------------------

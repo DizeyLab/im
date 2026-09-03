@@ -61,15 +61,22 @@ pub async fn resolve_session(store: &Store, token: &str) -> Result<Option<User>>
     }
 }
 
-/// Revokes a session and every refresh token bound to it.
+/// Revokes a session and everything bound to it: refresh tokens and the
+/// opaque app sessions introspection answers for.
 pub async fn revoke_session(store: &Store, token: &str) -> Result<()> {
-    let now = store::stamp(store::now())?;
     let hash = hash_token(token);
+    revoke_session_hash(store, &hash).await
+}
+
+/// The hash-level half of [`revoke_session`], shared with the admin's
+/// revoke-everything below.
+pub(crate) async fn revoke_session_hash(store: &Store, hash: &str) -> Result<()> {
+    let now = store::stamp(store::now())?;
     store
         .conn
         .execute(
             "UPDATE sessions SET revoked_at = ?1 WHERE token_hash = ?2 AND revoked_at IS NULL",
-            turso::params![now.clone(), hash.clone()],
+            turso::params![now.clone(), hash],
         )
         .await
         .map_err(backend)?;
@@ -77,11 +84,62 @@ pub async fn revoke_session(store: &Store, token: &str) -> Result<()> {
         .conn
         .execute(
             "UPDATE refresh_tokens SET revoked_at = ?1 WHERE session_hash = ?2 AND revoked_at IS NULL",
+            turso::params![now.clone(), hash],
+        )
+        .await
+        .map_err(backend)?;
+    store
+        .conn
+        .execute(
+            "UPDATE app_sessions SET revoked_at = ?1 WHERE session_hash = ?2 AND revoked_at IS NULL",
             turso::params![now, hash],
         )
         .await
         .map_err(backend)?;
     Ok(())
+}
+
+/// The admin's "log this person out everywhere": every central session of
+/// theirs dies, and the cascades above take every refresh token and every
+/// live app session down with them. Introspection is per-request, so the
+/// next call any app makes on their behalf comes back inactive — no ghost.
+pub async fn revoke_user_sessions(store: &Store, user: &UserId) -> Result<u64> {
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT token_hash FROM sessions WHERE user_id = ?1 AND revoked_at IS NULL",
+            turso::params![user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    let mut hashes = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        hashes.push(store::text(&row, 0)?);
+    }
+    let count = hashes.len() as u64;
+    for hash in hashes {
+        revoke_session_hash(store, &hash).await?;
+    }
+    // Sessions already revoked earlier still own live app sessions; sweep
+    // those too so nothing outlives the person being signed out.
+    let now = store::stamp(store::now())?;
+    store
+        .conn
+        .execute(
+            "UPDATE app_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
+            turso::params![now.clone(), user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    store
+        .conn
+        .execute(
+            "UPDATE refresh_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
+            turso::params![now, user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(count)
 }
 
 #[cfg(test)]
@@ -92,7 +150,7 @@ mod tests {
 
     async fn fixture() -> (Store, UserId) {
         let store = Store::open(Path::new(":memory:")).await.unwrap();
-        let invite = create_invite(&store, "ann@example.com", None)
+        let invite = create_invite(&store, "ann@example.com", None, false)
             .await
             .unwrap();
         let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")

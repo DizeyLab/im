@@ -408,6 +408,9 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             <span class="auth-submit-text">"Sign out everywhere"</span>
                         </button>
                     </form>
+                    if user.admin {
+                        <a class="auth-alt" href="/admin">"Admin panel"</a>
+                    }
                 </div>
                 <div class="auth-footer">"im · IzlekLab SSO"</div>
             </div>

@@ -411,6 +411,111 @@ pub async fn verify_jwt(
     Ok(Some(claims))
 }
 
+// ---------------------------------------------------------------------------
+// App sessions: the opaque, introspected session an app actually holds
+// ---------------------------------------------------------------------------
+
+/// How long an app session may live when nothing revokes it first.
+pub const APP_SESSION_DAYS: i64 = 30;
+
+/// Mints an opaque app session bound to the central session that authorized
+/// it. The app stores only this token; every request it serves introspects
+/// the token against im, so revocation is immediate rather than
+/// token-TTL-bounded.
+pub async fn issue_app_session(
+    store: &Store,
+    user: &UserId,
+    client_id: &ClientId,
+    session_hash: &str,
+) -> Result<Token> {
+    let token = Token::mint();
+    let now = store::now();
+    store
+        .conn
+        .execute(
+            "INSERT INTO app_sessions \
+             (token_hash, user_id, client_id, session_hash, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            turso::params![
+                token.hash(),
+                user.to_string(),
+                client_id.to_string(),
+                session_hash,
+                store::stamp(now)?,
+                store::stamp(now + time::Duration::days(APP_SESSION_DAYS))?,
+            ],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(token)
+}
+
+/// RFC 7662's answer shape: who this token is, or inactive. Inactive covers
+/// unknown, expired, revoked, a revoked central session, a disabled user, or
+/// a token presented by a client it was never issued to.
+pub async fn introspect_app_session(
+    store: &Store,
+    token: &str,
+    client_id: &str,
+) -> Result<Option<serde_json::Value>> {
+    let mut rows = store
+        .conn
+        .query(
+            "SELECT user_id, client_id, session_hash, expires_at, revoked_at \
+             FROM app_sessions WHERE token_hash = ?1",
+            turso::params![hash_token(token)],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    if store::opt_text(&row, 4)?.is_some() {
+        return Ok(None);
+    }
+    let expires = store::parse_stamp(&store::text(&row, 3)?)?;
+    if expires < store::now() {
+        return Ok(None);
+    }
+    if store::text(&row, 1)? != client_id {
+        return Ok(None);
+    }
+    // The central session must still be alive — this is what makes admin
+    // revocation immediate.
+    let session_hash = store::text(&row, 2)?;
+    let mut sessions = store
+        .conn
+        .query(
+            "SELECT expires_at, revoked_at FROM sessions WHERE token_hash = ?1",
+            turso::params![session_hash],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(session) = sessions.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    if store::opt_text(&session, 1)?.is_some() {
+        return Ok(None);
+    }
+    if store::parse_stamp(&store::text(&session, 0)?)? < store::now() {
+        return Ok(None);
+    }
+    let user_id = UserId::from(store::text(&row, 0)?);
+    let Some(user) = crate::accounts::user_by_id(store, &user_id).await? else {
+        return Ok(None);
+    };
+    if user.disabled {
+        return Ok(None);
+    }
+    Ok(Some(serde_json::json!({
+        "active": true,
+        "sub": user.id.as_str(),
+        "email": user.email,
+        "name": user.name,
+        "exp": expires.unix_timestamp(),
+    })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -419,13 +524,49 @@ mod tests {
     use rsa::signature::Verifier;
     use std::path::Path;
 
+    #[tokio::test]
+    async fn app_session_introspection_and_instant_revoke() {
+        let (store, client_id, user_id) = fixture().await;
+        let session = create_session(&store, &user_id).await.unwrap();
+        let app_token = issue_app_session(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+
+        let active = introspect_app_session(&store, app_token.expose(), client_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(active["active"], true);
+        assert_eq!(active["sub"], user_id.as_str());
+
+        // Another client cannot spend the token.
+        assert!(
+            introspect_app_session(&store, app_token.expose(), "someone-else")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Admin revokes the person: the very next introspection is inactive.
+        crate::sessions::revoke_user_sessions(&store, &user_id)
+            .await
+            .unwrap();
+        assert!(
+            introspect_app_session(&store, app_token.expose(), client_id.as_str())
+                .await
+                .unwrap()
+                .is_none(),
+            "no ghost after admin revocation"
+        );
+    }
+
     async fn fixture() -> (Store, ClientId, UserId) {
         let store = Store::open(Path::new(":memory:")).await.unwrap();
         let (client_id, _secret) =
             create_client(&store, "demo", vec!["http://app/callback".into()])
                 .await
                 .unwrap();
-        let invite = create_invite(&store, "ann@example.com", None)
+        let invite = create_invite(&store, "ann@example.com", None, false)
             .await
             .unwrap();
         let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
