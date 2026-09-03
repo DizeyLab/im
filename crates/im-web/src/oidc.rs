@@ -302,7 +302,8 @@ async fn exchange(cx: &Cx, Form(input): Form<TokenForm>) -> Result<Response> {
                 &consumed.session_hash,
             )
             .await?;
-            server::log_event(cx,
+            server::log_event(
+                cx,
                 "code_exchanged",
                 Some(&user.email),
                 Some(&format!("via {}", client.name)),

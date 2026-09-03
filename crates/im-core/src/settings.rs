@@ -38,8 +38,8 @@ impl Smtp {
 }
 
 async fn get(store: &Store, key: &str) -> Result<Option<String>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT value FROM settings WHERE key = ?1",
             turso::params![key],
@@ -53,13 +53,20 @@ async fn get(store: &Store, key: &str) -> Result<Option<String>> {
 }
 
 async fn set(store: &Store, key: &str, value: &str) -> Result<()> {
-    store
-        .conn
-        .execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2) \
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            turso::params![key, value],
-        )
+        turso::params![key, value],
+    )
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+async fn remove(store: &Store, key: &str) -> Result<()> {
+    let conn = store.conn.lock().await;
+    conn.execute("DELETE FROM settings WHERE key = ?1", turso::params![key])
         .await
         .map_err(backend)?;
     Ok(())
@@ -177,10 +184,9 @@ pub async fn last_check(store: &Store) -> Result<Option<SenderCheck>> {
 /// A saved sender cannot borrow the last probe's verdict: the check is
 /// cleared on every settings write, like izlek's.
 async fn clear_check(store: &Store) -> Result<()> {
+    let conn = store.conn.lock().await;
     for key in ["smtp_check_at", "smtp_check_ms", "smtp_check_error"] {
-        store
-            .conn
-            .execute("DELETE FROM settings WHERE key = ?1", turso::params![key])
+        conn.execute("DELETE FROM settings WHERE key = ?1", turso::params![key])
             .await
             .map_err(backend)?;
     }
@@ -201,11 +207,7 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
             "smtp_check_ms",
             "smtp_check_error",
         ] {
-            store
-                .conn
-                .execute("DELETE FROM settings WHERE key = ?1", turso::params![key])
-                .await
-                .map_err(backend)?;
+            remove(store, key).await?;
         }
         return Ok(());
     }
@@ -227,6 +229,122 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
         }
     }
     Ok(())
+}
+
+/// The panel-tunable policy, with the defaults the code was born with. Every
+/// reader falls back to the default when the key is absent, so a fresh
+/// database behaves exactly like the pre-settings build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Policy {
+    pub invite_days: i64,
+    pub session_days: i64,
+    pub pending_minutes: i64,
+    pub reset_minutes: i64,
+    pub login_attempts_per_hour: i64,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            invite_days: 7,
+            session_days: 30,
+            pending_minutes: 10,
+            reset_minutes: 60,
+            login_attempts_per_hour: 10,
+        }
+    }
+}
+
+async fn number(store: &Store, key: &str, default: i64) -> Result<i64> {
+    Ok(get(store, key)
+        .await?
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(default))
+}
+
+/// The policy as stored, defaults filled in.
+pub async fn policy(store: &Store) -> Result<Policy> {
+    let defaults = Policy::default();
+    Ok(Policy {
+        invite_days: number(store, "invite_days", defaults.invite_days).await?,
+        session_days: number(store, "session_days", defaults.session_days).await?,
+        pending_minutes: number(store, "pending_minutes", defaults.pending_minutes).await?,
+        reset_minutes: number(store, "reset_minutes", defaults.reset_minutes).await?,
+        login_attempts_per_hour: number(
+            store,
+            "login_attempts_per_hour",
+            defaults.login_attempts_per_hour,
+        )
+        .await?,
+    })
+}
+
+/// Writes the policy. Values under one are refused by the panel before they
+/// get here; zero or negative would be a door that never opens, so they are
+/// clamped to the default rather than stored.
+pub async fn set_policy(store: &Store, policy: &Policy) -> Result<()> {
+    let defaults = Policy::default();
+    let clamp = |value: i64, default: i64| if value >= 1 { value } else { default };
+    set(
+        store,
+        "invite_days",
+        &clamp(policy.invite_days, defaults.invite_days).to_string(),
+    )
+    .await?;
+    set(
+        store,
+        "session_days",
+        &clamp(policy.session_days, defaults.session_days).to_string(),
+    )
+    .await?;
+    set(
+        store,
+        "pending_minutes",
+        &clamp(policy.pending_minutes, defaults.pending_minutes).to_string(),
+    )
+    .await?;
+    set(
+        store,
+        "reset_minutes",
+        &clamp(policy.reset_minutes, defaults.reset_minutes).to_string(),
+    )
+    .await?;
+    set(
+        store,
+        "login_attempts_per_hour",
+        &clamp(
+            policy.login_attempts_per_hour,
+            defaults.login_attempts_per_hour,
+        )
+        .to_string(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Days an invite link stays valid.
+pub async fn invite_days(store: &Store) -> Result<i64> {
+    number(store, "invite_days", Policy::default().invite_days).await
+}
+
+/// Minutes between password and second factor before the pending marker dies.
+pub async fn pending_minutes(store: &Store) -> Result<i64> {
+    number(store, "pending_minutes", Policy::default().pending_minutes).await
+}
+
+/// Minutes a password-reset link stays valid.
+pub async fn reset_minutes(store: &Store) -> Result<i64> {
+    number(store, "reset_minutes", Policy::default().reset_minutes).await
+}
+
+/// Failed sign-ins per address per hour before the door refuses to listen.
+pub async fn login_attempts_per_hour(store: &Store) -> Result<i64> {
+    number(
+        store,
+        "login_attempts_per_hour",
+        Policy::default().login_attempts_per_hour,
+    )
+    .await
 }
 
 #[cfg(test)]

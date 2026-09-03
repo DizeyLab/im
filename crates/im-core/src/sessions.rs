@@ -9,7 +9,9 @@ use crate::accounts::{Token, hash_token};
 use crate::model::{User, UserId};
 use crate::store::{self, Result, Store, backend};
 
-/// How long a central session lives.
+/// The default central-session lifetime. The panel's Settings section can
+/// move it; the constant stays the fresh-database answer and the cookie's
+/// Max-Age (which is set before the store is in hand).
 pub const SESSION_DAYS: i64 = 30;
 
 /// Creates a session for `user`, returning the raw cookie token. The row
@@ -17,44 +19,50 @@ pub const SESSION_DAYS: i64 = 30;
 pub async fn create_session(store: &Store, user: &UserId) -> Result<Token> {
     let token = Token::mint();
     let now = store::now();
-    store
-        .conn
-        .execute(
-            "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) \
+    let days = crate::settings::policy(store).await?.session_days;
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "INSERT INTO sessions (token_hash, user_id, created_at, expires_at) \
              VALUES (?1, ?2, ?3, ?4)",
-            turso::params![
-                token.hash(),
-                user.to_string(),
-                store::stamp(now)?,
-                store::stamp(now + time::Duration::days(SESSION_DAYS))?,
-            ],
-        )
-        .await
-        .map_err(backend)?;
+        turso::params![
+            token.hash(),
+            user.to_string(),
+            store::stamp(now)?,
+            store::stamp(now + time::Duration::days(days))?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
     Ok(token)
 }
 
 /// Resolves a raw cookie token to its user. `None` for unknown, expired,
 /// revoked, or disabled — every one of them is "please log in again".
 pub async fn resolve_session(store: &Store, token: &str) -> Result<Option<User>> {
-    let mut rows = store
-        .conn
-        .query(
-            "SELECT user_id, expires_at, revoked_at FROM sessions WHERE token_hash = ?1",
-            turso::params![hash_token(token)],
-        )
-        .await
-        .map_err(backend)?;
-    let Some(row) = rows.next().await.map_err(backend)? else {
+    // The session row is read under a short-held guard; the user lookup locks
+    // for itself once the guard is dropped.
+    let found = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT user_id, expires_at, revoked_at FROM sessions WHERE token_hash = ?1",
+                turso::params![hash_token(token)],
+            )
+            .await
+            .map_err(backend)?;
+        match rows.next().await.map_err(backend)? {
+            Some(row)
+                if store::opt_text(&row, 2)?.is_none()
+                    && store::parse_stamp(&store::text(&row, 1)?)? >= store::now() =>
+            {
+                Some(UserId::from(store::text(&row, 0)?))
+            }
+            _ => None,
+        }
+    };
+    let Some(user_id) = found else {
         return Ok(None);
     };
-    if store::opt_text(&row, 2)?.is_some() {
-        return Ok(None);
-    }
-    if store::parse_stamp(&store::text(&row, 1)?)? < store::now() {
-        return Ok(None);
-    }
-    let user_id = UserId::from(store::text(&row, 0)?);
     match crate::accounts::user_by_id(store, &user_id).await? {
         Some(user) if !user.disabled => Ok(Some(user)),
         _ => Ok(None),
@@ -71,31 +79,26 @@ pub async fn revoke_session(store: &Store, token: &str) -> Result<()> {
 /// The hash-level half of [`revoke_session`], shared with the admin's
 /// revoke-everything below.
 pub(crate) async fn revoke_session_hash(store: &Store, hash: &str) -> Result<()> {
+    let conn = store.conn.lock().await;
     let now = store::stamp(store::now())?;
-    store
-        .conn
-        .execute(
-            "UPDATE sessions SET revoked_at = ?1 WHERE token_hash = ?2 AND revoked_at IS NULL",
-            turso::params![now.clone(), hash],
-        )
-        .await
-        .map_err(backend)?;
-    store
-        .conn
-        .execute(
-            "UPDATE refresh_tokens SET revoked_at = ?1 WHERE session_hash = ?2 AND revoked_at IS NULL",
-            turso::params![now.clone(), hash],
-        )
-        .await
-        .map_err(backend)?;
-    store
-        .conn
-        .execute(
-            "UPDATE app_sessions SET revoked_at = ?1 WHERE session_hash = ?2 AND revoked_at IS NULL",
-            turso::params![now, hash],
-        )
-        .await
-        .map_err(backend)?;
+    conn.execute(
+        "UPDATE sessions SET revoked_at = ?1 WHERE token_hash = ?2 AND revoked_at IS NULL",
+        turso::params![now.clone(), hash],
+    )
+    .await
+    .map_err(backend)?;
+    conn.execute(
+        "UPDATE refresh_tokens SET revoked_at = ?1 WHERE session_hash = ?2 AND revoked_at IS NULL",
+        turso::params![now.clone(), hash],
+    )
+    .await
+    .map_err(backend)?;
+    conn.execute(
+        "UPDATE app_sessions SET revoked_at = ?1 WHERE session_hash = ?2 AND revoked_at IS NULL",
+        turso::params![now, hash],
+    )
+    .await
+    .map_err(backend)?;
     Ok(())
 }
 
@@ -104,18 +107,23 @@ pub(crate) async fn revoke_session_hash(store: &Store, hash: &str) -> Result<()>
 /// live app session down with them. Introspection is per-request, so the
 /// next call any app makes on their behalf comes back inactive — no ghost.
 pub async fn revoke_user_sessions(store: &Store, user: &UserId) -> Result<u64> {
-    let mut rows = store
-        .conn
-        .query(
-            "SELECT token_hash FROM sessions WHERE user_id = ?1 AND revoked_at IS NULL",
-            turso::params![user.to_string()],
-        )
-        .await
-        .map_err(backend)?;
-    let mut hashes = Vec::new();
-    while let Some(row) = rows.next().await.map_err(backend)? {
-        hashes.push(store::text(&row, 0)?);
-    }
+    // Read under a short guard; the per-session revokes and the final sweep
+    // lock for themselves.
+    let hashes = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT token_hash FROM sessions WHERE user_id = ?1 AND revoked_at IS NULL",
+                turso::params![user.to_string()],
+            )
+            .await
+            .map_err(backend)?;
+        let mut hashes = Vec::new();
+        while let Some(row) = rows.next().await.map_err(backend)? {
+            hashes.push(store::text(&row, 0)?);
+        }
+        hashes
+    };
     let count = hashes.len() as u64;
     for hash in hashes {
         revoke_session_hash(store, &hash).await?;
@@ -123,22 +131,19 @@ pub async fn revoke_user_sessions(store: &Store, user: &UserId) -> Result<u64> {
     // Sessions already revoked earlier still own live app sessions; sweep
     // those too so nothing outlives the person being signed out.
     let now = store::stamp(store::now())?;
-    store
-        .conn
-        .execute(
-            "UPDATE app_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
-            turso::params![now.clone(), user.to_string()],
-        )
-        .await
-        .map_err(backend)?;
-    store
-        .conn
-        .execute(
-            "UPDATE refresh_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
-            turso::params![now, user.to_string()],
-        )
-        .await
-        .map_err(backend)?;
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "UPDATE app_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
+        turso::params![now.clone(), user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
+    conn.execute(
+        "UPDATE refresh_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
+        turso::params![now, user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
     Ok(count)
 }
 
@@ -151,19 +156,22 @@ pub async fn revoke_user_sessions_except(
     keep_token: &str,
 ) -> Result<u64> {
     let keep = hash_token(keep_token);
-    let mut rows = store
-        .conn
-        .query(
-            "SELECT token_hash FROM sessions \
-             WHERE user_id = ?1 AND revoked_at IS NULL AND token_hash != ?2",
-            turso::params![user.to_string(), keep.clone()],
-        )
-        .await
-        .map_err(backend)?;
-    let mut hashes = Vec::new();
-    while let Some(row) = rows.next().await.map_err(backend)? {
-        hashes.push(store::text(&row, 0)?);
-    }
+    let hashes = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT token_hash FROM sessions \
+                 WHERE user_id = ?1 AND revoked_at IS NULL AND token_hash != ?2",
+                turso::params![user.to_string(), keep.clone()],
+            )
+            .await
+            .map_err(backend)?;
+        let mut hashes = Vec::new();
+        while let Some(row) = rows.next().await.map_err(backend)? {
+            hashes.push(store::text(&row, 0)?);
+        }
+        hashes
+    };
     let count = hashes.len() as u64;
     for hash in &hashes {
         revoke_session_hash(store, hash).await?;
@@ -171,24 +179,21 @@ pub async fn revoke_user_sessions_except(
     // The kept session is the only one allowed to keep its app sessions and
     // refresh tokens; everything else of this user's is swept.
     let now = store::stamp(store::now())?;
-    store
-        .conn
-        .execute(
-            "UPDATE app_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL \
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "UPDATE app_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL \
              AND session_hash != ?3",
-            turso::params![now.clone(), user.to_string(), keep.clone()],
-        )
-        .await
-        .map_err(backend)?;
-    store
-        .conn
-        .execute(
-            "UPDATE refresh_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL \
+        turso::params![now.clone(), user.to_string(), keep.clone()],
+    )
+    .await
+    .map_err(backend)?;
+    conn.execute(
+        "UPDATE refresh_tokens SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL \
              AND session_hash != ?3",
-            turso::params![now, user.to_string(), keep],
-        )
-        .await
-        .map_err(backend)?;
+        turso::params![now, user.to_string(), keep],
+    )
+    .await
+    .map_err(backend)?;
     Ok(count)
 }
 

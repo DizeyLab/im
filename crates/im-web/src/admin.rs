@@ -135,6 +135,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
             ("account", "Account"),
             ("users", "Users"),
             ("mail", "Mail"),
+            ("settings", "Settings"),
             ("logs", "Logs"),
         ]
         .into_iter()
@@ -149,6 +150,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
 
     let section_html = match section.as_str() {
         "mail" => mail_section(cx).await?,
+        "settings" => settings_section(cx).await?,
         "logs" => logs_section(cx).await?,
         "users" => users_section(cx, &me, invited.as_deref()).await?,
         _ => account_section(&me),
@@ -167,6 +169,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                 "password" => "Password changed — every other device is signed out.",
                 "uninvited" => "Invite invalidated — the link is dead.",
                 "deleted" => "Account deleted.",
+                "settings" => "Settings saved.",
                 _ => "Done.",
             }
         )),
@@ -342,6 +345,68 @@ async fn users_section(
   </form>
 </div>"#
     ))
+}
+
+/// The knobs the code shipped with, now the panel's: invite and reset link
+/// lifetimes, the sign-in session's days, the pending marker's minutes, and
+/// the sign-in failure ceiling. Same form skin as Mail.
+async fn settings_section(cx: &Cx) -> Result<String, topcoat::Error> {
+    let policy = settings::policy(&app(cx).store).await?;
+    Ok(format!(
+        r#"<div class="admin-card">
+  <div class="auth-title">Settings</div>
+  <div class="auth-sub">The rules identity lives by. They apply from the next invite, sign-in or link — nothing already minted is rewritten.</div>
+  <form method="post" action="/admin/settings" class="admin-form">
+    <label class="auth-field"><span class="auth-label">Invite link, days</span>
+      <input class="auth-input auth-input-mono" type="number" name="invite_days" min="1" value="{}"></label>
+    <label class="auth-field"><span class="auth-label">Sign-in session, days</span>
+      <input class="auth-input auth-input-mono" type="number" name="session_days" min="1" value="{}"></label>
+    <label class="auth-field"><span class="auth-label">Second-factor window, minutes</span>
+      <input class="auth-input auth-input-mono" type="number" name="pending_minutes" min="1" value="{}"></label>
+    <label class="auth-field"><span class="auth-label">Reset link, minutes</span>
+      <input class="auth-input auth-input-mono" type="number" name="reset_minutes" min="1" value="{}"></label>
+    <label class="auth-field"><span class="auth-label">Failed sign-ins per address per hour</span>
+      <input class="auth-input auth-input-mono" type="number" name="login_attempts_per_hour" min="1" value="{}"></label>
+    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Save</span></button>
+  </form>
+</div>"#,
+        policy.invite_days,
+        policy.session_days,
+        policy.pending_minutes,
+        policy.reset_minutes,
+        policy.login_attempts_per_hour,
+    ))
+}
+
+#[derive(Deserialize)]
+struct PolicyForm {
+    invite_days: i64,
+    session_days: i64,
+    pending_minutes: i64,
+    reset_minutes: i64,
+    login_attempts_per_hour: i64,
+}
+
+#[route(POST "/admin/settings")]
+async fn settings_save(cx: &Cx, Form(input): Form<PolicyForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let store = &app(cx).store;
+    settings::set_policy(
+        store,
+        &settings::Policy {
+            invite_days: input.invite_days,
+            session_days: input.session_days,
+            pending_minutes: input.pending_minutes,
+            reset_minutes: input.reset_minutes,
+            login_attempts_per_hour: input.login_attempts_per_hour,
+        },
+    )
+    .await?;
+    server::log_event(cx, "settings_updated", Some(&me.email), None).await;
+    back(cx, "settings", "&ok=settings")
 }
 
 async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {

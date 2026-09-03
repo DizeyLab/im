@@ -55,10 +55,21 @@ pub struct LoginForm {
 async fn login(cx: &Cx, Form(input): Form<LoginForm>) -> Redirect {
     let back = safe_back(input.back.as_deref().unwrap_or("/")).to_string();
     let store = &server::app(cx).store;
+    // The door stops listening after the panel's per-hour allowance of
+    // failures. The refusal says nothing about which step refused, as always.
+    let key = input.email.trim().to_lowercase();
+    if accounts::login_blocked(store, &key).await? {
+        server::log_event(cx, "login_limited", Some(&key), None).await;
+        return see(format!(
+            "/login?error=rate_limited&back={}",
+            urlencode(&back)
+        ));
+    }
     match accounts::verify_login(store, &input.email, &input.password).await {
         Ok(user) if user.totp_confirmed => {
-            let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Login, back);
-            server::set_pending_cookie(cx, sealed);
+            let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Login, back).await;
+            server::set_pending_cookie(cx, sealed).await;
+            let _ = accounts::clear_login_failures(store, &key).await;
             see("/login/totp".to_string())
         }
         Ok(user) => {
@@ -69,13 +80,15 @@ async fn login(cx: &Cx, Form(input): Form<LoginForm>) -> Redirect {
                 let secret = im_core::totp::generate_secret();
                 im_core::totp::set_totp(store, &user.id, &secret).await?;
             }
-            let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, back);
-            server::set_pending_cookie(cx, sealed);
+            let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, back).await;
+            server::set_pending_cookie(cx, sealed).await;
+            let _ = accounts::clear_login_failures(store, &key).await;
             see("/enroll".to_string())
         }
         Err(_) => {
             // The failure is logged against the address tried, never the
             // password — and never whether the address exists.
+            let _ = accounts::record_login_failure(store, &key).await;
             server::log_event(cx, "login_fail", Some(&input.email), None).await;
             see(format!("/login?error=bad_login&back={}", urlencode(&back)))
         }
@@ -111,10 +124,20 @@ async fn login_totp(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
         },
         None => false,
     };
+    // The second factor gets the same ceiling as the first, keyed on the
+    // account, so an attacker past the password cannot grind codes either.
+    let totp_key = format!("totp:{}", pending.user);
+    if accounts::login_blocked(store, &totp_key).await? {
+        server::log_event(cx, "login_limited", None, Some("2fa")).await;
+        server::clear_pending_cookie(cx);
+        return see("/login?error=rate_limited".to_string());
+    }
     if !ok {
+        let _ = accounts::record_login_failure(store, &totp_key).await;
         server::log_event(cx, "totp_fail", None, Some("login")).await;
         return see("/login/totp?error=bad_code".to_string());
     }
+    let _ = accounts::clear_login_failures(store, &totp_key).await;
     let token = im_core::sessions::create_session(store, &user_id).await?;
     let email = accounts::user_by_id(store, &user_id)
         .await?
@@ -173,8 +196,8 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Redirect {
     // enrolment page is the only way forward.
     let secret = im_core::totp::generate_secret();
     im_core::totp::set_totp(store, &user.id, &secret).await?;
-    let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, "/".to_string());
-    server::set_pending_cookie(cx, sealed);
+    let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, "/".to_string()).await;
+    server::set_pending_cookie(cx, sealed).await;
     server::log_event(cx, "invite_accepted", Some(&user.email), None).await;
     see("/enroll".to_string())
 }
@@ -225,4 +248,62 @@ async fn logout(cx: &Cx) -> Redirect {
     }
     server::clear_session_cookie(cx);
     see("/".to_string())
+}
+
+#[derive(Deserialize)]
+pub struct ForgotForm {
+    email: String,
+}
+
+/// The self-serve reset ask. It answers every address the same — the mail
+/// either exists or it doesn't, and the page never says which. Each ask
+/// retires the address's previous live link: the newest mail is the only
+/// door.
+#[route(POST "/forgot")]
+async fn forgot(cx: &Cx, Form(input): Form<ForgotForm>) -> Redirect {
+    let store = &server::app(cx).store;
+    let email = input.email.trim().to_string();
+    if let Some(token) = accounts::create_reset(store, &email).await? {
+        let issuer = server::app(cx).config.issuer.clone();
+        if crate::mailer::send_reset(store, &issuer, &email, token.expose())
+            .await
+            .is_ok()
+        {
+            server::log_event(cx, "reset_sent", Some(&email), None).await;
+        }
+    }
+    see("/forgot?ok=sent".to_string())
+}
+
+#[derive(Deserialize)]
+pub struct ResetForm {
+    token: String,
+    password: String,
+    password_confirm: String,
+}
+
+/// Redeems a reset link: new password in, every session out. A dead link is
+/// sent back to the ask — the form it came from is gone with it.
+#[route(POST "/reset")]
+async fn reset(cx: &Cx, Form(input): Form<ResetForm>) -> Redirect {
+    if input.password != input.password_confirm {
+        return see(format!("/reset/{}?error=passwords_differ", input.token));
+    }
+    let store = &server::app(cx).store;
+    match accounts::redeem_reset(store, &input.token, &input.password).await {
+        Ok(user) => {
+            server::log_event(cx, "password_reset", Some(&user.email), None).await;
+            see("/login?ok=reset".to_string())
+        }
+        Err(AccountError::Password(problem)) => {
+            let code = match problem {
+                im_core::accounts::PasswordProblem::TooShort => "password_too_short",
+                im_core::accounts::PasswordProblem::LooksLikeYou => "password_personal",
+                _ => "passwords_differ",
+            };
+            see(format!("/reset/{}?error={code}", input.token))
+        }
+        Err(AccountError::ResetInvalid) => see("/forgot?error=reset_invalid".to_string()),
+        Err(e) => Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
+    }
 }

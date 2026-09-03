@@ -104,6 +104,18 @@ CREATE TABLE IF NOT EXISTS events (
   actor TEXT,
   detail TEXT
 );
+CREATE TABLE IF NOT EXISTS reset_links (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS login_attempts (
+  key TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS login_attempts_key ON login_attempts(key, at);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -113,7 +125,7 @@ CREATE TABLE IF NOT EXISTS settings (
 /// One database handle with the at-rest key beside it. Turso is a
 /// single-writer engine; one connection per store, like izlek-core.
 pub struct Store {
-    pub(crate) conn: Connection,
+    pub(crate) conn: tokio::sync::Mutex<Connection>,
     pub(crate) key: Key,
 }
 
@@ -127,7 +139,7 @@ impl Store {
         let db = Builder::new_local(raw).build().await.map_err(backend)?;
         let conn = db.connect().map_err(backend)?;
         let store = Store {
-            conn,
+            conn: tokio::sync::Mutex::new(conn),
             key: load_key(path)?,
         };
         store.migrate().await?;
@@ -136,15 +148,15 @@ impl Store {
 
     /// Applies the schema inside one immediate transaction; safe to re-run.
     pub async fn migrate(&self) -> Result<()> {
-        self.conn
-            .execute("BEGIN IMMEDIATE", ())
-            .await
-            .map_err(backend)?;
-        if let Err(e) = self.conn.execute_batch(SCHEMA).await {
-            let _ = self.conn.execute("ROLLBACK", ()).await;
+        // One guard for the whole transaction — nothing interleaves with a
+        // schema write.
+        let conn = self.conn.lock().await;
+        conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
+        if let Err(e) = conn.execute_batch(SCHEMA).await {
+            let _ = conn.execute("ROLLBACK", ()).await;
             return Err(backend(e));
         }
-        self.conn.execute("COMMIT", ()).await.map_err(backend)?;
+        conn.execute("COMMIT", ()).await.map_err(backend)?;
         Ok(())
     }
 
@@ -217,8 +229,8 @@ mod tests {
         let store = Store::open(&path).await.unwrap();
         store.migrate().await.unwrap();
         store.migrate().await.unwrap();
-        let mut rows = store
-            .conn
+        let conn = store.conn.lock().await;
+        let mut rows = conn
             .query("SELECT name FROM sqlite_master WHERE type = 'table'", ())
             .await
             .unwrap();
@@ -234,6 +246,8 @@ mod tests {
             "auth_codes",
             "refresh_tokens",
             "signing_keys",
+            "reset_links",
+            "login_attempts",
         ] {
             assert!(tables.contains(&expected.to_string()), "missing {expected}");
         }

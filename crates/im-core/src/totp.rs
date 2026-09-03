@@ -84,28 +84,26 @@ pub fn verify_totp(secret: &[u8; 20], code: &str, at: OffsetDateTime) -> bool {
 /// Stores a freshly generated secret, sealed, unconfirmed until the user
 /// proves their app agrees (`confirm_totp`).
 pub async fn set_totp(store: &Store, user: &UserId, secret_bytes: &[u8; 20]) -> Result<()> {
+    let conn = store.conn.lock().await;
     let sealed = secret::seal(store.key(), secret_bytes);
-    store
-        .conn
-        .execute(
-            "UPDATE users SET totp_secret = ?1, totp_confirmed = 0 WHERE id = ?2",
-            turso::params![sealed, user.to_string()],
-        )
-        .await
-        .map_err(backend)?;
+    conn.execute(
+        "UPDATE users SET totp_secret = ?1, totp_confirmed = 0 WHERE id = ?2",
+        turso::params![sealed, user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
     Ok(())
 }
 
 /// Marks the stored secret confirmed — called after one successful code.
 pub async fn confirm_totp(store: &Store, user: &UserId) -> Result<()> {
-    store
-        .conn
-        .execute(
-            "UPDATE users SET totp_confirmed = 1 WHERE id = ?1",
-            turso::params![user.to_string()],
-        )
-        .await
-        .map_err(backend)?;
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "UPDATE users SET totp_confirmed = 1 WHERE id = ?1",
+        turso::params![user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
     Ok(())
 }
 
@@ -113,8 +111,8 @@ pub async fn confirm_totp(store: &Store, user: &UserId) -> Result<()> {
 /// TOTP was never set up. A sealed value that no longer opens (wrong key,
 /// damaged ciphertext) reads as `None` — the user re-enrolls.
 pub async fn totp_secret(store: &Store, user: &UserId) -> Result<Option<([u8; 20], bool)>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT totp_secret, totp_confirmed FROM users WHERE id = ?1",
             turso::params![user.to_string()],

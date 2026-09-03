@@ -590,9 +590,16 @@ body:has(.admin-shell) {
 // button skin; the popover names the cost and holds the real button.
 .admin-confirm {
   position: relative;
+  display: inline-flex;
 
+  // The summary wears the button skin verbatim — a native summary is a
+  // list-item, and without inline-flex it stands a few pixels off the real
+  // buttons beside it.
   summary {
     list-style: none;
+    display: inline-flex;
+    align-items: center;
+    box-sizing: border-box;
 
     &::-webkit-details-marker { display: none; }
   }

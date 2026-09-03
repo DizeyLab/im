@@ -67,10 +67,14 @@ pub enum AccountError {
     InvalidCredentials,
     #[error("this invite is not valid")]
     InviteInvalid,
-    #[error("this invite has expired")]
-    InviteExpired,
+    /// Unknown, spent or expired — one refusal for all three, so the page
+    /// never says which.
+    #[error("this reset link is not valid")]
+    ResetInvalid,
     #[error("this invite was already used")]
     InviteSpent,
+    #[error("this invite has expired")]
+    InviteExpired,
     #[error("an account with this address already exists")]
     EmailTaken,
     #[error("password: {0}")]
@@ -240,31 +244,32 @@ pub async fn create_invite(
     }
     let token = Token::mint();
     let now = store::now();
-    let expires = now + time::Duration::days(INVITE_DAYS);
-    store
-        .conn
-        .execute(
-            "INSERT INTO invites (token, email, invited_by, admin, created_at, expires_at) \
+    // The panel's Settings section owns this number now; the constant is the
+    // fresh-database default, not the value.
+    let expires = now + time::Duration::days(crate::settings::invite_days(store).await?);
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "INSERT INTO invites (token, email, invited_by, admin, created_at, expires_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            turso::params![
-                token.hash(),
-                email,
-                invited_by.map(|id| id.to_string()),
-                admin as i64,
-                store::stamp(now)?,
-                store::stamp(expires)?,
-            ],
-        )
-        .await
-        .map_err(backend)?;
+        turso::params![
+            token.hash(),
+            email,
+            invited_by.map(|id| id.to_string()),
+            admin as i64,
+            store::stamp(now)?,
+            store::stamp(expires)?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
     Ok(token)
 }
 
 /// Looks an invite up by its raw token. Expiry and spent-ness are the
 /// caller's to rule on — this answers what the row says.
 pub async fn invite_by_token(store: &Store, token: &str) -> Result<Option<Invite>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT email, invited_by, admin, created_at, expires_at, accepted_at \
              FROM invites WHERE token = ?1",
@@ -303,8 +308,8 @@ pub struct PendingInvite {
 
 /// Invites not yet accepted and not yet expired, oldest first.
 pub async fn list_pending_invites(store: &Store) -> Result<Vec<PendingInvite>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT token, email, admin, created_at, expires_at FROM invites \
              WHERE accepted_at IS NULL AND expires_at > ?1 ORDER BY created_at",
@@ -328,8 +333,8 @@ pub async fn list_pending_invites(store: &Store) -> Result<Vec<PendingInvite>> {
 /// Invalidates an invite: the row is gone, the link reads "not valid" from
 /// that moment on. Returns the address it was made out to, for the log line.
 pub async fn revoke_invite(store: &Store, token_hash: &str) -> Result<Option<String>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT email FROM invites WHERE token = ?1",
             turso::params![token_hash],
@@ -340,14 +345,12 @@ pub async fn revoke_invite(store: &Store, token_hash: &str) -> Result<Option<Str
         return Ok(None);
     };
     let email = store::text(&row, 0)?;
-    store
-        .conn
-        .execute(
-            "DELETE FROM invites WHERE token = ?1",
-            turso::params![token_hash],
-        )
-        .await
-        .map_err(backend)?;
+    conn.execute(
+        "DELETE FROM invites WHERE token = ?1",
+        turso::params![token_hash],
+    )
+    .await
+    .map_err(backend)?;
     Ok(Some(email))
 }
 
@@ -380,57 +383,254 @@ pub async fn create_user_from_invite(
         created_at: store::now(),
     };
     let password_hash = hash_password(password)?;
+    // The lock is taken only now — the reads above (`invite_by_token`) lock
+    // for themselves, and the transaction holds it alone.
+    let conn = store.conn.lock().await;
 
-    store
-        .conn
-        .execute("BEGIN IMMEDIATE", ())
-        .await
-        .map_err(backend)?;
+    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
     let outcome = async {
-        store
-            .conn
-            .execute(
-                "INSERT INTO users (id, email, name, password_hash, admin, created_at) \
+        conn.execute(
+            "INSERT INTO users (id, email, name, password_hash, admin, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                turso::params![
-                    user.id.to_string(),
-                    user.email.clone(),
-                    user.name.clone(),
-                    password_hash,
-                    user.admin as i64,
-                    store::stamp(user.created_at)?,
-                ],
-            )
-            .await
-            .map_err(|e| {
-                let text = e.to_string().to_lowercase();
-                if text.contains("constraint") || text.contains("unique") {
-                    AccountError::EmailTaken
-                } else {
-                    AccountError::Backend(e.to_string())
-                }
-            })?;
-        store
-            .conn
-            .execute(
-                "UPDATE invites SET accepted_at = ?1 WHERE token = ?2 AND accepted_at IS NULL",
-                turso::params![store::stamp(store::now())?, hash_token(token)],
-            )
-            .await
-            .map_err(|e| AccountError::Backend(e.to_string()))?;
+            turso::params![
+                user.id.to_string(),
+                user.email.clone(),
+                user.name.clone(),
+                password_hash,
+                user.admin as i64,
+                store::stamp(user.created_at)?,
+            ],
+        )
+        .await
+        .map_err(|e| {
+            let text = e.to_string().to_lowercase();
+            if text.contains("constraint") || text.contains("unique") {
+                AccountError::EmailTaken
+            } else {
+                AccountError::Backend(e.to_string())
+            }
+        })?;
+        conn.execute(
+            "UPDATE invites SET accepted_at = ?1 WHERE token = ?2 AND accepted_at IS NULL",
+            turso::params![store::stamp(store::now())?, hash_token(token)],
+        )
+        .await
+        .map_err(|e| AccountError::Backend(e.to_string()))?;
         Ok::<_, AccountError>(())
     }
     .await;
     match outcome {
         Ok(()) => {
-            store.conn.execute("COMMIT", ()).await.map_err(backend)?;
+            conn.execute("COMMIT", ()).await.map_err(backend)?;
             Ok(user)
         }
         Err(e) => {
-            let _ = store.conn.execute("ROLLBACK", ()).await;
+            let _ = conn.execute("ROLLBACK", ()).await;
             Err(e)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Password reset
+// ---------------------------------------------------------------------------
+
+/// Mints a reset link for the account at `email`, retiring every previous
+/// live one first: two reset mails means the first is already dead — the
+/// newest link is the only door. `None` for an address with no account, so
+/// the web layer can answer every address identically.
+pub async fn create_reset(
+    store: &Store,
+    email: &str,
+) -> std::result::Result<Option<Token>, AccountError> {
+    let Some(user) = user_by_email(store, email).await? else {
+        return Ok(None);
+    };
+    let token = Token::mint();
+    let now = store::now();
+    let expires = now + time::Duration::minutes(crate::settings::reset_minutes(store).await?);
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "DELETE FROM reset_links WHERE user_id = ?1 AND used_at IS NULL",
+        turso::params![user.id.to_string()],
+    )
+    .await
+    .map_err(backend)?;
+    conn.execute(
+        "INSERT INTO reset_links (token, user_id, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+        turso::params![
+            token.hash(),
+            user.id.to_string(),
+            store::stamp(now)?,
+            store::stamp(expires)?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
+    Ok(Some(token))
+}
+
+/// Turns a valid reset link into a new password. The link is spent, the hash
+/// replaced, and every session revoked in one transaction — the old
+/// password's doors close the moment the new one exists.
+pub async fn redeem_reset(
+    store: &Store,
+    token: &str,
+    password: &str,
+) -> std::result::Result<User, AccountError> {
+    let hash = hash_token(token);
+    // Short-held read first: the row says whether the link may be redeemed.
+    let (user_id, expires_at, used) = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT user_id, expires_at, used_at FROM reset_links WHERE token = ?1",
+                turso::params![hash.clone()],
+            )
+            .await
+            .map_err(backend)?;
+        let Some(row) = rows.next().await.map_err(backend)? else {
+            return Err(AccountError::ResetInvalid);
+        };
+        (
+            UserId::from(store::text(&row, 0)?),
+            store::parse_stamp(&store::text(&row, 1)?)?,
+            store::opt_text(&row, 2)?.is_some(),
+        )
+    };
+    if used || expires_at < store::now() {
+        return Err(AccountError::ResetInvalid);
+    }
+    let user = user_by_id(store, &user_id)
+        .await?
+        .ok_or(AccountError::ResetInvalid)?;
+    check_password(password, &user.email, &user.name)?;
+    let password_hash = hash_password(password)?;
+
+    // The write half holds the lock across its transaction; revocation comes
+    // after COMMIT because `revoke_user_sessions` locks for itself.
+    let conn = store.conn.lock().await;
+    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
+    let outcome = async {
+        conn.execute(
+            "UPDATE reset_links SET used_at = ?1 WHERE token = ?2 AND used_at IS NULL",
+            turso::params![store::stamp(store::now())?, hash],
+        )
+        .await
+        .map_err(|e| AccountError::Backend(e.to_string()))?;
+        conn.execute(
+            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+            turso::params![password_hash, user.id.to_string()],
+        )
+        .await
+        .map_err(|e| AccountError::Backend(e.to_string()))?;
+        Ok::<_, AccountError>(())
+    }
+    .await;
+    match outcome {
+        Ok(()) => {
+            conn.execute("COMMIT", ()).await.map_err(backend)?;
+            drop(conn);
+            crate::sessions::revoke_user_sessions(store, &user.id)
+                .await
+                .map_err(|e| AccountError::Backend(e.to_string()))?;
+            // Owning the mailbox is the proof; past failures stop counting.
+            clear_login_failures(store, &user.email).await?;
+            Ok(user)
+        }
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            Err(e)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sign-in rate limiting
+// ---------------------------------------------------------------------------
+
+/// The counter is a rolling hour of failures per key — the address for
+/// passwords, `totp:{user}` for second factors. Reads and writes both sweep
+/// their own key's stale rows, so the table never grows without bound.
+async fn sweep_attempts(store: &Store, key: &str) -> Result<()> {
+    let conn = store.conn.lock().await;
+    let cutoff = store::stamp(store::now() - time::Duration::hours(1))?;
+    conn.execute(
+        "DELETE FROM login_attempts WHERE key = ?1 AND at < ?2",
+        turso::params![key, cutoff],
+    )
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// True when the key has burned through the panel's per-hour allowance.
+pub async fn login_blocked(store: &Store, key: &str) -> Result<bool> {
+    sweep_attempts(store, key).await?;
+    let cutoff = store::stamp(store::now() - time::Duration::hours(1))?;
+    let count = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT COUNT(*) FROM login_attempts WHERE key = ?1 AND at >= ?2",
+                turso::params![key, cutoff],
+            )
+            .await
+            .map_err(backend)?;
+        match rows.next().await.map_err(backend)? {
+            Some(row) => store::int(&row, 0)?,
+            None => 0,
+        }
+    };
+    // The limit reads settings, which locks for itself — the count's guard is
+    // already gone.
+    Ok(count >= crate::settings::login_attempts_per_hour(store).await?)
+}
+
+/// Writes down a failure. Success is the caller's job to record too — by
+/// clearing, with [`clear_login_failures`].
+pub async fn record_login_failure(store: &Store, key: &str) -> Result<()> {
+    sweep_attempts(store, key).await?;
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "INSERT INTO login_attempts (key, at) VALUES (?1, ?2)",
+        turso::params![key, store::stamp(store::now())?],
+    )
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// A success wipes the slate: the next failure starts from zero.
+pub async fn clear_login_failures(store: &Store, key: &str) -> Result<()> {
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "DELETE FROM login_attempts WHERE key = ?1",
+        turso::params![key],
+    )
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Whether the reset page may stand: the link exists, unspent, unexpired.
+/// Redemption re-checks in its transaction — this is only the page's
+/// early answer, so a dead link never shows a working form.
+pub async fn reset_link_valid(store: &Store, token: &str) -> Result<bool> {
+    let conn = store.conn.lock().await;
+    let mut rows = conn
+        .query(
+            "SELECT expires_at, used_at FROM reset_links WHERE token = ?1",
+            turso::params![hash_token(token)],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(false);
+    };
+    let expires_at = store::parse_stamp(&store::text(&row, 0)?)?;
+    Ok(store::opt_text(&row, 1)?.is_none() && expires_at >= store::now())
 }
 
 /// Verifies an email+password pair, returning the user on success. Disabled
@@ -441,8 +641,8 @@ pub async fn verify_login(
     email: &str,
     password: &str,
 ) -> std::result::Result<User, AccountError> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT id, email, name, password_hash, totp_confirmed, admin, disabled, created_at \
              FROM users WHERE email = ?1 COLLATE NOCASE",
@@ -481,8 +681,8 @@ pub async fn change_password(
     current: &str,
     new: &str,
 ) -> std::result::Result<(), AccountError> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT password_hash FROM users WHERE id = ?1",
             turso::params![user.id.to_string()],
@@ -500,37 +700,38 @@ pub async fn change_password(
     if verify_password(new, &phc) {
         return Err(PasswordProblem::IsCurrent.into());
     }
-    store
-        .conn
-        .execute(
-            "UPDATE users SET password_hash = ?1 WHERE id = ?2",
-            turso::params![hash_password(new)?, user.id.to_string()],
-        )
-        .await
-        .map_err(backend)?;
+    conn.execute(
+        "UPDATE users SET password_hash = ?1 WHERE id = ?2",
+        turso::params![hash_password(new)?, user.id.to_string()],
+    )
+    .await
+    .map_err(backend)?;
     Ok(())
 }
 
 /// Looks a user up by email — the CLI's revoke path resolves names this way.
 pub async fn user_by_email(store: &Store, email: &str) -> Result<Option<User>> {
-    let mut rows = store
-        .conn
-        .query(
-            "SELECT id FROM users WHERE email = ?1 COLLATE NOCASE",
-            turso::params![email],
-        )
-        .await
-        .map_err(backend)?;
-    let Some(row) = rows.next().await.map_err(backend)? else {
-        return Ok(None);
+    let id = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT id FROM users WHERE email = ?1 COLLATE NOCASE",
+                turso::params![email],
+            )
+            .await
+            .map_err(backend)?;
+        match rows.next().await.map_err(backend)? {
+            Some(row) => UserId::from(store::text(&row, 0)?),
+            None => return Ok(None),
+        }
     };
-    let id = UserId::from(store::text(&row, 0)?);
+    // The id is in hand; the full row's lookup locks for itself.
     user_by_id(store, &id).await
 }
 
 pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at \
              FROM users WHERE id = ?1",
@@ -557,6 +758,7 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
 /// account should not exist" — the OIDC subject dies with it, and if the
 /// person returns they get a fresh one.
 pub async fn delete_user(store: &Store, user: &UserId) -> Result<()> {
+    let conn = store.conn.lock().await;
     let id = user.to_string();
     for sql in [
         "DELETE FROM app_sessions WHERE user_id = ?1",
@@ -565,9 +767,7 @@ pub async fn delete_user(store: &Store, user: &UserId) -> Result<()> {
         "UPDATE invites SET invited_by = NULL WHERE invited_by = ?1",
         "DELETE FROM users WHERE id = ?1",
     ] {
-        store
-            .conn
-            .execute(sql, turso::params![id.clone()])
+        conn.execute(sql, turso::params![id.clone()])
             .await
             .map_err(backend)?;
     }
@@ -576,8 +776,8 @@ pub async fn delete_user(store: &Store, user: &UserId) -> Result<()> {
 
 /// Every user, oldest first — the admin panel's roster.
 pub async fn list_users(store: &Store) -> Result<Vec<User>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at \
              FROM users ORDER BY created_at",
@@ -604,28 +804,26 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
 /// sessions resolve to nobody, and introspection says inactive — every door
 /// closes on the same flag.
 pub async fn set_disabled(store: &Store, user: &UserId, disabled: bool) -> Result<()> {
-    store
-        .conn
-        .execute(
-            "UPDATE users SET disabled = ?1 WHERE id = ?2",
-            turso::params![disabled as i64, user.to_string()],
-        )
-        .await
-        .map_err(backend)?;
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "UPDATE users SET disabled = ?1 WHERE id = ?2",
+        turso::params![disabled as i64, user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
     Ok(())
 }
 
 /// Grants or revokes im's admin flag. Never crosses a token — this is im's
 /// own panel, not a claim apps ever see.
 pub async fn set_admin(store: &Store, user: &UserId, admin: bool) -> Result<()> {
-    store
-        .conn
-        .execute(
-            "UPDATE users SET admin = ?1 WHERE id = ?2",
-            turso::params![admin as i64, user.to_string()],
-        )
-        .await
-        .map_err(backend)?;
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "UPDATE users SET admin = ?1 WHERE id = ?2",
+        turso::params![admin as i64, user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
     Ok(())
 }
 
@@ -844,5 +1042,92 @@ mod tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn a_second_reset_link_kills_the_first() {
+        let store = fixture().await;
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let session = crate::sessions::create_session(&store, &user.id)
+            .await
+            .unwrap();
+
+        // No account, no link — and nothing learned.
+        assert!(
+            create_reset(&store, "nobody@example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let first = create_reset(&store, "ann@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let second = create_reset(&store, "ann@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        // The first mail's link died the moment the second was minted.
+        assert!(matches!(
+            redeem_reset(&store, first.expose(), "Xk9#mQ2vLpR7").await,
+            Err(AccountError::ResetInvalid)
+        ));
+
+        let changed = redeem_reset(&store, second.expose(), "Xk9#mQ2vLpR7")
+            .await
+            .unwrap();
+        assert_eq!(changed.id, user.id);
+        // Spent links cannot be replayed, and the old password's sessions
+        // died with the change.
+        assert!(matches!(
+            redeem_reset(&store, second.expose(), "an0ther!Pass99").await,
+            Err(AccountError::ResetInvalid)
+        ));
+        assert!(
+            crate::sessions::resolve_session(&store, session.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            verify_login(&store, "ann@example.com", "Xk9#mQ2vLpR7")
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn rate_limit_blocks_and_success_clears() {
+        let store = fixture().await;
+        crate::settings::set_policy(
+            &store,
+            &crate::settings::Policy {
+                login_attempts_per_hour: 3,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!login_blocked(&store, "ann@example.com").await.unwrap());
+        for _ in 0..3 {
+            record_login_failure(&store, "ann@example.com")
+                .await
+                .unwrap();
+        }
+        assert!(login_blocked(&store, "ann@example.com").await.unwrap());
+        // A different address is untouched.
+        assert!(!login_blocked(&store, "bob@example.com").await.unwrap());
+
+        clear_login_failures(&store, "ann@example.com")
+            .await
+            .unwrap();
+        assert!(!login_blocked(&store, "ann@example.com").await.unwrap());
     }
 }

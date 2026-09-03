@@ -548,9 +548,13 @@ body:has(.admin-shell) {
 
 .admin-confirm {
   position: relative;
+  display: inline-flex;
 }
 .admin-confirm summary {
   list-style: none;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
 }
 .admin-confirm summary::-webkit-details-marker {
   display: none;

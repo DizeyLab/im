@@ -17,8 +17,8 @@ pub struct Event {
 /// Appends an event. Never fails the caller's operation: a log that cannot
 /// be written is printed, not propagated.
 pub async fn log(store: &Store, kind: &str, actor: Option<&str>, detail: Option<&str>) {
-    let outcome = store
-        .conn
+    let conn = store.conn.lock().await;
+    let outcome = conn
         .execute(
             "INSERT INTO events (id, at, kind, actor, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
             turso::params![
@@ -37,8 +37,8 @@ pub async fn log(store: &Store, kind: &str, actor: Option<&str>, detail: Option<
 
 /// Newest-first page of the log for the admin panel.
 pub async fn list(store: &Store, limit: i64) -> Result<Vec<Event>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT id, at, kind, actor, detail FROM events ORDER BY at DESC, id DESC LIMIT ?1",
             turso::params![limit],

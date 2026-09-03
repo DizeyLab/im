@@ -87,6 +87,23 @@ pub async fn send_invite(store: &Store, issuer: &str, email: &str, token: &str) 
     Ok(link)
 }
 
+/// The reset mail: the link is the whole payload, and sending it retires
+/// every previous link for the address (see `accounts::create_reset`).
+pub async fn send_reset(store: &Store, issuer: &str, email: &str, token: &str) -> Result<String> {
+    let link = format!("{issuer}/reset/{token}");
+    let minutes = settings::reset_minutes(store).await?;
+    send(
+        store,
+        email,
+        "Reset your password",
+        format!(
+            "A password reset was asked for this address. The link is yours for {minutes} minutes:\n\n{link}\n\nIf that wasn't you, this mail changes nothing.\n"
+        ),
+    )
+    .await?;
+    Ok(link)
+}
+
 /// Dials the mail server without sending anything: connect, TLS, hello,
 /// authenticate, NOOP, hang up. A pass proves the host, the port, the
 /// encryption and the password; it says nothing about whether the

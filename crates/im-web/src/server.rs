@@ -85,13 +85,16 @@ pub fn set_session_cookie(cx: &Cx, token: &str) {
     });
 }
 
-pub fn set_pending_cookie(cx: &Cx, sealed: String) {
+pub async fn set_pending_cookie(cx: &Cx, sealed: String) {
+    let minutes = im_core::settings::pending_minutes(&app(cx).store)
+        .await
+        .unwrap_or(PENDING_MINUTES);
     app_cookies(cx).add(cookie! {
         PENDING_COOKIE = sealed;
         Path = "/";
         HttpOnly;
         SameSite = Lax;
-        MaxAge = time::Duration::minutes(PENDING_MINUTES)
+        MaxAge = time::Duration::minutes(minutes)
     });
 }
 
@@ -137,17 +140,20 @@ pub struct Pending {
     pub exp: i64,
 }
 
-pub fn mint_pending(
+pub async fn mint_pending(
     cx: &Cx,
     user: &im_core::model::UserId,
     purpose: PendingPurpose,
     back: String,
 ) -> String {
+    let minutes = im_core::settings::pending_minutes(&app(cx).store)
+        .await
+        .unwrap_or(PENDING_MINUTES);
     let pending = Pending {
         user: user.to_string(),
         purpose,
         back,
-        exp: time::OffsetDateTime::now_utc().unix_timestamp() + PENDING_MINUTES * 60,
+        exp: time::OffsetDateTime::now_utc().unix_timestamp() + minutes * 60,
     };
     let json = serde_json::to_string(&pending).expect("Pending is plain data");
     app(cx).store.seal_value(json.as_bytes())

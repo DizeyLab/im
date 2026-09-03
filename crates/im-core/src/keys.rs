@@ -19,8 +19,8 @@ use crate::store::{self, Result, Store, StoreError, backend};
 /// `kid` is a fingerprint of the public half, so a key's id is stable across
 /// restarts and a JWKS consumer can match header to key without guessing.
 pub async fn active_signing_key(store: &Store) -> Result<(String, RsaPrivateKey)> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT kid, private_der_enc FROM signing_keys WHERE active = 1 \
              ORDER BY created_at DESC LIMIT 1",
@@ -53,20 +53,18 @@ pub async fn active_signing_key(store: &Store) -> Result<(String, RsaPrivateKey)
         .as_bytes()
         .to_vec();
     let kid = kid_of(&public_der);
-    store
-        .conn
-        .execute(
-            "INSERT INTO signing_keys (kid, private_der_enc, public_der, created_at) \
+    conn.execute(
+        "INSERT INTO signing_keys (kid, private_der_enc, public_der, created_at) \
              VALUES (?1, ?2, ?3, ?4)",
-            turso::params![
-                kid.clone(),
-                secret::seal(store.key(), &private_der),
-                public_der,
-                store::stamp(store::now())?,
-            ],
-        )
-        .await
-        .map_err(backend)?;
+        turso::params![
+            kid.clone(),
+            secret::seal(store.key(), &private_der),
+            public_der,
+            store::stamp(store::now())?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
     Ok((kid, key))
 }
 
@@ -77,9 +75,9 @@ fn kid_of(public_der: &[u8]) -> String {
 
 /// Every active public key as a JWKS document.
 pub async fn jwks(store: &Store) -> Result<serde_json::Value> {
+    let conn = store.conn.lock().await;
     use base64::Engine;
-    let mut rows = store
-        .conn
+    let mut rows = conn
         .query(
             "SELECT kid, public_der FROM signing_keys WHERE active = 1 ORDER BY created_at",
             (),
@@ -107,8 +105,8 @@ pub async fn jwks(store: &Store) -> Result<serde_json::Value> {
 
 /// The public half of an active key, by id — what JWT verification looks up.
 pub async fn public_key_by_kid(store: &Store, kid: &str) -> Result<Option<RsaPublicKey>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT public_der FROM signing_keys WHERE kid = ?1 AND active = 1",
             turso::params![kid],

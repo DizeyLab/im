@@ -61,31 +61,30 @@ pub async fn create_client(
     name: &str,
     redirect_uris: Vec<String>,
 ) -> Result<(ClientId, Token)> {
+    let conn = store.conn.lock().await;
     let id = ClientId::mint();
     let secret = Token::mint();
-    store
-        .conn
-        .execute(
-            "INSERT INTO oidc_clients (client_id, name, secret_hash, redirect_uris, created_at) \
+    conn.execute(
+        "INSERT INTO oidc_clients (client_id, name, secret_hash, redirect_uris, created_at) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            turso::params![
-                id.to_string(),
-                name,
-                secret.hash(),
-                serde_json::to_string(&redirect_uris)
-                    .map_err(|e| StoreError::Corrupt(format!("redirect_uris: {e}")))?,
-                store::stamp(store::now())?,
-            ],
-        )
-        .await
-        .map_err(backend)?;
+        turso::params![
+            id.to_string(),
+            name,
+            secret.hash(),
+            serde_json::to_string(&redirect_uris)
+                .map_err(|e| StoreError::Corrupt(format!("redirect_uris: {e}")))?,
+            store::stamp(store::now())?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
     Ok((id, secret))
 }
 
 /// Looks a client up by its public id.
 pub async fn client_by_id(store: &Store, client_id: &str) -> Result<Option<OidcClient>> {
-    let mut rows = store
-        .conn
+    let conn = store.conn.lock().await;
+    let mut rows = conn
         .query(
             "SELECT client_id, name, secret_hash, redirect_uris, created_at \
              FROM oidc_clients WHERE client_id = ?1",
@@ -131,9 +130,9 @@ pub async fn create_auth_code(
     challenge: &str,
     session_hash: &str,
 ) -> Result<Token> {
+    let conn = store.conn.lock().await;
     let code = Token::mint();
-    store
-        .conn
+    conn
         .execute(
             "INSERT INTO auth_codes \
              (code_hash, client_id, user_id, redirect_uri, nonce, code_challenge, session_hash, expires_at) \
@@ -158,15 +157,11 @@ pub async fn create_auth_code(
 /// `consumed_at` stamp run inside one immediate transaction, so two parallel
 /// exchanges of the same code cannot both succeed.
 pub async fn consume_auth_code(store: &Store, code: &str) -> Result<Option<AuthCode>> {
+    let conn = store.conn.lock().await;
     let hash = hash_token(code);
-    store
-        .conn
-        .execute("BEGIN IMMEDIATE", ())
-        .await
-        .map_err(backend)?;
+    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
     let outcome = async {
-        let mut rows = store
-            .conn
+        let mut rows = conn
             .query(
                 "SELECT client_id, user_id, redirect_uri, nonce, code_challenge, session_hash, \
                  expires_at, consumed_at FROM auth_codes WHERE code_hash = ?1",
@@ -183,14 +178,12 @@ pub async fn consume_auth_code(store: &Store, code: &str) -> Result<Option<AuthC
         if store::parse_stamp(&store::text(&row, 6)?)? < store::now() {
             return Ok(None);
         }
-        store
-            .conn
-            .execute(
-                "UPDATE auth_codes SET consumed_at = ?1 WHERE code_hash = ?2",
-                turso::params![store::stamp(store::now())?, hash],
-            )
-            .await
-            .map_err(backend)?;
+        conn.execute(
+            "UPDATE auth_codes SET consumed_at = ?1 WHERE code_hash = ?2",
+            turso::params![store::stamp(store::now())?, hash],
+        )
+        .await
+        .map_err(backend)?;
         Ok(Some(AuthCode {
             client_id: ClientId::from(store::text(&row, 0)?),
             user_id: UserId::from(store::text(&row, 1)?),
@@ -204,11 +197,11 @@ pub async fn consume_auth_code(store: &Store, code: &str) -> Result<Option<AuthC
     .await;
     match outcome {
         Ok(found) => {
-            store.conn.execute("COMMIT", ()).await.map_err(backend)?;
+            conn.execute("COMMIT", ()).await.map_err(backend)?;
             Ok(found)
         }
         Err(e) => {
-            let _ = store.conn.execute("ROLLBACK", ()).await;
+            let _ = conn.execute("ROLLBACK", ()).await;
             Err(e)
         }
     }
@@ -226,23 +219,22 @@ pub async fn issue_refresh(
     client_id: &ClientId,
     session_hash: &str,
 ) -> Result<Token> {
+    let conn = store.conn.lock().await;
     let token = Token::mint();
-    store
-        .conn
-        .execute(
-            "INSERT INTO refresh_tokens \
+    conn.execute(
+        "INSERT INTO refresh_tokens \
              (token_hash, user_id, client_id, session_hash, expires_at) \
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            turso::params![
-                token.hash(),
-                user.to_string(),
-                client_id.to_string(),
-                session_hash,
-                store::stamp(store::now() + time::Duration::days(REFRESH_DAYS))?,
-            ],
-        )
-        .await
-        .map_err(backend)?;
+        turso::params![
+            token.hash(),
+            user.to_string(),
+            client_id.to_string(),
+            session_hash,
+            store::stamp(store::now() + time::Duration::days(REFRESH_DAYS))?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
     Ok(token)
 }
 
@@ -251,15 +243,11 @@ pub async fn issue_refresh(
 /// come back. `None` for unknown, expired, or revoked tokens — and for tokens
 /// whose central session is gone, which is what makes SSO logout global.
 pub async fn rotate_refresh(store: &Store, token: &str) -> Result<Option<(Token, RefreshToken)>> {
+    let conn = store.conn.lock().await;
     let hash = hash_token(token);
-    store
-        .conn
-        .execute("BEGIN IMMEDIATE", ())
-        .await
-        .map_err(backend)?;
+    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
     let outcome = async {
-        let mut rows = store
-            .conn
+        let mut rows = conn
             .query(
                 "SELECT user_id, client_id, session_hash, expires_at, revoked_at \
                  FROM refresh_tokens WHERE token_hash = ?1",
@@ -283,8 +271,7 @@ pub async fn rotate_refresh(store: &Store, token: &str) -> Result<Option<(Token,
             expires_at: store::parse_stamp(&store::text(&row, 3)?)?,
         };
         // The session that minted this token must still be alive.
-        let mut sessions = store
-            .conn
+        let mut sessions = conn
             .query(
                 "SELECT expires_at, revoked_at FROM sessions WHERE token_hash = ?1",
                 turso::params![record.session_hash.clone()],
@@ -302,31 +289,39 @@ pub async fn rotate_refresh(store: &Store, token: &str) -> Result<Option<(Token,
         }
 
         let now = store::stamp(store::now())?;
-        store
-            .conn
-            .execute(
-                "UPDATE refresh_tokens SET revoked_at = ?1 WHERE token_hash = ?2",
-                turso::params![now.clone(), hash.clone()],
-            )
-            .await
-            .map_err(backend)?;
-        let fresh = issue_refresh(
-            store,
-            &record.user_id,
-            &record.client_id,
-            &record.session_hash,
+        conn.execute(
+            "UPDATE refresh_tokens SET revoked_at = ?1 WHERE token_hash = ?2",
+            turso::params![now.clone(), hash.clone()],
         )
-        .await?;
+        .await
+        .map_err(backend)?;
+        // Inlined from `issue_refresh`: the transaction already holds the
+        // connection, and the helper locks for itself.
+        let fresh = Token::mint();
+        conn.execute(
+            "INSERT INTO refresh_tokens \
+                 (token_hash, user_id, client_id, session_hash, expires_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            turso::params![
+                fresh.hash(),
+                record.user_id.to_string(),
+                record.client_id.to_string(),
+                record.session_hash.clone(),
+                store::stamp(store::now() + time::Duration::days(REFRESH_DAYS))?,
+            ],
+        )
+        .await
+        .map_err(backend)?;
         Ok(Some((fresh, record)))
     }
     .await;
     match outcome {
         Ok(found) => {
-            store.conn.execute("COMMIT", ()).await.map_err(backend)?;
+            conn.execute("COMMIT", ()).await.map_err(backend)?;
             Ok(found)
         }
         Err(e) => {
-            let _ = store.conn.execute("ROLLBACK", ()).await;
+            let _ = conn.execute("ROLLBACK", ()).await;
             Err(e)
         }
     }
@@ -428,25 +423,24 @@ pub async fn issue_app_session(
     client_id: &ClientId,
     session_hash: &str,
 ) -> Result<Token> {
+    let conn = store.conn.lock().await;
     let token = Token::mint();
     let now = store::now();
-    store
-        .conn
-        .execute(
-            "INSERT INTO app_sessions \
+    conn.execute(
+        "INSERT INTO app_sessions \
              (token_hash, user_id, client_id, session_hash, created_at, expires_at) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            turso::params![
-                token.hash(),
-                user.to_string(),
-                client_id.to_string(),
-                session_hash,
-                store::stamp(now)?,
-                store::stamp(now + time::Duration::days(APP_SESSION_DAYS))?,
-            ],
-        )
-        .await
-        .map_err(backend)?;
+        turso::params![
+            token.hash(),
+            user.to_string(),
+            client_id.to_string(),
+            session_hash,
+            store::stamp(now)?,
+            store::stamp(now + time::Duration::days(APP_SESSION_DAYS))?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
     Ok(token)
 }
 
@@ -458,49 +452,52 @@ pub async fn introspect_app_session(
     token: &str,
     client_id: &str,
 ) -> Result<Option<serde_json::Value>> {
-    let mut rows = store
-        .conn
-        .query(
-            "SELECT user_id, client_id, session_hash, expires_at, revoked_at \
-             FROM app_sessions WHERE token_hash = ?1",
-            turso::params![hash_token(token)],
-        )
-        .await
-        .map_err(backend)?;
-    let Some(row) = rows.next().await.map_err(backend)? else {
-        return Ok(None);
+    // Both rows are read under one short-held guard; the user lookup locks
+    // for itself after it drops.
+    let (user_id, expires) = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT user_id, client_id, session_hash, expires_at, revoked_at \
+                 FROM app_sessions WHERE token_hash = ?1",
+                turso::params![hash_token(token)],
+            )
+            .await
+            .map_err(backend)?;
+        let Some(row) = rows.next().await.map_err(backend)? else {
+            return Ok(None);
+        };
+        if store::opt_text(&row, 4)?.is_some() {
+            return Ok(None);
+        }
+        let expires = store::parse_stamp(&store::text(&row, 3)?)?;
+        if expires < store::now() {
+            return Ok(None);
+        }
+        if store::text(&row, 1)? != client_id {
+            return Ok(None);
+        }
+        // The central session must still be alive — this is what makes admin
+        // revocation immediate.
+        let session_hash = store::text(&row, 2)?;
+        let mut sessions = conn
+            .query(
+                "SELECT expires_at, revoked_at FROM sessions WHERE token_hash = ?1",
+                turso::params![session_hash],
+            )
+            .await
+            .map_err(backend)?;
+        let Some(session) = sessions.next().await.map_err(backend)? else {
+            return Ok(None);
+        };
+        if store::opt_text(&session, 1)?.is_some() {
+            return Ok(None);
+        }
+        if store::parse_stamp(&store::text(&session, 0)?)? < store::now() {
+            return Ok(None);
+        }
+        (UserId::from(store::text(&row, 0)?), expires)
     };
-    if store::opt_text(&row, 4)?.is_some() {
-        return Ok(None);
-    }
-    let expires = store::parse_stamp(&store::text(&row, 3)?)?;
-    if expires < store::now() {
-        return Ok(None);
-    }
-    if store::text(&row, 1)? != client_id {
-        return Ok(None);
-    }
-    // The central session must still be alive — this is what makes admin
-    // revocation immediate.
-    let session_hash = store::text(&row, 2)?;
-    let mut sessions = store
-        .conn
-        .query(
-            "SELECT expires_at, revoked_at FROM sessions WHERE token_hash = ?1",
-            turso::params![session_hash],
-        )
-        .await
-        .map_err(backend)?;
-    let Some(session) = sessions.next().await.map_err(backend)? else {
-        return Ok(None);
-    };
-    if store::opt_text(&session, 1)?.is_some() {
-        return Ok(None);
-    }
-    if store::parse_stamp(&store::text(&session, 0)?)? < store::now() {
-        return Ok(None);
-    }
-    let user_id = UserId::from(store::text(&row, 0)?);
     let Some(user) = crate::accounts::user_by_id(store, &user_id).await? else {
         return Ok(None);
     };

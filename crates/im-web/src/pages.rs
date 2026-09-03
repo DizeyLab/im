@@ -33,7 +33,17 @@ pub fn error_text(code: &str) -> &'static str {
         "smtp_test" => "The test mail could not be sent.",
         "password_wrong" => "That's not your current password.",
         "password_same" => "That's already your password.",
+        "rate_limited" => "Too many tries — wait a while and try again.",
+        "reset_invalid" => "This reset link is not valid — ask for a fresh one.",
         _ => "Something went wrong. Try again.",
+    }
+}
+
+/// The good news, where a page carries an `ok` code in its URL.
+pub fn ok_text(code: &str) -> &'static str {
+    match code {
+        "reset" => "Password changed — sign in with the new one.",
+        _ => "Done.",
     }
 }
 
@@ -107,6 +117,7 @@ async fn login_card(cx: &Cx) -> Result {
     let query = current_query(cx);
     let back = query_value(&query, "back").unwrap_or_else(|| "/".to_string());
     let error = query_value(&query, "error");
+    let ok = query_value(&query, "ok");
     let stage = view! {
         cx =>
         <main class="auth-stage">
@@ -117,6 +128,9 @@ async fn login_card(cx: &Cx) -> Result {
                         <div class="auth-title">"Sign in"</div>
                         <div class="auth-sub">"One account for everything Dizey."</div>
                     </div>
+                    if let Some(code) = ok {
+                        <div class="auth-ok">(ok_text(&code))</div>
+                    }
                     if let Some(code) = error {
                         <div class="auth-problem">(error_text(&code))</div>
                     }
@@ -146,6 +160,7 @@ async fn login_card(cx: &Cx) -> Result {
                             <span class="auth-submit-text">"Sign in"</span>
                         </button>
                     </form>
+                    <a class="auth-alt" href="/forgot">"Forgot it?"</a>
                 </div>
                 <div class="auth-footer">"im · Dizey SSO"</div>
             </div>
@@ -420,4 +435,112 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
         </main>
     };
     shell(cx, "im", stage).await
+}
+
+/// "Forgot it?" — the self-serve reset ask. It answers the same whether the
+/// address has an account: one quiet note, the same one for every address.
+#[page("/forgot")]
+async fn forgot(cx: &Cx) -> Result {
+    let query = current_query(cx);
+    let error = query_value(&query, "error");
+    let sent = query_value(&query, "ok").as_deref() == Some("sent");
+    let stage = view! {
+        cx =>
+        <main class="auth-stage">
+            <div class="auth-column">
+                (wordmark(cx).await?)
+                <div class="auth-card">
+                    <div class="auth-head">
+                        <div class="auth-title">"Forgot it?"</div>
+                        <div class="auth-sub">"Your address gets a reset link, good for one password change. A fresh ask retires the last link."</div>
+                    </div>
+                    if sent {
+                        <div class="auth-ok">"If that address has an account, a link is on its way."</div>
+                    }
+                    if let Some(code) = error {
+                        <div class="auth-problem">(error_text(&code))</div>
+                    }
+                    <form method="post" action="/forgot">
+                        <label class="auth-field">
+                            <span class="auth-label">"Email"</span>
+                            <input
+                                class="auth-input auth-input-mono"
+                                type="email"
+                                name="email"
+                                autocomplete="email"
+                                required=""
+                            >
+                        </label>
+                        <button class="auth-submit" type="submit">
+                            <span class="auth-submit-text">"Send the link"</span>
+                        </button>
+                    </form>
+                    <a class="auth-alt" href="/">"Back to sign-in"</a>
+                </div>
+                <div class="auth-footer">"im · Dizey SSO"</div>
+            </div>
+        </main>
+    };
+    shell(cx, "Forgot it? · im", stage).await
+}
+
+/// The reset link's destination: a new password, twice. A dead link never
+/// shows a working form — it goes back to the ask with the refusal named.
+#[route(GET "/reset/{token}")]
+async fn reset_page(cx: &Cx) -> Result<Response> {
+    let token: &str = path_param::<Token>(cx);
+    if !im_core::accounts::reset_link_valid(&server::app(cx).store, token).await? {
+        return see_other("/forgot?error=reset_invalid").into_response(cx);
+    }
+    let query = current_query(cx);
+    let error = query_value(&query, "error");
+    let stage = view! {
+        cx =>
+        <main class="auth-stage">
+            <div class="auth-column">
+                (wordmark(cx).await?)
+                <div class="auth-card">
+                    <div class="auth-head">
+                        <div class="auth-title">"A fresh password"</div>
+                        <div class="auth-sub">"The change signs every device out, this one included."</div>
+                    </div>
+                    if let Some(code) = error {
+                        <div class="auth-problem">(error_text(&code))</div>
+                    }
+                    <form method="post" action="/reset">
+                        <input type="hidden" name="token" value=(token.to_string())>
+                        <label class="auth-field">
+                            <span class="auth-label">"New password"</span>
+                            <input
+                                class="auth-input auth-input-mono"
+                                type="password"
+                                name="password"
+                                autocomplete="new-password"
+                                minlength=(MIN_PASSWORD_CHARS.to_string())
+                                required=""
+                            >
+                        </label>
+                        <label class="auth-field">
+                            <span class="auth-label">"New password, again"</span>
+                            <input
+                                class="auth-input auth-input-mono"
+                                type="password"
+                                name="password_confirm"
+                                autocomplete="new-password"
+                                minlength=(MIN_PASSWORD_CHARS.to_string())
+                                required=""
+                            >
+                        </label>
+                        <button class="auth-submit" type="submit">
+                            <span class="auth-submit-text">"Change password"</span>
+                        </button>
+                    </form>
+                </div>
+                <div class="auth-footer">"im · Dizey SSO"</div>
+            </div>
+        </main>
+    };
+    shell(cx, "A fresh password · im", stage)
+        .await?
+        .into_response(cx)
 }
