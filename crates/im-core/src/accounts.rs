@@ -1028,7 +1028,11 @@ mod tests {
         let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
             .await
             .unwrap();
-        let session = crate::sessions::create_session(&store, &user.id)
+        let session = crate::sessions::create_session(
+            &store,
+            &user.id,
+            &crate::sessions::SessionMeta::default(),
+        )
             .await
             .unwrap();
 
@@ -1057,7 +1061,11 @@ mod tests {
         let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
             .await
             .unwrap();
-        let session = crate::sessions::create_session(&store, &user.id)
+        let session = crate::sessions::create_session(
+            &store,
+            &user.id,
+            &crate::sessions::SessionMeta::default(),
+        )
             .await
             .unwrap();
 

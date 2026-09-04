@@ -517,14 +517,16 @@ pub async fn introspect_app_session(
 mod tests {
     use super::*;
     use crate::accounts::{create_invite, create_user_from_invite};
-    use crate::sessions::create_session;
+    use crate::sessions::{SessionMeta, create_session};
     use rsa::signature::Verifier;
     use std::path::Path;
 
     #[tokio::test]
     async fn app_session_introspection_and_instant_revoke() {
         let (store, client_id, user_id) = fixture().await;
-        let session = create_session(&store, &user_id).await.unwrap();
+        let session = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
         let app_token = issue_app_session(&store, &user_id, &client_id, &session.hash())
             .await
             .unwrap();
@@ -632,7 +634,9 @@ mod tests {
     #[tokio::test]
     async fn refresh_rotates_and_dies_with_session() {
         let (store, client_id, user_id) = fixture().await;
-        let session = create_session(&store, &user_id).await.unwrap();
+        let session = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
         let token = issue_refresh(&store, &user_id, &client_id, &session.hash())
             .await
             .unwrap();
@@ -658,7 +662,9 @@ mod tests {
         );
 
         // Revoking the central session retires the refresh chain.
-        let session2 = create_session(&store, &user_id).await.unwrap();
+        let session2 = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
         let token2 = issue_refresh(&store, &user_id, &client_id, &session2.hash())
             .await
             .unwrap();

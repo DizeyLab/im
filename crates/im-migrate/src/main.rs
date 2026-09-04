@@ -34,7 +34,8 @@ CREATE TABLE IF NOT EXISTS users (
   totp_confirmed INTEGER NOT NULL DEFAULT 0,
   admin INTEGER NOT NULL DEFAULT 0,
   disabled INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  photo_mime TEXT
 );
 CREATE TABLE IF NOT EXISTS invites (
   token TEXT PRIMARY KEY,
@@ -50,7 +51,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
-  revoked_at TEXT
+  revoked_at TEXT,
+  ip TEXT,
+  agent TEXT,
+  seen_at TEXT
 );
 CREATE TABLE IF NOT EXISTS oidc_clients (
   client_id TEXT PRIMARY KEY,
@@ -101,6 +105,18 @@ CREATE TABLE IF NOT EXISTS events (
   actor TEXT,
   detail TEXT
 );
+CREATE TABLE IF NOT EXISTS reset_links (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS login_attempts (
+  key TEXT NOT NULL,
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS login_attempts_key ON login_attempts(key, at);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL

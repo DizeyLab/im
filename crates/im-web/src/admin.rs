@@ -162,6 +162,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
             match code {
                 "invited" => "Invite created.",
                 "revoked" => "Sessions revoked — every device is signed out.",
+                "session_revoked" => "Session revoked.",
                 "disabled" => "Account disabled.",
                 "enabled" => "Account enabled.",
                 "smtp" => "Mail settings saved.",
@@ -226,6 +227,67 @@ fn account_section(me: &User) -> String {
   <div class="auth-sub">Changing it signs every other device out — this one stays.</div>
 </div>"#,
         escape(&me.email)
+    )
+}
+
+/// One person's live sessions as the disclosure under their row: a small
+/// table with a per-session revoke, or the muted line when nothing is live.
+/// The admin's own row gets one too — "you" still signs in from somewhere.
+fn sessions_row(user: &User, sessions: &[im_core::sessions::SessionInfo]) -> String {
+    let id = escape(&user.id.to_string());
+    let body = if sessions.is_empty() {
+        r#"<div class="muted">No active sessions</div>"#.to_string()
+    } else {
+        let mut rows = String::new();
+        for session in sessions {
+            let seen_at = session.seen_at.unwrap_or(session.created_at);
+            let seen = seen_at
+                .format(&time::macros::format_description!(
+                    "[year]-[month]-[day] [hour]:[minute]"
+                ))
+                .unwrap_or_else(|_| seen_at.date().to_string());
+            rows.push_str(&format!(
+                concat!(
+                    r#"<tr><td>{}</td>"#,
+                    r#"<td class="mono">{}</td>"#,
+                    r#"<td class="muted">{}</td>"#,
+                    r#"<td class="muted">{}</td>"#,
+                    r#"<td class="actions">"#,
+                    r#"<form method="post" action="/admin/session_revoke">"#,
+                    r#"<input type="hidden" name="user" value="{id}">"#,
+                    r#"<input type="hidden" name="session" value="{}">"#,
+                    r#"<button class="admin-action" type="submit">Revoke</button>"#,
+                    r#"</form></td></tr>"#
+                ),
+                session
+                    .agent
+                    .as_deref()
+                    .filter(|agent| !agent.is_empty())
+                    .map(escape)
+                    .unwrap_or_else(|| "Unknown device".to_string()),
+                session
+                    .ip
+                    .as_deref()
+                    .map(escape)
+                    .unwrap_or_else(|| "—".to_string()),
+                session.created_at.date(),
+                seen,
+                escape(&session.token_hash),
+                id = id,
+            ));
+        }
+        format!(
+            concat!(
+                r#"<table class="admin-table"><thead><tr>"#,
+                r#"<th>Device</th><th>Address</th><th>Signed in</th><th>Last seen</th><th></th>"#,
+                r#"</tr></thead><tbody>{rows}</tbody></table>"#
+            ),
+            rows = rows,
+        )
+    };
+    format!(
+        r#"<tr><td colspan="4"><details class="admin-sessions"><summary class="muted">Sessions ({})</summary>{body}</details></td></tr>"#,
+        sessions.len()
     )
 }
 
@@ -298,6 +360,8 @@ async fn users_section(
             flags,
             actions
         ));
+        let sessions = im_core::sessions::list_sessions(&app(cx).store, &user.id).await?;
+        rows.push_str(&sessions_row(user, &sessions));
     }
     // Invites still waiting on their person sit in the same table — "waiting"
     // instead of a name, and the one action an outstanding link understands:
@@ -671,6 +735,28 @@ async fn revoke(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
     )
     .await;
     back(cx, "users", "&ok=revoked")
+}
+
+#[derive(Deserialize)]
+struct SessionRevokeForm {
+    user: String,
+    session: String,
+}
+
+/// Revokes one session of one person — the per-row door beside the
+/// sign-them-out-everywhere one above.
+#[route(POST "/admin/session_revoke")]
+async fn session_revoke(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let user_id = UserId::from(input.user.clone());
+    if !im_core::sessions::revoke_owned_session(&app(cx).store, &user_id, &input.session).await? {
+        return back(cx, "users", "&error=session_unknown");
+    }
+    server::log_event(cx, "session_revoked", Some(&me.email), Some(&input.user)).await;
+    back(cx, "users", "&ok=session_revoked")
 }
 
 #[route(POST "/admin/disable")]

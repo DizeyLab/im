@@ -38,6 +38,7 @@ pub fn error_text(code: &str) -> &'static str {
         "not_an_image" => "That file is not an image.",
         "no_file" => "Choose an image first.",
         "reset_invalid" => "This reset link is not valid — ask for a fresh one.",
+        "session_unknown" => "That session is already gone.",
         _ => "Something went wrong. Try again.",
     }
 }
@@ -49,6 +50,7 @@ pub fn ok_text(code: &str) -> &'static str {
         "enrolled" => "Two-factor sign-in is on. You're all set.",
         "photo_saved" => "Profile photo updated.",
         "photo_removed" => "Profile photo removed.",
+        "session_revoked" => "Session revoked.",
         _ => "Done.",
     }
 }
@@ -409,6 +411,79 @@ async fn enroll(cx: &Cx) -> Result<Response> {
         .into_response(cx)
 }
 
+/// The sessions card builds its rows as a string — one per live session —
+/// so its interpolations never pass through `view!`'s escaping. The
+/// discipline matches admin.rs's `escape`: everything user-controlled
+/// (agent, address) crosses it before it reaches the markup.
+fn escape(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The device line of a session row: the agent shortened to fit the row, or
+/// the honest fallback when the session predates agent capture.
+fn device_name(agent: Option<&str>) -> String {
+    const MAX: usize = 80;
+    match agent {
+        None | Some("") => "Unknown device".to_string(),
+        Some(agent) if agent.chars().count() > MAX => {
+            format!("{}…", agent.chars().take(MAX).collect::<String>())
+        }
+        Some(agent) => agent.to_string(),
+    }
+}
+
+/// `2026-09-04 10:22`: the last-seen stamp. An unrenderable stamp falls back
+/// to the day — a stamp that cannot print must still say something true.
+fn stamp_min(when: time::OffsetDateTime) -> String {
+    when.format(&time::macros::format_description!(
+        "[year]-[month]-[day] [hour]:[minute]"
+    ))
+    .unwrap_or_else(|_| when.date().to_string())
+}
+
+/// The sessions card's rows: device, address, stamps, and the per-session
+/// revoke. The current row wears the chip and its button reads as the way
+/// out of this browser; every other button names what it does instead.
+fn sessions_html(sessions: &[im_core::sessions::SessionInfo], current: Option<&str>) -> String {
+    let mut rows = String::new();
+    for session in sessions {
+        let mine = current == Some(session.token_hash.as_str());
+        let seen = session.seen_at.unwrap_or(session.created_at);
+        let chip = if mine {
+            r#" <span class="chip chip-connected">This session</span>"#
+        } else {
+            ""
+        };
+        rows.push_str(&format!(
+            concat!(
+                r#"<div class="session-row"><div class="session-main">"#,
+                r#"<div class="session-device">{}{}</div>"#,
+                r#"<div class="session-meta mono">{}</div>"#,
+                r#"<div class="session-meta">Signed in {} · Last seen {}</div>"#,
+                r#"</div>"#,
+                r#"<form method="post" action="/sessions/revoke">"#,
+                r#"<input type="hidden" name="session" value="{}">"#,
+                r#"<button class="admin-action" type="submit">{}</button></form></div>"#
+            ),
+            escape(&device_name(session.agent.as_deref())),
+            chip,
+            session
+                .ip
+                .as_deref()
+                .map(escape)
+                .unwrap_or_else(|| "—".to_string()),
+            session.created_at.date(),
+            stamp_min(seen),
+            escape(&session.token_hash),
+            if mine { "Sign out" } else { "Revoke" },
+        ));
+    }
+    rows
+}
+
 /// The signed-in landing. im is an auth service, not an app: this page is
 /// the proof of session, the person's profile — photo and the counts their
 /// identity has earned — and the way out. izlek gives a profile its own
@@ -420,6 +495,10 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let error = query_value(&query, "error");
     let stats = im_core::stats::profile_stats(&server::app(cx).store, &user.id).await?;
     let joined = user.created_at.date().to_string();
+    let sessions = im_core::sessions::list_sessions(&server::app(cx).store, &user.id).await?;
+    let current =
+        server::presented_session(cx).map(|token| im_core::accounts::hash_token(&token));
+    let sessions_html = sessions_html(&sessions, current.as_deref());
     let stage = view! {
         cx =>
         <main class="auth-stage">
@@ -535,6 +614,10 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             <dt class="auth-label">"Connected apps"</dt>
                         </div>
                     </dl>
+                </div>
+                <div class="auth-card">
+                    <div class="auth-title">"Sessions"</div>
+                    <div class="session-list">(topcoat::view::Unescaped::new_unchecked(sessions_html))</div>
                 </div>
                 <div class="auth-card">
                     <form method="post" action="/logout">

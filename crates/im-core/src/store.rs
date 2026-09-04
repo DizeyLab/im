@@ -54,7 +54,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_id TEXT NOT NULL REFERENCES users(id),
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL,
-  revoked_at TEXT
+  revoked_at TEXT,
+  ip TEXT,
+  agent TEXT,
+  seen_at TEXT
 );
 CREATE TABLE IF NOT EXISTS oidc_clients (
   client_id TEXT PRIMARY KEY,
@@ -179,13 +182,28 @@ impl Store {
         let outcome = async {
             conn.execute_batch(SCHEMA).await.map_err(backend)?;
             // Columns born after databases already existed: the CREATE above
-            // is `IF NOT EXISTS`, so an old users table never sees them from
-            // it. Each goes in with its own guarded ALTER — a boot either
-            // adds the column or finds it there, and re-boot is a no-op.
-            // The photo's bytes are never a column: they live as files under
-            // the storage tree (see `photos.rs`).
+            // is `IF NOT EXISTS`, so an old table never sees them from it.
+            // Each goes in with its own guarded ALTER — a boot either adds
+            // the column or finds it there, and re-boot is a no-op.
             if !has_column(&conn, "users", "photo_mime").await? {
                 conn.execute("ALTER TABLE users ADD COLUMN photo_mime TEXT", ())
+                    .await
+                    .map_err(backend)?;
+            }
+            // What a session remembers about its browser: the listing shows
+            // these, so old databases grow them the same guarded way.
+            if !has_column(&conn, "sessions", "ip").await? {
+                conn.execute("ALTER TABLE sessions ADD COLUMN ip TEXT", ())
+                    .await
+                    .map_err(backend)?;
+            }
+            if !has_column(&conn, "sessions", "agent").await? {
+                conn.execute("ALTER TABLE sessions ADD COLUMN agent TEXT", ())
+                    .await
+                    .map_err(backend)?;
+            }
+            if !has_column(&conn, "sessions", "seen_at").await? {
+                conn.execute("ALTER TABLE sessions ADD COLUMN seen_at TEXT", ())
                     .await
                     .map_err(backend)?;
             }

@@ -43,6 +43,34 @@ fn safe_back(raw: &str) -> &str {
     }
 }
 
+/// Creation-time facts for the session row: the address the browser came
+/// through and the agent it claims to be. The accept loop discards the peer
+/// address, so the proxy headers are the only source — the first
+/// `x-forwarded-for` hop, else `x-real-ip`, else nothing known.
+fn session_meta(cx: &Cx) -> im_core::sessions::SessionMeta {
+    let headers = topcoat::router::request::headers(cx);
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|hop| !hop.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            headers
+                .get("x-real-ip")
+                .and_then(|value| value.to_str().ok())
+                .map(str::trim)
+                .filter(|ip| !ip.is_empty())
+                .map(str::to_string)
+        });
+    let agent = headers
+        .get("user-agent")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.chars().take(255).collect::<String>());
+    im_core::sessions::SessionMeta { ip, agent }
+}
+
 #[derive(Deserialize)]
 pub struct LoginForm {
     email: String,
@@ -138,7 +166,7 @@ async fn login_totp(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
         return see("/login/totp?error=bad_code".to_string());
     }
     let _ = accounts::clear_login_failures(store, &totp_key).await;
-    let token = im_core::sessions::create_session(store, &user_id).await?;
+    let token = im_core::sessions::create_session(store, &user_id, &session_meta(cx)).await?;
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
@@ -219,7 +247,7 @@ async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
         return see("/enroll?error=bad_code".to_string());
     }
     im_core::totp::confirm_totp(store, &user_id).await?;
-    let token = im_core::sessions::create_session(store, &user_id).await?;
+    let token = im_core::sessions::create_session(store, &user_id, &session_meta(cx)).await?;
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
@@ -306,4 +334,39 @@ async fn reset(cx: &Cx, Form(input): Form<ResetForm>) -> Redirect {
         Err(AccountError::ResetInvalid) => see("/forgot?error=reset_invalid".to_string()),
         Err(e) => Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
     }
+}
+
+#[derive(Deserialize)]
+struct SessionRevokeForm {
+    session: String,
+}
+
+/// Revokes one of the signer's own sessions. The current one signs this
+/// browser out — the server row dies and the cookie is tidied; any other
+/// just dies where it lives.
+#[route(POST "/sessions/revoke")]
+async fn revoke_session(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Redirect {
+    let Some(user) = server::current_user(cx).await else {
+        return see("/".to_string());
+    };
+    let store = &server::app(cx).store;
+    if let Some(presented) = server::presented_session(cx) {
+        if im_core::accounts::hash_token(&presented) == input.session {
+            im_core::sessions::revoke_session(store, &presented).await?;
+            server::clear_session_cookie(cx);
+            return see("/".to_string());
+        }
+    }
+    // The row's address, when it is still there, is the useful half of the
+    // log line — which of their devices they just killed.
+    let ip = im_core::sessions::list_sessions(store, &user.id)
+        .await?
+        .into_iter()
+        .find(|s| s.token_hash == input.session)
+        .and_then(|s| s.ip);
+    if !im_core::sessions::revoke_owned_session(store, &user.id, &input.session).await? {
+        return see("/?error=session_unknown".to_string());
+    }
+    server::log_event(cx, "session_revoked", Some(&user.email), ip.as_deref()).await;
+    see("/?ok=session_revoked".to_string())
 }
