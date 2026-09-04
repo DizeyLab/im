@@ -53,11 +53,13 @@ pub async fn avatar(cx: &Cx, user: &im_core::model::User) -> Result {
 /// overlay and the picker's autosubmit. A click on a photo `.avatar-view`
 /// opens a `.viewer-scrim` around the same `/photo/{id}?v=` URL the avatar
 /// reads — the overlay has no server state behind it, so it is client-built
-/// and client-closed (scrim click or Escape). A `data-autosubmit` input
-/// posts its form on change: choosing a file IS the upload, no Save button.
-/// Both are delegated document listeners, so the hard-post re-render never
-/// needs rewiring. Emitted by the landing and the person page — every
-/// surface that draws a clickable face.
+/// and client-closed (scrim click or Escape). A face marked `data-own` gets
+/// the photo's Change/Remove inside the viewer, so the page itself carries
+/// no buttons for a picture. A `data-autosubmit` input posts its form on
+/// change: choosing a file IS the upload, no Save button. Both are delegated
+/// document listeners, so the hard-post re-render never needs rewiring.
+/// Emitted by the landing and the person page — every surface that draws a
+/// clickable face.
 pub async fn avatar_script(cx: &Cx) -> Result {
     use topcoat::view::Unescaped;
     const JS: &str = "\
@@ -79,6 +81,22 @@ pub async fn avatar_script(cx: &Cx) -> Result {
                     box.className = 'viewer'; \
                     box.tabIndex = -1; \
                     box.appendChild(media); \
+                    if (view.hasAttribute('data-own')) { \
+                        var actions = document.createElement('div'); \
+                        actions.className = 'viewer-actions'; \
+                        var change = document.createElement('label'); \
+                        change.className = 'admin-action'; \
+                        change.setAttribute('for', 'profile-photo-input'); \
+                        change.textContent = 'Change'; \
+                        var remove = document.createElement('button'); \
+                        remove.type = 'submit'; \
+                        remove.className = 'admin-action admin-danger'; \
+                        remove.setAttribute('form', 'profile-photo-remove'); \
+                        remove.textContent = 'Remove'; \
+                        actions.appendChild(change); \
+                        actions.appendChild(remove); \
+                        box.appendChild(actions); \
+                    } \
                     scrim.appendChild(box); \
                     document.body.appendChild(scrim); \
                     box.focus(); \
@@ -92,6 +110,8 @@ pub async fn avatar_script(cx: &Cx) -> Result {
                 if (e.key !== 'Escape') { return; } \
                 var scrim = document.querySelector('.viewer-scrim'); \
                 if (scrim) { scrim.remove(); } \
+                var openSession = document.querySelector('.session-item[open]'); \
+                if (openSession) { openSession.removeAttribute('open'); } \
             }); \
             document.addEventListener('change', function (e) { \
                 var input = e.target.closest ? e.target.closest('[data-autosubmit]') : null; \
@@ -104,6 +124,10 @@ pub async fn avatar_script(cx: &Cx) -> Result {
                 var data = new FormData(form); \
                 form.__imUploading = true; \
                 input.disabled = true; \
+                /* The picker may have fired from the viewer's Change — the \
+                   overlay steps aside so the progress row is the thing seen. */ \
+                var openScrim = document.querySelector('.viewer-scrim'); \
+                if (openScrim) { openScrim.remove(); } \
                 var row = document.createElement('div'); \
                 row.className = 'profile-upload-row'; \
                 var bar = document.createElement('div'); \

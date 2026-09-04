@@ -441,13 +441,13 @@ body:has(.auth-stage) {
   font-size: 13px;
 }
 
-// The Change/Remove actions ride the profile head, iz's identity-row idiom:
-// quiet row-buttons, the file input itself never seen.
-.profile-actions {
+// The photo's Change/Remove live inside the viewer (avatar_script builds
+// them for a `data-own` face): a quiet row under the enlarged picture.
+.viewer-actions {
   display: flex;
-  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
-  align-items: center;
+  margin-top: 12px;
 
   // A label wearing the quiet-button skin needs the flex centering a button
   // gets for free.
@@ -530,8 +530,10 @@ body:has(.auth-stage) {
 .viewer {
   outline: none;
   cursor: default;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
-
 .viewer-media {
   max-width: min(90vw, 960px);
   max-height: 85vh;
@@ -586,49 +588,86 @@ body:has(.auth-stage) {
   letter-spacing: -0.01em;
 }
 
-// The sessions list: one row per live device, in the profile-fields idiom —
-// a device line, a quiet meta line, the revoke riding the row's end.
+// The sessions list: one header row per live device — the name a person
+// recognizes, the address, the current one chipped. Everything else sits a
+// click behind the header: the item is a <details>, and the open detail
+// floats as a card over a dimmed ground. The backdrop is the summary's own
+// pseudo-element, so a click anywhere off the card toggles it shut — no
+// script at all (avatar_script adds Escape on top).
 .session-list {
   display: flex;
   flex-direction: column;
 }
 
-.session-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 12px 0;
+.session-item {
   border-top: 1px solid var(--border-soft);
 
-  &:first-child {
-    border-top: 0;
-    padding-top: 0;
-  }
-
-  &:last-child { padding-bottom: 0; }
-
-  form { flex: none; }
+  &:first-child { border-top: 0; }
 }
 
-.session-main {
-  flex: 1;
+.session-head {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  gap: 12px;
+  align-items: baseline;
+  padding: 12px 0;
+  cursor: pointer;
+  list-style: none;
+
+  &::-webkit-details-marker { display: none; }
 }
 
 .session-device {
   font-size: 13px;
-  overflow-wrap: anywhere;
+  color: var(--ink);
 
   .chip { margin-left: 8px; }
 }
 
-.session-meta {
+.session-ip {
+  margin-left: auto;
   font-size: 12px;
   color: var(--muted);
 }
+
+// An open item's header stays above the dim, reading as the card's title.
+.session-item[open] .session-head {
+  position: relative;
+  z-index: 121;
+
+  &::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: rgb(0 0 0 / 0.65);
+  }
+}
+
+.session-detail {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 122;
+  width: min(90vw, 420px);
+  max-height: 85vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+
+  .profile-fields { margin: 0; }
+
+  form {
+    margin-top: 12px;
+    text-align: right;
+  }
+}
+
+// The full agent string is detail content: whole, wrapped, never stretching
+// the card.
+.session-agent { overflow-wrap: anywhere; }
 
 @media (max-width: 720px) {
   .auth-stage { padding: 0 16px 24px; }

@@ -248,7 +248,7 @@ fn sessions_row(user: &User, sessions: &[im_core::sessions::SessionInfo]) -> Str
                 .unwrap_or_else(|_| seen_at.date().to_string());
             rows.push_str(&format!(
                 concat!(
-                    r#"<tr><td>{}</td>"#,
+                    r#"<tr><td title="{}">{}</td>"#,
                     r#"<td class="mono">{}</td>"#,
                     r#"<td class="muted">{}</td>"#,
                     r#"<td class="muted">{}</td>"#,
@@ -259,12 +259,15 @@ fn sessions_row(user: &User, sessions: &[im_core::sessions::SessionInfo]) -> Str
                     r#"<button class="admin-action" type="submit">Revoke</button>"#,
                     r#"</form></td></tr>"#
                 ),
+                // The cell reads as a device; the raw agent rides the title
+                // for the admin who needs the whole string.
                 session
                     .agent
                     .as_deref()
                     .filter(|agent| !agent.is_empty())
                     .map(escape)
-                    .unwrap_or_else(|| "Unknown device".to_string()),
+                    .unwrap_or_default(),
+                escape(&crate::pages::device_label(session.agent.as_deref())),
                 session
                     .ip
                     .as_deref()

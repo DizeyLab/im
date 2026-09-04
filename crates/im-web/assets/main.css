@@ -399,13 +399,13 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   font-size: 13px;
 }
 
-.profile-actions {
+.viewer-actions {
   display: flex;
-  flex-wrap: wrap;
+  justify-content: center;
   gap: 8px;
-  align-items: center;
+  margin-top: 12px;
 }
-.profile-actions label.admin-action {
+.viewer-actions label.admin-action {
   display: inline-flex;
   align-items: center;
   box-sizing: border-box;
@@ -469,6 +469,9 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
 .viewer {
   outline: none;
   cursor: default;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .viewer-media {
@@ -528,43 +531,75 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   flex-direction: column;
 }
 
-.session-row {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-  padding: 12px 0;
+.session-item {
   border-top: 1px solid var(--border-soft);
 }
-.session-row:first-child {
+.session-item:first-child {
   border-top: 0;
-  padding-top: 0;
-}
-.session-row:last-child {
-  padding-bottom: 0;
-}
-.session-row form {
-  flex: none;
 }
 
-.session-main {
-  flex: 1;
+.session-head {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  gap: 12px;
+  align-items: baseline;
+  padding: 12px 0;
+  cursor: pointer;
+  list-style: none;
+}
+.session-head::-webkit-details-marker {
+  display: none;
 }
 
 .session-device {
   font-size: 13px;
-  overflow-wrap: anywhere;
+  color: var(--ink);
 }
 .session-device .chip {
   margin-left: 8px;
 }
 
-.session-meta {
+.session-ip {
+  margin-left: auto;
   font-size: 12px;
   color: var(--muted);
+}
+
+.session-item[open] .session-head {
+  position: relative;
+  z-index: 121;
+}
+.session-item[open] .session-head::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.session-detail {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 122;
+  width: min(90vw, 420px);
+  max-height: 85vh;
+  overflow: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+}
+.session-detail .profile-fields {
+  margin: 0;
+}
+.session-detail form {
+  margin-top: 12px;
+  text-align: right;
+}
+
+.session-agent {
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 720px) {

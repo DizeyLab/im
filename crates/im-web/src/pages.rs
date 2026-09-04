@@ -422,17 +422,43 @@ fn escape(raw: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// The device line of a session row: the agent shortened to fit the row, or
-/// the honest fallback when the session predates agent capture.
-fn device_name(agent: Option<&str>) -> String {
-    const MAX: usize = 80;
-    match agent {
-        None | Some("") => "Unknown device".to_string(),
-        Some(agent) if agent.chars().count() > MAX => {
-            format!("{}…", agent.chars().take(MAX).collect::<String>())
-        }
-        Some(agent) => agent.to_string(),
-    }
+/// What the agent string means to a person — "Chrome on Linux", not the raw
+/// header. The full string stays one click away in the session's detail.
+/// Substring matching in precedence order (Edge before Chrome before Safari:
+/// each carries the later one's token too); shared with the admin panel.
+pub(crate) fn device_label(agent: Option<&str>) -> String {
+    let Some(agent) = agent.filter(|agent| !agent.is_empty()) else {
+        return "Unknown device".to_string();
+    };
+    let browser = if agent.contains("Edg/") {
+        "Edge"
+    } else if agent.contains("Firefox/") {
+        "Firefox"
+    } else if agent.contains("Chrome/") {
+        "Chrome"
+    } else if agent.contains("Safari/") {
+        "Safari"
+    } else {
+        "Browser"
+    };
+    let system = if agent.contains("iPhone") {
+        "iPhone"
+    } else if agent.contains("iPad") {
+        "iPad"
+    } else if agent.contains("Android") {
+        "Android"
+    } else if agent.contains("Windows") {
+        "Windows"
+    } else if agent.contains("Mac OS X") {
+        "macOS"
+    } else if agent.contains("CrOS") {
+        "ChromeOS"
+    } else if agent.contains("Linux") {
+        "Linux"
+    } else {
+        return browser.to_string();
+    };
+    format!("{browser} on {system}")
 }
 
 /// `2026-09-04 10:22`: the last-seen stamp. An unrenderable stamp falls back
@@ -444,9 +470,13 @@ fn stamp_min(when: time::OffsetDateTime) -> String {
     .unwrap_or_else(|_| when.date().to_string())
 }
 
-/// The sessions card's rows: device, address, stamps, and the per-session
-/// revoke. The current row wears the chip and its button reads as the way
-/// out of this browser; every other button names what it does instead.
+/// The sessions card: one header row per live session — what a person
+/// recognizes (device, address, the current one chipped) — with everything
+/// else a click behind it. The item is a `<details>`, so the open state and
+/// its modal styling (style/main.scss) work with no script at all; the full
+/// agent string, the stamps and the revoke live in the detail. The current
+/// session's button reads as the way out of this browser; every other names
+/// what it does.
 fn sessions_html(sessions: &[im_core::sessions::SessionInfo], current: Option<&str>) -> String {
     let mut rows = String::new();
     for session in sessions {
@@ -457,26 +487,47 @@ fn sessions_html(sessions: &[im_core::sessions::SessionInfo], current: Option<&s
         } else {
             ""
         };
+        let ip = session
+            .ip
+            .as_deref()
+            .map(escape)
+            .unwrap_or_else(|| "—".to_string());
         rows.push_str(&format!(
             concat!(
-                r#"<div class="session-row"><div class="session-main">"#,
-                r#"<div class="session-device">{}{}</div>"#,
-                r#"<div class="session-meta mono">{}</div>"#,
-                r#"<div class="session-meta">Signed in {} · Last seen {}</div>"#,
-                r#"</div>"#,
+                r#"<details class="session-item"><summary class="session-head">"#,
+                r#"<span class="session-device">{}{}</span>"#,
+                r#"<span class="session-ip mono">{}</span>"#,
+                r#"</summary><div class="session-detail">"#,
+                r#"<dl class="profile-fields">"#,
+                r#"<div class="profile-field"><dt class="auth-label">Device</dt>"#,
+                r#"<dd class="profile-value session-agent">{}</dd></div>"#,
+                r#"<div class="profile-field"><dt class="auth-label">Address</dt>"#,
+                r#"<dd class="profile-value mono">{}</dd></div>"#,
+                r#"<div class="profile-field"><dt class="auth-label">Signed in</dt>"#,
+                r#"<dd class="profile-value">{}</dd></div>"#,
+                r#"<div class="profile-field"><dt class="auth-label">Last seen</dt>"#,
+                r#"<dd class="profile-value">{}</dd></div>"#,
+                r#"<div class="profile-field"><dt class="auth-label">Expires</dt>"#,
+                r#"<dd class="profile-value">{}</dd></div>"#,
+                r#"</dl>"#,
                 r#"<form method="post" action="/sessions/revoke">"#,
                 r#"<input type="hidden" name="session" value="{}">"#,
-                r#"<button class="admin-action" type="submit">{}</button></form></div>"#
+                r#"<button class="admin-action" type="submit">{}</button></form>"#,
+                r#"</div></details>"#
             ),
-            escape(&device_name(session.agent.as_deref())),
+            escape(&device_label(session.agent.as_deref())),
             chip,
+            ip,
             session
-                .ip
+                .agent
                 .as_deref()
+                .filter(|agent| !agent.is_empty())
                 .map(escape)
-                .unwrap_or_else(|| "—".to_string()),
+                .unwrap_or_else(|| "Unknown device".to_string()),
+            ip,
             session.created_at.date(),
             stamp_min(seen),
+            session.expires_at.date(),
             escape(&session.token_hash),
             if mine { "Sign out" } else { "Revoke" },
         ));
@@ -496,8 +547,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let stats = im_core::stats::profile_stats(&server::app(cx).store, &user.id).await?;
     let joined = user.created_at.date().to_string();
     let sessions = im_core::sessions::list_sessions(&server::app(cx).store, &user.id).await?;
-    let current =
-        server::presented_session(cx).map(|token| im_core::accounts::hash_token(&token));
+    let current = server::presented_session(cx).map(|token| im_core::accounts::hash_token(&token));
     let sessions_html = sessions_html(&sessions, current.as_deref());
     let stage = view! {
         cx =>
@@ -507,11 +557,28 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 <div class="auth-card">
                     <div class="profile-head">
                         if user.has_photo {
-                            // iz's identity row: with a photo, the face opens
-                            // the viewer; Change owns the picker.
-                            <button class="avatar-view" type="button" aria-label="View photo">
+                            // The face is the whole control surface: it opens
+                            // the viewer, and the viewer carries Change/Remove
+                            // (avatar_script builds them for `data-own`). The
+                            // picker input hides here, unreached until the
+                            // viewer's Change label points at it by id.
+                            <button
+                                class="avatar-view"
+                                type="button"
+                                aria-label="View photo"
+                                data-own=""
+                            >
                                 (avatar(cx, user).await?)
                             </button>
+                            <input
+                                id="profile-photo-input"
+                                class="profile-file-hidden"
+                                type="file"
+                                name="photo"
+                                accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+                                form="profile-photo-form"
+                                data-autosubmit=""
+                            >
                         } else {
                             // Without one, the face itself is the picker: the
                             // label wraps the hidden input, which autosubmits
@@ -540,28 +607,6 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                     <span class="chip chip-accent">"Admin"</span>
                                 }
                             </div>
-                            if user.has_photo {
-                                <div class="profile-actions">
-                                    <label class="admin-action">
-                                        "Change"
-                                        <input
-                                            class="profile-file-hidden"
-                                            type="file"
-                                            name="photo"
-                                            accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
-                                            form="profile-photo-form"
-                                            data-autosubmit=""
-                                        >
-                                    </label>
-                                    <button
-                                        class="admin-action"
-                                        type="submit"
-                                        form="profile-photo-remove"
-                                    >
-                                        "Remove"
-                                    </button>
-                                </div>
-                            }
                         </div>
                     </div>
                     if let Some(code) = ok {
@@ -582,9 +627,8 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                     </dl>
                     <a class="auth-alt" href=(format!("/people/{}", user.id))>"Public profile"</a>
                     // Both forms carry no visible chrome of their own: the
-                    // picker inputs live on the face and the Change action,
-                    // the remove button in the actions row — all reaching
-                    // here by `form=`.
+                    // picker input hides beside the face, the remove button
+                    // lives in the viewer — all reaching here by `form=`.
                     <form
                         id="profile-photo-form"
                         method="post"
