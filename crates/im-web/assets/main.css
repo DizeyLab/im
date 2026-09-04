@@ -399,14 +399,13 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   font-size: 13px;
 }
 
-.auth-card .profile-photo-form {
+.profile-actions {
   display: flex;
-  flex-direction: row;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
-.auth-card .profile-photo-form label.admin-action {
+.profile-actions label.admin-action {
   display: inline-flex;
   align-items: center;
   box-sizing: border-box;
@@ -417,20 +416,65 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   display: none;
 }
 
-.profile-photo-save {
-  display: none;
-}
-
-.profile-photo-form:has(.profile-file-hidden:valid) .profile-photo-save {
-  display: inline-flex;
-}
-
+#profile-photo-form,
 #profile-photo-remove {
   display: none;
 }
 
-.profile-avatar-upload {
+.profile-avatar-upload,
+.avatar-view {
+  position: relative;
+  flex: none;
   cursor: pointer;
+}
+
+.avatar-view {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+.profile-avatar-upload::after {
+  content: "+";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: var(--radius);
+  color: #fff;
+  font-size: 24px;
+  font-weight: 300;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+  pointer-events: none;
+}
+.profile-avatar-upload:hover::after, .profile-avatar-upload:has(.profile-file-hidden:focus-visible)::after {
+  opacity: 1;
+}
+
+.viewer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.65);
+  cursor: zoom-out;
+}
+
+.viewer {
+  outline: none;
+  cursor: default;
+}
+
+.viewer-media {
+  max-width: min(90vw, 960px);
+  max-height: 85vh;
+  border-radius: var(--radius);
 }
 
 .profile-stats {

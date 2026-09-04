@@ -441,12 +441,10 @@ body:has(.auth-stage) {
   font-size: 13px;
 }
 
-// The photo actions ride the profile head, iz's identity-row idiom: quiet
-// row-buttons, the file input itself never seen. The selector outranks
-// `.auth-card form`, which would otherwise stack this form vertically.
-.auth-card .profile-photo-form {
+// The Change/Remove actions ride the profile head, iz's identity-row idiom:
+// quiet row-buttons, the file input itself never seen.
+.profile-actions {
   display: flex;
-  flex-direction: row;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
@@ -466,26 +464,78 @@ body:has(.auth-stage) {
   display: none;
 }
 
-// im serves no script, so iz's autosubmit becomes a Save that appears once
-// the input holds a file — `:valid` on a required file input, CSS-only.
-.profile-photo-save {
-  display: none;
-}
-
-.profile-photo-form:has(.profile-file-hidden:valid) .profile-photo-save {
-  display: inline-flex;
-}
-
-// The remove form carries no visible chrome of its own — its button lives in
-// the actions row and reaches it by `form=`.
+// The forms the actions reach by `form=` carry no visible chrome.
+#profile-photo-form,
 #profile-photo-remove {
   display: none;
 }
 
-// The no-photo face is the upload affordance: the whole tile opens the
-// picker.
-.profile-avatar-upload {
+// The two faces of the profile picture box: the picker label and, once a
+// photo exists, the viewer trigger — the box rules are shared.
+.profile-avatar-upload,
+.avatar-view {
+  position: relative;
+  flex: none;
   cursor: pointer;
+}
+
+// The trigger is the label's box with a button's chrome stripped.
+.avatar-view {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+}
+
+// The upload affordance, iz's veil: a plus over the picture, on hover or
+// keyboard focus only.
+.profile-avatar-upload {
+  &::after {
+    content: "+";
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgb(0 0 0 / 0.4);
+    border-radius: var(--radius);
+    color: #fff;
+    font-size: 24px;
+    font-weight: 300;
+    opacity: 0;
+    transition: opacity var(--dur-fast) var(--ease);
+    pointer-events: none;
+  }
+
+  &:hover::after,
+  &:has(.profile-file-hidden:focus-visible)::after {
+    opacity: 1;
+  }
+}
+
+// The photo viewer: a client-built overlay (avatar_script) around the same
+// /photo URL the avatar reads — a click on the dimmed ground or Escape
+// closes it.
+.viewer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(0 0 0 / 0.65);
+  cursor: zoom-out;
+}
+
+.viewer {
+  outline: none;
+  cursor: default;
+}
+
+.viewer-media {
+  max-width: min(90vw, 960px);
+  max-height: 85vh;
+  border-radius: var(--radius);
 }
 
 .profile-stats {

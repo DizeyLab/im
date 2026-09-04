@@ -428,12 +428,25 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 <div class="auth-card">
                     <div class="profile-head">
                         if user.has_photo {
-                            (avatar(cx, user).await?)
-                        } else {
-                            // iz's no-photo idiom: the face itself is the
-                            // upload affordance — the label opens the picker.
-                            <label class="profile-avatar-upload" for="profile-photo-input">
+                            // iz's identity row: with a photo, the face opens
+                            // the viewer; Change owns the picker.
+                            <button class="avatar-view" type="button" aria-label="View photo">
                                 (avatar(cx, user).await?)
+                            </button>
+                        } else {
+                            // Without one, the face itself is the picker: the
+                            // label wraps the hidden input, which autosubmits
+                            // on change (avatar_script) — no buttons at all.
+                            <label class="profile-avatar-upload">
+                                (avatar(cx, user).await?)
+                                <input
+                                    class="profile-file-hidden"
+                                    type="file"
+                                    name="photo"
+                                    accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+                                    form="profile-photo-form"
+                                    data-autosubmit=""
+                                >
                             </label>
                         }
                         <div class="profile-heading">
@@ -448,34 +461,19 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                     <span class="chip chip-accent">"Admin"</span>
                                 }
                             </div>
-                            <form
-                                class="profile-photo-form"
-                                method="post"
-                                action="/api/profile_photo"
-                                enctype="multipart/form-data"
-                            >
-                                <input
-                                    id="profile-photo-input"
-                                    class="profile-file-hidden"
-                                    type="file"
-                                    name="photo"
-                                    accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
-                                    required=""
-                                >
-                                <label class="admin-action" for="profile-photo-input">
-                                    if user.has_photo {
+                            if user.has_photo {
+                                <div class="profile-actions">
+                                    <label class="admin-action">
                                         "Change"
-                                    } else {
-                                        "Add photo"
-                                    }
-                                </label>
-                                // No script on im: where iz auto-submits on
-                                // change, a quiet Save appears once the input
-                                // holds a file (`:has(:valid)`, CSS-only).
-                                <button class="admin-action profile-photo-save" type="submit">
-                                    "Save"
-                                </button>
-                                if user.has_photo {
+                                        <input
+                                            class="profile-file-hidden"
+                                            type="file"
+                                            name="photo"
+                                            accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+                                            form="profile-photo-form"
+                                            data-autosubmit=""
+                                        >
+                                    </label>
                                     <button
                                         class="admin-action"
                                         type="submit"
@@ -483,8 +481,8 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                     >
                                         "Remove"
                                     </button>
-                                }
-                            </form>
+                                </div>
+                            }
                         </div>
                     </div>
                     if let Some(code) = ok {
@@ -504,6 +502,16 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                         </div>
                     </dl>
                     <a class="auth-alt" href=(format!("/people/{}", user.id))>"Public profile"</a>
+                    // Both forms carry no visible chrome of their own: the
+                    // picker inputs live on the face and the Change action,
+                    // the remove button in the actions row — all reaching
+                    // here by `form=`.
+                    <form
+                        id="profile-photo-form"
+                        method="post"
+                        action="/api/profile_photo"
+                        enctype="multipart/form-data"
+                    ></form>
                     if user.has_photo {
                         <form
                             id="profile-photo-remove"
@@ -541,6 +549,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 <div class="auth-footer">"im · Dizey SSO"</div>
             </div>
         </main>
+        (crate::layout::avatar_script(cx).await?)
     };
     shell(cx, "im", stage).await
 }

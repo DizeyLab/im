@@ -40,7 +40,15 @@ async fn people_page(cx: &Cx) -> Result {
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="profile-head">
-                        (avatar(cx, &person).await?)
+                        if person.has_photo {
+                            // The face opens the viewer here too — same as
+                            // the landing, same as iz's person page.
+                            <button class="avatar-view" type="button" aria-label="View photo">
+                                (avatar(cx, &person).await?)
+                            </button>
+                        } else {
+                            (avatar(cx, &person).await?)
+                        }
                         <div class="profile-heading">
                             <div class="auth-title">(person.name.clone())</div>
                             <div class="profile-marks">
@@ -88,6 +96,7 @@ async fn people_page(cx: &Cx) -> Result {
                 <div class="auth-footer">"im · Dizey SSO"</div>
             </div>
         </main>
+        (crate::layout::avatar_script(cx).await?)
     };
     shell(cx, &format!("{} · im", person.name), stage).await
 }
