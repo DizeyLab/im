@@ -477,6 +477,32 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   border-radius: var(--radius);
 }
 
+.profile-upload-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.upload-progress {
+  flex: 1;
+  height: 2px;
+  background: var(--panel-sunken);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.upload-progress-fill {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width var(--dur-fast) var(--ease);
+}
+
+.upload-cancel {
+  height: 24px;
+  padding: 0 8px;
+}
+
 .profile-stats {
   margin: 0;
   display: flex;

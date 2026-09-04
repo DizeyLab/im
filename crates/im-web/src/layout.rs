@@ -95,7 +95,50 @@ pub async fn avatar_script(cx: &Cx) -> Result {
             }); \
             document.addEventListener('change', function (e) { \
                 var input = e.target.closest ? e.target.closest('[data-autosubmit]') : null; \
-                if (input && input.form) { input.form.submit(); } \
+                if (!input || !input.form || input.form.__imUploading) { return; } \
+                var form = input.form; \
+                var head = input.closest('.profile-head'); \
+                if (!head) { form.submit(); return; } \
+                /* Captured before the input is disabled — a disabled control \
+                   is no longer listed, and the post would carry no file. */ \
+                var data = new FormData(form); \
+                form.__imUploading = true; \
+                input.disabled = true; \
+                var row = document.createElement('div'); \
+                row.className = 'profile-upload-row'; \
+                var bar = document.createElement('div'); \
+                bar.className = 'upload-progress'; \
+                var fill = document.createElement('div'); \
+                fill.className = 'upload-progress-fill'; \
+                bar.appendChild(fill); \
+                row.appendChild(bar); \
+                var cancel = document.createElement('button'); \
+                cancel.type = 'button'; \
+                cancel.className = 'admin-action upload-cancel'; \
+                cancel.textContent = '\\u00d7'; \
+                cancel.setAttribute('aria-label', 'Cancel upload'); \
+                row.appendChild(cancel); \
+                head.insertAdjacentElement('afterend', row); \
+                var settle = function () { \
+                    form.__imUploading = false; \
+                    input.disabled = false; \
+                    if (row.parentNode) { row.parentNode.removeChild(row); } \
+                }; \
+                var x = new XMLHttpRequest(); \
+                x.open('POST', form.getAttribute('action')); \
+                x.upload.onprogress = function (ev) { \
+                    if (ev.lengthComputable && ev.total > 0) { \
+                        fill.style.width = Math.min(100, Math.round((ev.loaded / ev.total) * 100)) + '%'; \
+                    } \
+                }; \
+                x.onload = function () { \
+                    settle(); \
+                    window.location.href = x.responseURL || form.getAttribute('action'); \
+                }; \
+                x.onerror = function () { settle(); form.submit(); }; \
+                x.onabort = function () { input.value = ''; settle(); }; \
+                cancel.addEventListener('click', function () { x.abort(); }); \
+                x.send(data); \
             }); \
         })();";
     view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
