@@ -126,7 +126,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         .query()
         .unwrap_or("")
         .to_string();
-    let section = query_value(&query, "section").unwrap_or_else(|| "account".to_string());
+    let section = query_value(&query, "section").unwrap_or_else(|| "users".to_string());
     let error = query_value(&query, "error");
     let ok = query_value(&query, "ok");
     let why = query_value(&query, "why");
@@ -134,7 +134,6 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
 
     let nav = |current: &str| {
         [
-            ("account", t(lang, Key::NavAccount)),
             ("users", t(lang, Key::NavUsers)),
             ("mail", t(lang, Key::NavMail)),
             ("settings", t(lang, Key::NavSettings)),
@@ -155,7 +154,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         "settings" => settings_section(cx, lang).await?,
         "logs" => logs_section(cx, lang).await?,
         "users" => users_section(cx, &me, invited.as_deref(), lang).await?,
-        _ => account_section(&me, lang),
+        _ => users_section(cx, &me, invited.as_deref(), lang).await?,
     };
 
     let banner = match (ok.as_deref(), error.as_deref()) {
@@ -169,7 +168,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                 "enabled" => t(lang, Key::OkEnabled),
                 "smtp" => t(lang, Key::OkSmtpSaved),
                 "smtp_test" => t(lang, Key::OkSmtpTest),
-                "password" => t(lang, Key::OkPasswordChanged),
+                "message" => t(lang, Key::OkMessageSent),
                 "uninvited" => t(lang, Key::OkUninvited),
                 "deleted" => t(lang, Key::OkDeleted),
                 "settings" => t(lang, Key::OkSettingsSaved),
@@ -206,38 +205,6 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
     shell(cx, t(lang, Key::TitleAdmin), Some(&me), stage)
         .await?
         .into_response(cx)
-}
-/// The self-service half of the panel: the account the panel is signed in
-/// as. Izlek keeps this on the settings rail's first tab; so do we.
-fn account_section(me: &User, lang: i18n::Lang) -> String {
-    let two_factor = if me.totp_confirmed {
-        t(lang, Key::TwoFactorOnNote)
-    } else {
-        t(lang, Key::TwoFactorOffNote)
-    };
-    format!(
-        r#"<div class="admin-card">
-  <div class="auth-title">{title}</div>
-  <div class="auth-sub">{sub}</div>
-  <form method="post" action="/admin/password" class="admin-form">
-    <label class="auth-field"><span class="auth-label">{current}</span>
-      <input class="auth-input auth-input-mono" type="password" name="current" autocomplete="current-password" required></label>
-    <label class="auth-field"><span class="auth-label">{new}</span>
-      <input class="auth-input auth-input-mono" type="password" name="password" autocomplete="new-password" minlength="10" required></label>
-    <label class="auth-field"><span class="auth-label">{again}</span>
-      <input class="auth-input auth-input-mono" type="password" name="password_confirm" autocomplete="new-password" minlength="10" required></label>
-    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">{change}</span></button>
-  </form>
-  <div class="auth-sub">{note}</div>
-</div>"#,
-        title = t(lang, Key::AccountTitle),
-        sub = i18n::account_sub(lang, &escape(&me.email), two_factor),
-        current = t(lang, Key::CurrentPasswordLabel),
-        new = t(lang, Key::NewPasswordLabel),
-        again = t(lang, Key::NewPasswordAgainLabel),
-        change = t(lang, Key::ChangePassword),
-        note = t(lang, Key::AccountPasswordNote),
-    )
 }
 
 /// One person's live sessions as the disclosure under their row: a small
@@ -337,10 +304,7 @@ async fn users_section(
         .join(" · ");
         let actions = if user.id == me.id {
             // Never let the only admin lock themselves out by reflex.
-            format!(
-                r#"<span class="muted">{}</span>"#,
-                t(lang, Key::YouWord)
-            )
+            format!(r#"<span class="muted">{}</span>"#, t(lang, Key::YouWord))
         } else {
             let id = escape(&user.id.to_string());
             let email = escape(&user.email);
@@ -567,6 +531,38 @@ async fn mail_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
     } else {
         format!(r#"<div class="admin-standing">{lede}</div>"#)
     };
+    let users = accounts::list_users(store).await?;
+    let mut options = format!(
+        r#"<option value="everyone">{}</option>"#,
+        t(lang, Key::EveryoneOption)
+    );
+    for person in &users {
+        options.push_str(&format!(
+            r#"<option value="{}">{} · {}</option>"#,
+            escape(person.id.as_str()),
+            escape(&person.name),
+            escape(&person.email),
+        ));
+    }
+    let message_card = format!(
+        r#"<div class="admin-card">
+  <div class="admin-card-head"><div class="auth-title">{msg_title}</div></div>
+  <form method="post" action="/admin/message" class="admin-form">
+    <label class="auth-field"><span class="auth-label">{to_label}</span>
+      <select class="auth-input" name="to">{options}</select></label>
+    <label class="auth-field"><span class="auth-label">{subject_label}</span>
+      <input class="auth-input" type="text" name="subject" required></label>
+    <label class="auth-field"><span class="auth-label">{body_label}</span>
+      <textarea class="auth-input" name="body" rows="5" required></textarea></label>
+    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">{send}</span></button>
+  </form>
+</div>"#,
+        msg_title = t(lang, Key::MessageTitle),
+        to_label = t(lang, Key::MessageToLabel),
+        subject_label = t(lang, Key::MessageSubjectLabel),
+        body_label = t(lang, Key::MessageBodyLabel),
+        send = t(lang, Key::SendMessageButton),
+    );
     Ok(format!(
         r#"<div class="admin-card">
   <div class="admin-card-head"><div class="auth-title">{title}</div><span class="{chip_class}">{chip_text}</span></div>
@@ -609,6 +605,7 @@ async fn mail_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         check = t(lang, Key::CheckConnectionButton),
         test = t(lang, Key::SendTestMailButton),
     ))
+    .map(|smtp_card| smtp_card + &message_card)
 }
 
 async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
@@ -731,49 +728,9 @@ async fn delete(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
 }
 
 #[derive(Deserialize)]
-struct PasswordForm {
-    current: String,
-    password: String,
-    password_confirm: String,
-}
-
-#[route(POST "/admin/password")]
-async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Result<Response> {
-    let me = match require_admin(cx).await {
-        Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
-    };
-    if input.password != input.password_confirm {
-        return back(cx, "account", "&error=passwords_differ");
-    }
-    let store = &app(cx).store;
-    match accounts::change_password(store, &me, &input.current, &input.password).await {
-        Ok(()) => {}
-        Err(accounts::AccountError::Password(problem)) => {
-            use im_core::accounts::PasswordProblem::*;
-            let code = match problem {
-                TooShort => "password_too_short",
-                LooksLikeYou => "password_personal",
-                WrongCurrent => "password_wrong",
-                IsCurrent => "password_same",
-            };
-            return back(cx, "account", &format!("&error={code}"));
-        }
-        Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
-    }
-    // Every other device is out; the browser holding this form proved the
-    // old password and keeps its session.
-    if let Some(token) = server::presented_session(cx) {
-        im_core::sessions::revoke_user_sessions_except(store, &me.id, &token).await?;
-    }
-    server::log_event(cx, "password_changed", Some(&me.email), None).await;
-    back(cx, "account", "&ok=password")
-}
-#[derive(Deserialize)]
 struct UserAction {
     user: String,
 }
-
 #[route(POST "/admin/revoke")]
 async fn revoke(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
     let me = match require_admin(cx).await {
@@ -908,6 +865,9 @@ async fn smtp_test(cx: &Cx) -> Result<Response> {
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
     };
+    if !settings::smtp(&app(cx).store).await?.configured() {
+        return back(cx, "mail", "&error=sender_unset");
+    }
     match mailer::send_test(&app(cx).store, &me.email, lang_of(Some(&me))).await {
         Ok(()) => {
             server::log_event(cx, "smtp_test_sent", Some(&me.email), None).await;
@@ -932,6 +892,71 @@ async fn smtp_test(cx: &Cx) -> Result<Response> {
         }
     }
 }
+
+#[derive(Deserialize)]
+struct MessageForm {
+    to: String,
+    subject: String,
+    body: String,
+}
+
+/// The composed notice, izlek's `send_message`: one person or everyone (the
+/// admin excluded — they wrote it), the words verbatim through the
+/// configured sender. A failure answers with the server's own words, like
+/// the test mail does.
+#[route(POST "/admin/message")]
+async fn message(cx: &Cx, Form(input): Form<MessageForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let store = &app(cx).store;
+    if !settings::smtp(store).await?.configured() {
+        return back(cx, "mail", "&error=sender_unset");
+    }
+    let subject = input.subject.trim();
+    if subject.is_empty() {
+        return back(cx, "mail", "&error=empty_subject");
+    }
+    let body = input.body.trim();
+    if body.is_empty() {
+        return back(cx, "mail", "&error=empty_body");
+    }
+    let users = accounts::list_users(store).await?;
+    let recipients: Vec<String> = if input.to == "everyone" {
+        users
+            .into_iter()
+            .filter(|person| person.id != me.id)
+            .map(|person| person.email)
+            .collect()
+    } else {
+        match users
+            .into_iter()
+            .find(|person| person.id.as_str() == input.to)
+        {
+            Some(person) => vec![person.email],
+            None => return back(cx, "mail", "&error=no_such_user"),
+        }
+    };
+    if recipients.is_empty() {
+        return back(cx, "mail", "&error=no_such_user");
+    }
+    for recipient in &recipients {
+        if let Err(e) = mailer::send_message(store, recipient, subject, body.to_string()).await {
+            server::log_event(cx, "message_failed", Some(&me.email), Some(&e.to_string())).await;
+            return back(
+                cx,
+                "mail",
+                &format!(
+                    "&error=message&why={}",
+                    crate::oidc::urlencode(&e.to_string())
+                ),
+            );
+        }
+    }
+    server::log_event(cx, "message_sent", Some(&me.email), Some(subject)).await;
+    back(cx, "mail", "&ok=message")
+}
 /// Dials the mail server without sending, on an admin's say-so, and writes
 /// down what it said. The result shows on the Mail section as the standing
 /// line; the panel redirects straight back.
@@ -941,6 +966,9 @@ async fn smtp_check(cx: &Cx) -> Result<Response> {
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
     };
+    if !settings::smtp(&app(cx).store).await?.configured() {
+        return back(cx, "mail", "&error=sender_unset");
+    }
     probe(store_of(cx), app(cx).live.clone()).await;
     server::log_event(cx, "smtp_checked", Some(&me.email), None).await;
     back(cx, "mail", "")

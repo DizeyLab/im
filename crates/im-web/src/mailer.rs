@@ -2,9 +2,9 @@
 //! built per send: settings can change at any moment, and invites are rare —
 //! the pool a long-lived transport would buy serves nothing here.
 
+use crate::i18n::{self, Lang};
 use im_core::settings::{self, Smtp};
 use im_core::store::Store;
-use crate::i18n::{self, Lang};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MailError {
@@ -136,4 +136,10 @@ pub async fn send_test(store: &Store, to: &str, lang: Lang) -> Result<()> {
         i18n::t(lang, i18n::Key::TestMailBody).to_string(),
     )
     .await
+}
+
+/// The panel's composed notice, izlek's `send_message`: the admin's words
+/// verbatim, to one address at a time, through the configured sender.
+pub async fn send_message(store: &Store, to: &str, subject: &str, body: String) -> Result<()> {
+    send(store, to, subject, body).await
 }

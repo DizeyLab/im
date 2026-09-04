@@ -42,6 +42,11 @@ pub fn error_text(code: &str, lang: Lang) -> &'static str {
         "bad_theme" => t(lang, Key::ErrBadTheme),
         "bad_ui" => t(lang, Key::ErrBadUi),
         "bad_language" => t(lang, Key::ErrBadLanguage),
+        "empty_subject" => t(lang, Key::ErrEmptySubject),
+        "empty_body" => t(lang, Key::ErrEmptyBody),
+        "no_such_user" => t(lang, Key::ErrNoSuchUser),
+        "message" => t(lang, Key::ErrMessageFailed),
+        "sender_unset" => t(lang, Key::ErrSenderUnset),
         _ => t(lang, Key::ErrFallback),
     }
 }
@@ -569,10 +574,13 @@ fn sessions_html(
 /// the proof of session, the person's profile — photo and the counts their
 /// identity has earned — and the way out. izlek gives a profile its own
 /// page under `/people`; im has exactly one signed-in screen, so the
-/// profile is a section of it.
+/// profile is a section of it. Six cards in one column ran twice the height
+/// of a window, so the landing is sectioned like the admin panel: a tab row
+/// under the wordmark, one section's cards at a time.
 async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let lang = lang_of(Some(user));
     let query = current_query(cx);
+    let section = query_value(&query, "section").unwrap_or_else(|| "profile".to_string());
     let ok = query_value(&query, "ok");
     let error = query_value(&query, "error");
     let stats = im_core::stats::profile_stats(&server::app(cx).store, &user.id).await?;
@@ -580,43 +588,141 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let sessions = im_core::sessions::list_sessions(&server::app(cx).store, &user.id).await?;
     let current = server::presented_session(cx).map(|token| im_core::accounts::hash_token(&token));
     let sessions_html = sessions_html(&sessions, current.as_deref(), lang);
+    // Same idiom as the admin panel's nav: one tab per section, the live one
+    // underlined.
+    let nav = [
+        ("profile", t(lang, Key::ProfileLabel)),
+        ("sessions", t(lang, Key::SessionsTitle)),
+        ("preferences", t(lang, Key::PreferencesLabel)),
+        ("password", t(lang, Key::PasswordLabel)),
+    ]
+    .into_iter()
+    .map(|(id, label)| {
+        format!(
+            r#"<a class="admin-nav{}" href="/?section={id}">{label}</a>"#,
+            if id == section { " admin-nav-on" } else { "" }
+        )
+    })
+    .collect::<String>();
     let stage = view! {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
                 (wordmark(cx).await?)
-                <div class="auth-card">
-                    <div class="profile-head">
-                        if user.has_photo {
-                            // The face is the whole control surface: it opens
-                            // the viewer, and the viewer carries Change/Remove
-                            // (avatar_script builds them for `data-own`). The
-                            // picker input hides here, unreached until the
-                            // viewer's Change label points at it by id.
-                            <button
-                                class="avatar-view"
-                                type="button"
-                                aria-label=(t(lang, Key::ViewPhotoAria))
-                                data-own=""
-                            >
-                                (avatar(cx, user).await?)
+                <nav class="admin-tabs landing-nav">(topcoat::view::Unescaped::new_unchecked(nav))</nav>
+                if let Some(code) = ok {
+                    <div class="auth-ok">(ok_text(&code, lang))</div>
+                }
+                if let Some(code) = error {
+                    <div class="auth-problem">(error_text(&code, lang))</div>
+                }
+                if section == "sessions" {
+                    <div class="auth-card">
+                        <div class="auth-title">(t(lang, Key::SessionsTitle))</div>
+                        <div class="session-list">(topcoat::view::Unescaped::new_unchecked(sessions_html))</div>
+                    </div>
+                    <div class="auth-card">
+                        <form method="post" action="/logout">
+                            <button class="auth-submit" type="submit">
+                                <span class="auth-submit-text">(t(lang, Key::SignOutEverywhere))</span>
                             </button>
-                            <input
-                                id="profile-photo-input"
-                                class="profile-file-hidden"
-                                type="file"
-                                name="photo"
-                                accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
-                                form="profile-photo-form"
-                                data-autosubmit=""
-                            >
-                        } else {
-                            // Without one, the face itself is the picker: the
-                            // label wraps the hidden input, which autosubmits
-                            // on change (avatar_script) — no buttons at all.
-                            <label class="profile-avatar-upload">
-                                (avatar(cx, user).await?)
+                        </form>
+                    </div>
+                }
+                if section == "preferences" {
+                    <div class="auth-card">
+                        <div class="auth-title">(t(lang, Key::PreferencesLabel))</div>
+                        <form method="post" action="/preferences">
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::ThemeLabel))</span>
+                                <select class="auth-input" name="theme">
+                                    <option value="light" selected=(user.theme == "light")>(t(lang, Key::LightOption))</option>
+                                    <option value="dark" selected=(user.theme == "dark")>(t(lang, Key::DarkOption))</option>
+                                </select>
+                            </label>
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::UiLabel))</span>
+                                <select class="auth-input" name="ui">
+                                    <option value="instrument" selected=(user.ui == "instrument")>(t(lang, Key::InstrumentOption))</option>
+                                    <option value="ledger" selected=(user.ui == "ledger")>(t(lang, Key::LedgerOption))</option>
+                                </select>
+                            </label>
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::LanguageLabel))</span>
+                                <select class="auth-input" name="language">
+                                    <option value="en" selected=(user.language == "en")>"English"</option>
+                                    <option value="tr" selected=(user.language == "tr")>"Türkçe"</option>
+                                </select>
+                            </label>
+                            <button class="auth-submit" type="submit">
+                                <span class="auth-submit-text">(t(lang, Key::SaveButton))</span>
+                            </button>
+                        </form>
+                    </div>
+                }
+                if section == "password" {
+                    <div class="auth-card">
+                        <div class="auth-title">(t(lang, Key::ChangePassword))</div>
+                        <form method="post" action="/password">
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::CurrentPasswordLabel))</span>
                                 <input
+                                    class="auth-input auth-input-mono"
+                                    type="password"
+                                    name="current"
+                                    autocomplete="current-password"
+                                    required=""
+                                >
+                            </label>
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::NewPasswordLabel))</span>
+                                <input
+                                    class="auth-input auth-input-mono"
+                                    type="password"
+                                    name="password"
+                                    autocomplete="new-password"
+                                    minlength=(MIN_PASSWORD_CHARS.to_string())
+                                    required=""
+                                >
+                            </label>
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::NewPasswordAgainLabel))</span>
+                                <input
+                                    class="auth-input auth-input-mono"
+                                    type="password"
+                                    name="password_confirm"
+                                    autocomplete="new-password"
+                                    minlength=(MIN_PASSWORD_CHARS.to_string())
+                                    required=""
+                                >
+                            </label>
+                            <button class="auth-submit" type="submit">
+                                <span class="auth-submit-text">(t(lang, Key::ChangePassword))</span>
+                            </button>
+                        </form>
+                        <div class="auth-sub">(t(lang, Key::AccountPasswordNote))</div>
+                    </div>
+                }
+                if section != "sessions" && section != "preferences" && section != "password" {
+                    <div class="auth-card">
+                        <div class="profile-head">
+                            if user.has_photo {
+                                // The face is the whole control surface: it opens
+                                // the viewer, and the viewer carries Change/Remove
+                                // (avatar_script builds them for a `data-own`
+                                // face). The picker input hides here, unreached
+                                // until the viewer's Change label points at it by
+                                // id.
+                                <button
+                                    class="avatar-view"
+                                    type="button"
+                                    aria-label=(t(lang, Key::ViewPhotoAria))
+                                    data-own=""
+                                >
+                                    (avatar(cx, user).await?)
+                                </button>
+                                <input
+                                    id="profile-photo-input"
                                     class="profile-file-hidden"
                                     type="file"
                                     name="photo"
@@ -624,156 +730,84 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                     form="profile-photo-form"
                                     data-autosubmit=""
                                 >
-                            </label>
-                        }
-                        <div class="profile-heading">
-                            <div class="auth-title">(user.name.clone())</div>
-                            <div class="profile-marks">
-                                if user.totp_confirmed {
-                                    <span class="chip chip-connected">(t(lang, Key::TwoFaOn))</span>
-                                } else {
-                                    <span class="chip chip-muted">(t(lang, Key::TwoFaOff))</span>
-                                }
-                                if user.admin {
-                                    <span class="chip chip-accent">(t(lang, Key::AdminChip))</span>
-                                }
+                            } else {
+                                // Without one, the face itself is the picker: the
+                                // label wraps the hidden input, which autosubmits
+                                // on change (avatar_script) — no buttons at all.
+                                <label class="profile-avatar-upload">
+                                    (avatar(cx, user).await?)
+                                    <input
+                                        class="profile-file-hidden"
+                                        type="file"
+                                        name="photo"
+                                        accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+                                        form="profile-photo-form"
+                                        data-autosubmit=""
+                                    >
+                                </label>
+                            }
+                            <div class="profile-heading">
+                                <div class="auth-title">(user.name.clone())</div>
+                                <div class="profile-marks">
+                                    if user.totp_confirmed {
+                                        <span class="chip chip-connected">(t(lang, Key::TwoFaOn))</span>
+                                    } else {
+                                        <span class="chip chip-muted">(t(lang, Key::TwoFaOff))</span>
+                                    }
+                                    if user.admin {
+                                        <span class="chip chip-accent">(t(lang, Key::AdminChip))</span>
+                                    }
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    if let Some(code) = ok {
-                        <div class="auth-ok">(ok_text(&code, lang))</div>
-                    }
-                    if let Some(code) = error {
-                        <div class="auth-problem">(error_text(&code, lang))</div>
-                    }
-                    <dl class="profile-fields">
-                        <div class="profile-field">
-                            <dt class="auth-label">(t(lang, Key::EmailLabel))</dt>
-                            <dd class="profile-value mono">(user.email.clone())</dd>
-                        </div>
-                        <div class="profile-field">
-                            <dt class="auth-label">(t(lang, Key::MemberSinceLabel))</dt>
-                            <dd class="profile-value">(joined)</dd>
-                        </div>
-                    </dl>
-                    <a class="auth-alt" href=(format!("/people/{}", user.id))>(t(lang, Key::PublicProfileLink))</a>
-                    // Both forms carry no visible chrome of their own: the
-                    // picker input hides beside the face, the remove button
-                    // lives in the viewer — all reaching here by `form=`.
-                    <form
-                        id="profile-photo-form"
-                        method="post"
-                        action="/api/profile_photo"
-                        enctype="multipart/form-data"
-                    ></form>
-                    if user.has_photo {
+                        <dl class="profile-fields">
+                            <div class="profile-field">
+                                <dt class="auth-label">(t(lang, Key::EmailLabel))</dt>
+                                <dd class="profile-value mono">(user.email.clone())</dd>
+                            </div>
+                            <div class="profile-field">
+                                <dt class="auth-label">(t(lang, Key::MemberSinceLabel))</dt>
+                                <dd class="profile-value">(joined)</dd>
+                            </div>
+                        </dl>
+                        <a class="auth-alt" href=(format!("/people/{}", user.id))>(t(lang, Key::PublicProfileLink))</a>
+                        if user.admin {
+                            <a class="auth-alt" href="/admin">(t(lang, Key::AdminPanelLink))</a>
+                        }
+                        // Both forms carry no visible chrome of their own: the
+                        // picker input hides beside the face, the remove button
+                        // lives in the viewer — all reaching here by `form=`.
                         <form
-                            id="profile-photo-remove"
+                            id="profile-photo-form"
                             method="post"
-                            action="/api/delete_profile_photo"
+                            action="/api/profile_photo"
+                            enctype="multipart/form-data"
                         ></form>
-                    }
-                </div>
-                <div class="auth-card">
-                    <dl class="profile-stats">
-                        <div class="profile-stat">
-                            <dd class="profile-stat-value">(stats.sign_ins)</dd>
-                            <dt class="auth-label">(t(lang, Key::StatSignIns))</dt>
-                        </div>
-                        <div class="profile-stat">
-                            <dd class="profile-stat-value">(stats.active_sessions)</dd>
-                            <dt class="auth-label">(t(lang, Key::StatActiveSessions))</dt>
-                        </div>
-                        <div class="profile-stat">
-                            <dd class="profile-stat-value">(stats.connected_apps)</dd>
-                            <dt class="auth-label">(t(lang, Key::StatConnectedApps))</dt>
-                        </div>
-                    </dl>
-                </div>
-                <div class="auth-card">
-                    <div class="auth-title">(t(lang, Key::SessionsTitle))</div>
-                    <div class="session-list">(topcoat::view::Unescaped::new_unchecked(sessions_html))</div>
-                </div>
-                <div class="auth-card" id="preferences">
-                    <div class="auth-title">(t(lang, Key::PreferencesLabel))</div>
-                    <form method="post" action="/preferences">
-                        <label class="auth-field">
-                            <span class="auth-label">(t(lang, Key::ThemeLabel))</span>
-                            <select class="auth-input" name="theme">
-                                <option value="light" selected=(user.theme == "light")>(t(lang, Key::LightOption))</option>
-                                <option value="dark" selected=(user.theme == "dark")>(t(lang, Key::DarkOption))</option>
-                            </select>
-                        </label>
-                        <label class="auth-field">
-                            <span class="auth-label">(t(lang, Key::UiLabel))</span>
-                            <select class="auth-input" name="ui">
-                                <option value="instrument" selected=(user.ui == "instrument")>(t(lang, Key::InstrumentOption))</option>
-                                <option value="ledger" selected=(user.ui == "ledger")>(t(lang, Key::LedgerOption))</option>
-                            </select>
-                        </label>
-                        <label class="auth-field">
-                            <span class="auth-label">(t(lang, Key::LanguageLabel))</span>
-                            <select class="auth-input" name="language">
-                                <option value="en" selected=(user.language == "en")>"English"</option>
-                                <option value="tr" selected=(user.language == "tr")>"Türkçe"</option>
-                            </select>
-                        </label>
-                        <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">(t(lang, Key::SaveButton))</span>
-                        </button>
-                    </form>
-                </div>
-                <div class="auth-card" id="password">
-                    <div class="auth-title">(t(lang, Key::ChangePassword))</div>
-                    <form method="post" action="/password">
-                        <label class="auth-field">
-                            <span class="auth-label">(t(lang, Key::CurrentPasswordLabel))</span>
-                            <input
-                                class="auth-input auth-input-mono"
-                                type="password"
-                                name="current"
-                                autocomplete="current-password"
-                                required=""
-                            >
-                        </label>
-                        <label class="auth-field">
-                            <span class="auth-label">(t(lang, Key::NewPasswordLabel))</span>
-                            <input
-                                class="auth-input auth-input-mono"
-                                type="password"
-                                name="password"
-                                autocomplete="new-password"
-                                minlength=(MIN_PASSWORD_CHARS.to_string())
-                                required=""
-                            >
-                        </label>
-                        <label class="auth-field">
-                            <span class="auth-label">(t(lang, Key::NewPasswordAgainLabel))</span>
-                            <input
-                                class="auth-input auth-input-mono"
-                                type="password"
-                                name="password_confirm"
-                                autocomplete="new-password"
-                                minlength=(MIN_PASSWORD_CHARS.to_string())
-                                required=""
-                            >
-                        </label>
-                        <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">(t(lang, Key::ChangePassword))</span>
-                        </button>
-                    </form>
-                    <div class="auth-sub">(t(lang, Key::AccountPasswordNote))</div>
-                </div>
-                <div class="auth-card">
-                    <form method="post" action="/logout">
-                        <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">(t(lang, Key::SignOutEverywhere))</span>
-                        </button>
-                    </form>
-                    if user.admin {
-                        <a class="auth-alt" href="/admin">(t(lang, Key::AdminPanelLink))</a>
-                    }
-                </div>
+                        if user.has_photo {
+                            <form
+                                id="profile-photo-remove"
+                                method="post"
+                                action="/api/delete_profile_photo"
+                            ></form>
+                        }
+                    </div>
+                    <div class="auth-card">
+                        <dl class="profile-stats">
+                            <div class="profile-stat">
+                                <dd class="profile-stat-value">(stats.sign_ins)</dd>
+                                <dt class="auth-label">(t(lang, Key::StatSignIns))</dt>
+                            </div>
+                            <div class="profile-stat">
+                                <dd class="profile-stat-value">(stats.active_sessions)</dd>
+                                <dt class="auth-label">(t(lang, Key::StatActiveSessions))</dt>
+                            </div>
+                            <div class="profile-stat">
+                                <dd class="profile-stat-value">(stats.connected_apps)</dd>
+                                <dt class="auth-label">(t(lang, Key::StatConnectedApps))</dt>
+                            </div>
+                        </dl>
+                    </div>
+                }
                 <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>

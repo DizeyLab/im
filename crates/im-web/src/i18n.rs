@@ -81,6 +81,7 @@ pub enum Key {
     SignInSub,
     EmailLabel,
     PasswordLabel,
+    ProfileLabel,
     SignInButton,
     ForgotIt,
     BrandFooter,
@@ -139,7 +140,6 @@ pub enum Key {
     RevokeButton,
 
     // Admin panel nav and banners.
-    NavAccount,
     NavUsers,
     NavMail,
     NavSettings,
@@ -150,16 +150,25 @@ pub enum Key {
     OkEnabled,
     OkSmtpSaved,
     OkSmtpTest,
-    OkPasswordChanged,
     OkUninvited,
     OkDeleted,
     OkSettingsSaved,
+    OkMessageSent,
 
-    // Admin account section.
-    AccountTitle,
-    SignedInAs,
-    TwoFactorOnNote,
-    TwoFactorOffNote,
+    // Admin mail section: the composed notice.
+    MessageTitle,
+    MessageToLabel,
+    EveryoneOption,
+    MessageSubjectLabel,
+    MessageBodyLabel,
+    SendMessageButton,
+    ErrEmptySubject,
+    ErrEmptyBody,
+    ErrNoSuchUser,
+    ErrMessageFailed,
+    ErrSenderUnset,
+
+    // Landing password pane.
     AccountPasswordNote,
 
     // Admin users section.
@@ -330,6 +339,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (EmailLabel, Tr) => "E-posta",
         (PasswordLabel, En) => "Password",
         (PasswordLabel, Tr) => "Parola",
+        (ProfileLabel, En) => "Profile",
+        (ProfileLabel, Tr) => "Profil",
         (SignInButton, En) => "Sign in",
         (SignInButton, Tr) => "Giriş yap",
         (ForgotIt, En) => "Forgot it?",
@@ -347,7 +358,9 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (InviteTitle, En) => "You're invited",
         (InviteTitle, Tr) => "Davetlisin",
         (InviteSub, En) => "Pick a name and a password. Next step sets up two-factor sign-in.",
-        (InviteSub, Tr) => "Bir ad ve bir parola seç. Sonraki adımda iki faktörlü girişi kuracaksın.",
+        (InviteSub, Tr) => {
+            "Bir ad ve bir parola seç. Sonraki adımda iki faktörlü girişi kuracaksın."
+        }
         (YourNameLabel, En) => "Your name",
         (YourNameLabel, Tr) => "Adın",
         (PasswordAgainLabel, En) => "Password again",
@@ -444,8 +457,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (RevokeButton, En) => "Revoke",
         (RevokeButton, Tr) => "İptal et",
 
-        (NavAccount, En) => "Account",
-        (NavAccount, Tr) => "Hesap",
         (NavUsers, En) => "Users",
         (NavUsers, Tr) => "Kullanıcılar",
         (NavMail, En) => "Mail",
@@ -466,25 +477,42 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (OkSmtpSaved, Tr) => "Posta ayarları kaydedildi.",
         (OkSmtpTest, En) => "Test mail sent.",
         (OkSmtpTest, Tr) => "Test postası gönderildi.",
-        (OkPasswordChanged, En) => "Password changed — every other device is signed out.",
-        (OkPasswordChanged, Tr) => "Parola değişti — diğer tüm cihazların oturumu kapatıldı.",
         (OkUninvited, En) => "Invite invalidated — the link is dead.",
         (OkUninvited, Tr) => "Davet geçersiz kılındı — bağlantı artık ölü.",
         (OkDeleted, En) => "Account deleted.",
         (OkDeleted, Tr) => "Hesap silindi.",
         (OkSettingsSaved, En) => "Settings saved.",
         (OkSettingsSaved, Tr) => "Ayarlar kaydedildi.",
+        (OkMessageSent, En) => "Message sent.",
+        (OkMessageSent, Tr) => "Mesaj gönderildi.",
 
-        (AccountTitle, En) => "Account",
-        (AccountTitle, Tr) => "Hesap",
-        (SignedInAs, En) => "Signed in as",
-        (SignedInAs, Tr) => "Giriş yapılan hesap",
-        (TwoFactorOnNote, En) => "two-factor is on",
-        (TwoFactorOnNote, Tr) => "iki faktörlü doğrulama açık",
-        (TwoFactorOffNote, En) => "two-factor is NOT on — sign out and back in to set it up",
-        (TwoFactorOffNote, Tr) => "iki faktörlü doğrulama KAPALI — kurmak için oturumu kapatıp tekrar aç",
+        (MessageTitle, En) => "Send a message",
+        (MessageTitle, Tr) => "Mesaj gönder",
+        (MessageToLabel, En) => "To",
+        (MessageToLabel, Tr) => "Kime",
+        (EveryoneOption, En) => "Everyone",
+        (EveryoneOption, Tr) => "Herkes",
+        (MessageSubjectLabel, En) => "Subject",
+        (MessageSubjectLabel, Tr) => "Konu",
+        (MessageBodyLabel, En) => "Message",
+        (MessageBodyLabel, Tr) => "Mesaj",
+        (SendMessageButton, En) => "Send",
+        (SendMessageButton, Tr) => "Gönder",
+        (ErrEmptySubject, En) => "A subject is needed.",
+        (ErrEmptySubject, Tr) => "Bir konu gerekli.",
+        (ErrEmptyBody, En) => "The message is empty.",
+        (ErrEmptyBody, Tr) => "Mesaj boş.",
+        (ErrNoSuchUser, En) => "No such person.",
+        (ErrNoSuchUser, Tr) => "Böyle biri yok.",
+        (ErrMessageFailed, En) => "That mail did not send — the server's words are below.",
+        (ErrMessageFailed, Tr) => "Posta gönderilemedi — sunucunun söyledikleri aşağıda.",
+        (ErrSenderUnset, En) => "Set up the sender above first.",
+        (ErrSenderUnset, Tr) => "Önce yukarıdan göndereni kur.",
+
         (AccountPasswordNote, En) => "Changing it signs every other device out — this one stays.",
-        (AccountPasswordNote, Tr) => "Değiştirince diğer tüm cihazların oturumu kapanır — bu cihaz açık kalır.",
+        (AccountPasswordNote, Tr) => {
+            "Değiştirince diğer tüm cihazların oturumu kapanır — bu cihaz açık kalır."
+        }
         (AdminSessionsEmpty, En) => "No active sessions",
         (AdminSessionsEmpty, Tr) => "Aktif oturum yok",
 
@@ -663,20 +691,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (Remove, Tr) => "Kaldır",
         (CancelUploadLabel, En) => "Cancel upload",
         (CancelUploadLabel, Tr) => "Yüklemeyi iptal et",
-    }
-}
-
-/// The account section's "Signed in as … · …" line, in the admin's language.
-/// `email_html` is already escaped; the mono span is markup, not prose.
-pub fn account_sub(lang: Lang, email_html: &str, two_factor: &str) -> String {
-    match lang {
-        Lang::En => format!(
-            "{} <span class=\"mono\">{email_html}</span> · {two_factor}.",
-            t(lang, Key::SignedInAs)
-        ),
-        Lang::Tr => format!(
-            "<span class=\"mono\">{email_html}</span> olarak giriş yapıldı · {two_factor}."
-        ),
     }
 }
 

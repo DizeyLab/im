@@ -371,10 +371,10 @@ async fn revoke_session(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Redire
         .find(|s| s.token_hash == input.session)
         .and_then(|s| s.ip);
     if !im_core::sessions::revoke_owned_session(store, &user.id, &input.session).await? {
-        return see("/?error=session_unknown".to_string());
+        return see("/?section=sessions&error=session_unknown".to_string());
     }
     server::log_event(cx, "session_revoked", Some(&user.email), ip.as_deref()).await;
-    see("/?ok=session_revoked".to_string())
+    see("/?section=sessions&ok=session_revoked".to_string())
 }
 
 #[derive(Deserialize)]
@@ -393,27 +393,27 @@ async fn preferences(cx: &Cx, Form(input): Form<PreferencesForm>) -> Redirect {
         return see("/".to_string());
     };
     let Some(theme) = input.theme.as_deref() else {
-        return see("/?error=bad_theme".to_string());
+        return see("/?section=preferences&error=bad_theme".to_string());
     };
     if theme != "light" && theme != "dark" {
-        return see("/?error=bad_theme".to_string());
+        return see("/?section=preferences&error=bad_theme".to_string());
     }
     let Some(ui) = input.ui.as_deref() else {
-        return see("/?error=bad_ui".to_string());
+        return see("/?section=preferences&error=bad_ui".to_string());
     };
     if ui != "instrument" && ui != "ledger" {
-        return see("/?error=bad_ui".to_string());
+        return see("/?section=preferences&error=bad_ui".to_string());
     }
     let Some(language) = input.language.as_deref() else {
-        return see("/?error=bad_language".to_string());
+        return see("/?section=preferences&error=bad_language".to_string());
     };
     if language != "en" && language != "tr" {
-        return see("/?error=bad_language".to_string());
+        return see("/?section=preferences&error=bad_language".to_string());
     }
     let store = &server::app(cx).store;
     im_core::accounts::set_preferences(store, &user.id, theme, language, ui).await?;
     server::log_event(cx, "preferences_saved", Some(&user.email), None).await;
-    see("/?ok=preferences".to_string())
+    see("/?section=preferences&ok=preferences".to_string())
 }
 
 #[derive(Deserialize)]
@@ -433,7 +433,7 @@ async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Redirect {
         return see("/".to_string());
     };
     if input.password != input.password_confirm {
-        return see("/?error=passwords_differ".to_string());
+        return see("/?section=password&error=passwords_differ".to_string());
     }
     let store = &server::app(cx).store;
     match im_core::accounts::change_password(store, &me, &input.current, &input.password).await {
@@ -446,7 +446,7 @@ async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Redirect {
                 WrongCurrent => "password_wrong",
                 IsCurrent => "password_same",
             };
-            return see(format!("/?error={code}"));
+            return see(format!("/?section=password&error={code}"));
         }
         Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
     }
@@ -454,5 +454,5 @@ async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Redirect {
         im_core::sessions::revoke_user_sessions_except(store, &me.id, &token).await?;
     }
     server::log_event(cx, "password_changed", Some(&me.email), None).await;
-    see("/?ok=password".to_string())
+    see("/?section=password&ok=password".to_string())
 }

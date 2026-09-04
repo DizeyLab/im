@@ -313,6 +313,11 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   letter-spacing: 0.02em;
 }
 
+.landing-nav {
+  justify-content: center;
+  padding: 4px 0 10px;
+}
+
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -400,6 +405,12 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
 }
 .auth-input:user-invalid {
   border-color: var(--danger);
+}
+
+textarea.auth-input {
+  height: auto;
+  padding: 10px 12px;
+  resize: vertical;
 }
 
 .auth-input-mono {

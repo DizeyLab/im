@@ -250,6 +250,7 @@ body:has(.auth-stage) {
   gap: 10px;
   text-decoration: none;
   color: inherit;
+
   padding: 6px 0;
 
   &:hover { color: inherit; }
@@ -269,6 +270,13 @@ body:has(.auth-stage) {
     font-weight: 500;
     letter-spacing: 0.02em;
   }
+}
+
+// The landing's section tabs wear the admin nav's skin, centred under the
+// wordmark instead of left-aligned in the admin bar.
+.landing-nav {
+  justify-content: center;
+  padding: 4px 0 10px;
 }
 
 .auth-card {
@@ -363,6 +371,14 @@ body:has(.auth-stage) {
   &:user-invalid {
     border-color: var(--danger);
   }
+}
+
+// The message body is the one multi-line field: same skin, height from
+// `rows`, vertical resize only.
+textarea.auth-input {
+  height: auto;
+  padding: 10px 12px;
+  resize: vertical;
 }
 
 .auth-input-mono {
