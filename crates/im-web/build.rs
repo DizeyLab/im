@@ -6,8 +6,9 @@
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    let scss = format!("{manifest_dir}/../../style/main.scss");
+    println!("cargo:rerun-if-changed={manifest_dir}/../../style/main.scss");
     println!("cargo:rerun-if-changed={manifest_dir}/../../style/_ledger.scss");
+    let scss = format!("{manifest_dir}/../../style/main.scss");
 
     let css = grass::from_path(&scss, &grass::Options::default())
         .unwrap_or_else(|err| panic!("failed to compile {scss}: {err}"));

@@ -800,8 +800,10 @@ body:has(.admin-shell) {
 .admin-bar {
   display: flex;
   align-items: center;
-  gap: 20px;
-  height: var(--control-h-lg);
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  min-height: var(--control-h-lg);
+  padding: 6px 0;
 }
 .admin-bar .wordmark-text {
   font-size: 15px;
@@ -809,7 +811,8 @@ body:has(.admin-shell) {
 
 .admin-tabs {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px 16px;
 }
 
 .admin-nav {
@@ -842,6 +845,7 @@ body:has(.admin-shell) {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  overflow-x: auto;
 }
 
 .admin-table {

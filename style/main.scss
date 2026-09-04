@@ -800,15 +800,18 @@ body:has(.admin-shell) {
 .admin-bar {
   display: flex;
   align-items: center;
-  gap: 20px;
-  height: var(--control-h-lg);
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  min-height: var(--control-h-lg);
+  padding: 6px 0;
 
   .wordmark-text { font-size: 15px; }
 }
 
 .admin-tabs {
   display: flex;
-  gap: 16px;
+  flex-wrap: wrap;
+  gap: 8px 16px;
 }
 
 .admin-nav {
@@ -838,6 +841,9 @@ body:has(.admin-shell) {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  // Logs/users tables are wider than a phone; the card scrolls sideways
+  // instead of pushing the whole page out.
+  overflow-x: auto;
 }
 
 .admin-table {
