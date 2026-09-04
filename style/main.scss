@@ -236,6 +236,46 @@ body:has(.auth-stage) {
   gap: 10px;
 }
 
+// The signed-in landing is a dashboard, not a gate: six cards in one 520px
+// column run twice the height of a desktop window. Wide viewports spread the
+// cards across columns so the whole page is on screen; narrow ones keep the
+// single file. Placement is explicit per card (source order: wordmark,
+// profile, stats, sessions, preferences, password, sign-out) so the columns
+// balance by height instead of pairing by source order.
+@media (min-width: 900px) {
+  .landing {
+    width: 1060px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+    gap: 16px;
+
+    > .wordmark { grid-column: 1 / -1; }
+    // Tall cards (profile, password) anchor the left; the short ones stack
+    // right. Row heights couple, so this pairing is what keeps it shortest.
+    > :nth-child(2) { grid-column: 1; grid-row: 2; }    // profile
+    > :nth-child(3) { grid-column: 2; grid-row: 2; }    // stats
+    > :nth-child(4) { grid-column: 2; grid-row: 3; }    // sessions
+    > :nth-child(5) { grid-column: 2; grid-row: 4; }    // preferences
+    > :nth-child(6) { grid-column: 1; grid-row: 3; }    // password
+    > :nth-child(7) { grid-column: 1; grid-row: 4; }    // sign out
+  }
+}
+
+@media (min-width: 1100px) {
+  .landing {
+    width: 1320px;
+    grid-template-columns: 1fr 1fr 1fr;
+
+    > :nth-child(2) { grid-column: 1; grid-row: 2; }    // profile
+    > :nth-child(3) { grid-column: 1; grid-row: 3; }    // stats
+    > :nth-child(4) { grid-column: 2; grid-row: 2; }    // sessions
+    > :nth-child(5) { grid-column: 2; grid-row: 3; }    // preferences
+    > :nth-child(6) { grid-column: 3; grid-row: 2; }    // password
+    > :nth-child(7) { grid-column: 3; grid-row: 3; }    // sign out
+  }
+}
+
 // The brand lockup. Lower case, and not by taste: capitalised, the dotted
 // `i` becomes `I` and the name reads as the English word. The tittle is the
 // Turkish one, in the word as it is in the mark.

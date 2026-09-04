@@ -228,7 +228,9 @@ async fn totp(cx: &Cx) -> Result<Response> {
                     </div>
                 </main>
             };
-            shell(cx, t(lang, Key::TitleTotp), None, stage).await?.into_response(cx)
+            shell(cx, t(lang, Key::TitleTotp), None, stage)
+                .await?
+                .into_response(cx)
         }
         _ => see_other("/login").into_response(cx),
     }
@@ -581,7 +583,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let stage = view! {
         cx =>
         <main class="auth-stage">
-            <div class="auth-column">
+            <div class="auth-column landing">
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="profile-head">
