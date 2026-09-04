@@ -583,7 +583,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let stage = view! {
         cx =>
         <main class="auth-stage">
-            <div class="auth-column landing">
+            <div class="auth-column">
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="profile-head">
