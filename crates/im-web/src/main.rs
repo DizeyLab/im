@@ -8,7 +8,7 @@ use im_core::store::Store;
 use topcoat::Result;
 use topcoat::asset::RouterBuilderAssetExt;
 use topcoat::cookie::RouterBuilderCookieExt;
-use topcoat::router::{Router, RouterBuilderDiscoverExt, route};
+use topcoat::router::{BodyLimit, Router, RouterBuilderDiscoverExt, route};
 
 mod admin;
 mod auth;
@@ -18,6 +18,8 @@ mod live;
 mod mailer;
 mod oidc;
 mod pages;
+mod people;
+mod photo;
 mod server;
 
 use config::Config;
@@ -228,9 +230,14 @@ async fn serve(config: Config) {
 
     let router = Router::builder()
         .discover()
+        // Headroom over the photo cap: the boundary and part headers ride
+        // inside the body limit, so the handler's byte cap — not this layer —
+        // stays the one that says "over 5 MB".
+        .layer(BodyLimit::max(photo::PHOTO_LIMIT_BYTES as usize + 4096).at("/api/profile_photo"))
         .cookies()
         .assets(bundle)
         .app_context(app)
+        .app_context(photo::PhotoStamps::default())
         .app_context(live::Shutdown(stopping))
         .build();
 

@@ -20,6 +20,35 @@ pub async fn wordmark(cx: &Cx) -> Result {
     }
 }
 
+/// The profile card's face: the photo when the account has one, the name's
+/// first letter on a quiet tile when it does not. The URL's stamp comes from
+/// `photo::PhotoStamps`, so a changed photo is a changed URL.
+pub async fn avatar(cx: &Cx, user: &im_core::model::User) -> Result {
+    if user.has_photo {
+        let src = format!(
+            "/photo/{}?v={}",
+            user.id,
+            crate::photo::photo_stamp(cx, &user.id.to_string())
+        );
+        view! {
+            cx =>
+            <img class="profile-avatar" src=(src) alt=(user.name.clone())>
+        }
+    } else {
+        let initial = user
+            .name
+            .chars()
+            .next()
+            .unwrap_or('?')
+            .to_uppercase()
+            .to_string();
+        view! {
+            cx =>
+            <span class="profile-avatar profile-avatar-initial">(initial)</span>
+        }
+    }
+}
+
 /// A full document around an already-rendered stage — the same way
 /// izlek-web's `#[layout]` receives its slot.
 pub async fn shell(cx: &Cx, title: &str, stage: Result) -> Result {

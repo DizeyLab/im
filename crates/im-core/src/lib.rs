@@ -14,11 +14,15 @@ pub mod keys;
 #[cfg(feature = "server")]
 pub mod oidc;
 #[cfg(feature = "server")]
+pub mod photos;
+#[cfg(feature = "server")]
 mod secret;
 #[cfg(feature = "server")]
 pub mod sessions;
 #[cfg(feature = "server")]
 pub mod settings;
+#[cfg(feature = "server")]
+pub mod stats;
 #[cfg(feature = "server")]
 pub mod store;
 #[cfg(feature = "server")]

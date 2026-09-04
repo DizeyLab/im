@@ -17,9 +17,11 @@ topcoat = { version = "0.6.2", default-features = false, features = [
   "discover",
   "serve",
   "compression",
+  "multipart",
   "sse",
 ] }
 futures-util = { version = "0.3", default-features = false }
+parking_lot = "0.12"
 im-core = { workspace = true, features = ["server"] }
 serde.workspace = true
 serde_json.workspace = true

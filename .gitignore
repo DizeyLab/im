@@ -6,3 +6,4 @@
 /im-migrate-mapping.csv
 /public/*
 !/public/.gitkeep
+/storage

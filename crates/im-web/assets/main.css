@@ -334,6 +334,122 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   padding-top: 4px;
 }
 
+.profile-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.profile-avatar {
+  flex: none;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  object-fit: cover;
+}
+
+.profile-avatar-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--panel-sunken);
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 500;
+  user-select: none;
+}
+
+.profile-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.profile-marks {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip-accent {
+  background: var(--accent-tint);
+  border: 1px solid var(--border-strong);
+  color: var(--accent-ink);
+}
+
+.profile-fields {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.profile-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profile-value {
+  margin: 0;
+  font-size: 13px;
+}
+
+.profile-photo-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.profile-photo-actions .profile-upload {
+  flex: 1;
+  width: auto;
+}
+
+#profile-photo-remove {
+  display: none;
+}
+
+.profile-file {
+  height: auto;
+  padding: 7px 12px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.profile-file::file-selector-button {
+  margin-right: 10px;
+  padding: 4px 10px;
+  background: var(--panel-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.profile-stats {
+  margin: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.profile-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.profile-stat-value {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
 @media (max-width: 720px) {
   .auth-stage {
     padding: 0 16px 24px;

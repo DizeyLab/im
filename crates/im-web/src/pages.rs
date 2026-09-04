@@ -11,7 +11,7 @@ use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{page, path_param, route};
 use topcoat::view::view;
 
-use crate::layout::{shell, wordmark};
+use crate::layout::{avatar, shell, wordmark};
 use crate::server::{self, PendingPurpose};
 
 path_param!(token);
@@ -34,6 +34,9 @@ pub fn error_text(code: &str) -> &'static str {
         "password_wrong" => "That's not your current password.",
         "password_same" => "That's already your password.",
         "rate_limited" => "Too many tries — wait a while and try again.",
+        "photo_too_big" => "That image is over 5 MB.",
+        "not_an_image" => "That file is not an image.",
+        "no_file" => "Choose an image first.",
         "reset_invalid" => "This reset link is not valid — ask for a fresh one.",
         _ => "Something went wrong. Try again.",
     }
@@ -43,6 +46,9 @@ pub fn error_text(code: &str) -> &'static str {
 pub fn ok_text(code: &str) -> &'static str {
     match code {
         "reset" => "Password changed — sign in with the new one.",
+        "enrolled" => "Two-factor sign-in is on. You're all set.",
+        "photo_saved" => "Profile photo updated.",
+        "photo_removed" => "Profile photo removed.",
         _ => "Done.",
     }
 }
@@ -404,23 +410,115 @@ async fn enroll(cx: &Cx) -> Result<Response> {
 }
 
 /// The signed-in landing. im is an auth service, not an app: this page is
-/// the proof of session, the way out, and nothing more.
+/// the proof of session, the person's profile — photo and the counts their
+/// identity has earned — and the way out. izlek gives a profile its own
+/// page under `/people`; im has exactly one signed-in screen, so the
+/// profile is a section of it.
 async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let query = current_query(cx);
     let ok = query_value(&query, "ok");
+    let error = query_value(&query, "error");
+    let stats = im_core::stats::profile_stats(&server::app(cx).store, &user.id).await?;
+    let joined = user.created_at.date().to_string();
     let stage = view! {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
                 (wordmark(cx).await?)
                 <div class="auth-card">
-                    <div class="auth-head">
-                        <div class="auth-title">(format!("Signed in as {}", user.name))</div>
-                        <div class="auth-sub">(user.email.clone())</div>
+                    <div class="profile-head">
+                        (avatar(cx, user).await?)
+                        <div class="profile-heading">
+                            <div class="auth-title">(user.name.clone())</div>
+                            <div class="profile-marks">
+                                if user.totp_confirmed {
+                                    <span class="chip chip-connected">"2FA on"</span>
+                                } else {
+                                    <span class="chip chip-muted">"2FA off"</span>
+                                }
+                                if user.admin {
+                                    <span class="chip chip-accent">"Admin"</span>
+                                }
+                            </div>
+                        </div>
                     </div>
-                    if ok.as_deref() == Some("enrolled") {
-                        <div class="auth-ok">"Two-factor sign-in is on. You're all set."</div>
+                    if let Some(code) = ok {
+                        <div class="auth-ok">(ok_text(&code))</div>
                     }
+                    if let Some(code) = error {
+                        <div class="auth-problem">(error_text(&code))</div>
+                    }
+                    <dl class="profile-fields">
+                        <div class="profile-field">
+                            <dt class="auth-label">"Email"</dt>
+                            <dd class="profile-value mono">(user.email.clone())</dd>
+                        </div>
+                        <div class="profile-field">
+                            <dt class="auth-label">"Member since"</dt>
+                            <dd class="profile-value">(joined)</dd>
+                        </div>
+                    </dl>
+                    <form
+                        class="profile-photo-form"
+                        method="post"
+                        action="/api/profile_photo"
+                        enctype="multipart/form-data"
+                    >
+                        <label class="auth-field">
+                            <span class="auth-label">"Profile photo"</span>
+                            <input
+                                class="auth-input profile-file"
+                                type="file"
+                                name="photo"
+                                accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+                                required=""
+                            >
+                        </label>
+                        <div class="profile-photo-actions">
+                            <button class="auth-submit profile-upload" type="submit">
+                                if user.has_photo {
+                                    <span class="auth-submit-text">"Change"</span>
+                                } else {
+                                    <span class="auth-submit-text">"Upload"</span>
+                                }
+                            </button>
+                            if user.has_photo {
+                                <button
+                                    class="admin-action"
+                                    type="submit"
+                                    form="profile-photo-remove"
+                                >
+                                    "Remove"
+                                </button>
+                            }
+                        </div>
+                    </form>
+                    <a class="auth-alt" href=(format!("/people/{}", user.id))>"Public profile"</a>
+                    if user.has_photo {
+                        <form
+                            id="profile-photo-remove"
+                            method="post"
+                            action="/api/delete_profile_photo"
+                        ></form>
+                    }
+                </div>
+                <div class="auth-card">
+                    <dl class="profile-stats">
+                        <div class="profile-stat">
+                            <dd class="profile-stat-value">(stats.sign_ins)</dd>
+                            <dt class="auth-label">"Sign-ins"</dt>
+                        </div>
+                        <div class="profile-stat">
+                            <dd class="profile-stat-value">(stats.active_sessions)</dd>
+                            <dt class="auth-label">"Active sessions"</dt>
+                        </div>
+                        <div class="profile-stat">
+                            <dd class="profile-stat-value">(stats.connected_apps)</dd>
+                            <dt class="auth-label">"Connected apps"</dt>
+                        </div>
+                    </dl>
+                </div>
+                <div class="auth-card">
                     <form method="post" action="/logout">
                         <button class="auth-submit" type="submit">
                             <span class="auth-submit-text">"Sign out everywhere"</span>

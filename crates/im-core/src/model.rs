@@ -51,6 +51,9 @@ pub struct User {
     pub email: String,
     pub name: String,
     pub totp_confirmed: bool,
+    /// Whether this person has a profile photo: the row keeps the mime
+    /// type, the bytes live as a file under the storage tree (`photos.rs`).
+    pub has_photo: bool,
     /// im's own admin flag — never crosses a token; AuthN stays the only
     /// thing apps receive.
     pub admin: bool,

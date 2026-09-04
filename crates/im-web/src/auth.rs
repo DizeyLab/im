@@ -12,9 +12,9 @@ use topcoat::router::{HeaderName, StatusCode, header, route};
 
 use crate::server::{self, PendingPurpose};
 
-type Redirect = Result<(StatusCode, [(HeaderName, String); 1])>;
+pub(crate) type Redirect = Result<(StatusCode, [(HeaderName, String); 1])>;
 
-fn see(location: String) -> Redirect {
+pub(crate) fn see(location: String) -> Redirect {
     Ok((StatusCode::SEE_OTHER, [(header::LOCATION, location)]))
 }
 

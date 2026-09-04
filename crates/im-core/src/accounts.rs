@@ -378,6 +378,7 @@ pub async fn create_user_from_invite(
         email: invite.email.clone(),
         name: name.to_string(),
         totp_confirmed: false,
+        has_photo: false,
         admin: invite.admin,
         disabled: false,
         created_at: store::now(),
@@ -644,8 +645,8 @@ pub async fn verify_login(
     let conn = store.conn.lock().await;
     let mut rows = conn
         .query(
-            "SELECT id, email, name, password_hash, totp_confirmed, admin, disabled, created_at \
-             FROM users WHERE email = ?1 COLLATE NOCASE",
+            "SELECT id, email, name, password_hash, totp_confirmed, admin, disabled, created_at, \
+             photo_mime IS NOT NULL FROM users WHERE email = ?1 COLLATE NOCASE",
             turso::params![email],
         )
         .await
@@ -659,6 +660,7 @@ pub async fn verify_login(
         email: store::text(&row, 1)?,
         name: store::text(&row, 2)?,
         totp_confirmed: store::int(&row, 4)? != 0,
+        has_photo: store::int(&row, 8)? != 0,
         admin: store::int(&row, 5)? != 0,
         disabled: store::int(&row, 6)? != 0,
         created_at: store::parse_stamp(&store::text(&row, 7)?)?,
@@ -733,8 +735,8 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
     let conn = store.conn.lock().await;
     let mut rows = conn
         .query(
-            "SELECT id, email, name, totp_confirmed, admin, disabled, created_at \
-             FROM users WHERE id = ?1",
+            "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
+             photo_mime IS NOT NULL FROM users WHERE id = ?1",
             turso::params![id.to_string()],
         )
         .await
@@ -747,6 +749,7 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
         email: store::text(&row, 1)?,
         name: store::text(&row, 2)?,
         totp_confirmed: store::int(&row, 3)? != 0,
+        has_photo: store::int(&row, 7)? != 0,
         admin: store::int(&row, 4)? != 0,
         disabled: store::int(&row, 5)? != 0,
         created_at: store::parse_stamp(&store::text(&row, 6)?)?,
@@ -779,8 +782,8 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
     let conn = store.conn.lock().await;
     let mut rows = conn
         .query(
-            "SELECT id, email, name, totp_confirmed, admin, disabled, created_at \
-             FROM users ORDER BY created_at",
+            "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
+             photo_mime IS NOT NULL FROM users ORDER BY created_at",
             (),
         )
         .await
@@ -792,6 +795,7 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
             email: store::text(&row, 1)?,
             name: store::text(&row, 2)?,
             totp_confirmed: store::int(&row, 3)? != 0,
+            has_photo: store::int(&row, 7)? != 0,
             admin: store::int(&row, 4)? != 0,
             disabled: store::int(&row, 5)? != 0,
             created_at: store::parse_stamp(&store::text(&row, 6)?)?,
