@@ -167,11 +167,19 @@ fn not_found() -> (StatusCode, HeaderMap, Vec<u8>) {
     (StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new())
 }
 
-/// Serves one person's photo. Signed-in only, and a missing photo reads
-/// exactly like a missing person: the not-found, never a `403`.
+/// Serves one person's photo. Signed-in only — either through the session
+/// cookie or as a registered OIDC app presenting HTTP Basic over
+/// `client_id:client_secret` — and a missing photo reads exactly like a
+/// missing person: the not-found, never a `403`.
+///
+/// Apps count as signed-in viewers because registration is the trust: im
+/// hands the client secret out exactly once, keeps only its digest, and the
+/// app presents it on every fetch. Unknown clients, wrong secrets, unknown
+/// users and missing photos all answer the same not-found, so no failure
+/// is distinguishable on the wire.
 #[route(GET "/photo/{user_id}")]
 async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
-    if server::current_user(cx).await.is_none() {
+    if server::current_user(cx).await.is_none() && !valid_app(cx).await {
         return Ok(not_found());
     }
     let target = im_core::model::UserId::from(path_param::<UserId>(cx).to_string());
@@ -205,4 +213,263 @@ async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
             .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
     Ok((StatusCode::OK, headers, bytes))
+}
+
+/// Whether this request carries a registered OIDC app's credentials: HTTP
+/// Basic over `client_id:client_secret`, checked against the client
+/// registry. Anything unparseable, unknown, or wrong is simply false — the
+/// caller answers its one not-found and never says which.
+async fn valid_app(cx: &Cx) -> bool {
+    use base64::Engine as _;
+    let Some(encoded) = request_headers(cx)
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Basic "))
+    else {
+        return false;
+    };
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
+        return false;
+    };
+    let Ok(pair) = std::str::from_utf8(&decoded) else {
+        return false;
+    };
+    let Some((client_id, secret)) = pair.split_once(':') else {
+        return false;
+    };
+    let store = server::app(cx).store.clone();
+    let Ok(Some(client)) = im_core::oidc::client_by_id(&store, client_id).await else {
+        return false;
+    };
+    im_core::oidc::verify_client_secret(&client, secret)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use im_core::accounts::{create_invite, create_user_from_invite};
+    use im_core::model::UserId;
+    use im_core::oidc::create_client;
+    use im_core::photos::set_photo;
+    use im_core::sessions::{SessionMeta, create_session};
+    use im_core::store::Store;
+    use topcoat::cookie::RouterBuilderCookieExt as _;
+    use topcoat::router::{Body, HeaderMap, Router, RouterBuilderDiscoverExt as _, StatusCode};
+    use topcoat::router::{header, to_bytes};
+    use super::PhotoStamps;
+
+    use crate::config::Config;
+    use crate::server::{self, SESSION_COOKIE};
+
+    const PHOTO: &[u8] = b"\x89PNG\r\n\x1a\nfake-photo-bytes";
+
+    struct Setup {
+        router: Router,
+        user_id: UserId,
+        plain_id: UserId,
+        client_id: String,
+        secret: String,
+        session_cookie: String,
+    }
+
+    async fn setup() -> Setup {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let (client_id, secret) = create_client(&store, "drive", vec!["http://app/callback".into()])
+            .await
+            .unwrap();
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        set_photo(&store, &user.id, PHOTO, "image/png")
+            .await
+            .unwrap();
+        let bare = create_invite(&store, "ben@example.com", None, false)
+            .await
+            .unwrap();
+        let plain = create_user_from_invite(&store, bare.expose(), "Ben", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let session = create_session(&store, &user.id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let (live, _) = tokio::sync::broadcast::channel(64);
+        let app = server::App {
+            store: Arc::new(store),
+            config: Config {
+                database: ":memory:".into(),
+                listen: "127.0.0.1:7650".parse().unwrap(),
+                issuer: "http://127.0.0.1:7650".into(),
+            },
+            live,
+        };
+        let router = Router::builder()
+            .discover()
+            .cookies()
+            .app_context(app)
+            .app_context(PhotoStamps::default())
+            .build();
+        Setup {
+            router,
+            user_id: user.id,
+            plain_id: plain.id,
+            client_id: client_id.to_string(),
+            secret: secret.expose().to_string(),
+            session_cookie: format!("{SESSION_COOKIE}={}", session.expose()),
+        }
+    }
+
+    fn basic(client_id: &str, secret: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{secret}"))
+        )
+    }
+
+    async fn get(
+        router: &Router,
+        user_id: &str,
+        auth: Option<String>,
+        cookie: Option<&str>,
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let mut builder = http::Request::builder().uri(format!("/photo/{user_id}"));
+        if let Some(auth) = auth {
+            builder = builder.header(header::AUTHORIZATION, auth);
+        }
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let response = router.handle(builder.body(Body::empty()).unwrap()).await;
+        let (parts, body) = response.into_parts();
+        let bytes = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        (parts.status, parts.headers, bytes)
+    }
+
+    #[tokio::test]
+    async fn app_credentials_serve_photo_bytes() {
+        let setup = setup().await;
+        let (status, headers, bytes) = get(
+            &setup.router,
+            setup.user_id.as_str(),
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, PHOTO);
+        assert_eq!(
+            headers.get(header::CONTENT_TYPE).unwrap(),
+            "image/png"
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_secret_is_not_found() {
+        let setup = setup().await;
+        let (status, _, bytes) = get(
+            &setup.router,
+            setup.user_id.as_str(),
+            Some(basic(&setup.client_id, "wrong-secret")),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_client_is_not_found() {
+        let setup = setup().await;
+        let (status, _, bytes) = get(
+            &setup.router,
+            setup.user_id.as_str(),
+            Some(basic("no-such-client", &setup.secret)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_credentials_is_not_found() {
+        let setup = setup().await;
+        let (status, _, bytes) = get(&setup.router, setup.user_id.as_str(), None, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_authorization_is_not_found() {
+        let setup = setup().await;
+        let (status, _, _) = get(
+            &setup.router,
+            setup.user_id.as_str(),
+            Some("Basic !!!not-base64!!!".to_string()),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn app_credentials_unknown_user_is_not_found() {
+        let setup = setup().await;
+        let (status, _, bytes) = get(
+            &setup.router,
+            "no-such-user",
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn app_credentials_missing_photo_is_not_found() {
+        let setup = setup().await;
+        let (status, _, bytes) = get(
+            &setup.router,
+            setup.plain_id.as_str(),
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn session_still_serves_photo() {
+        let setup = setup().await;
+        let (status, _, bytes) = get(
+            &setup.router,
+            setup.user_id.as_str(),
+            None,
+            Some(&setup.session_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, PHOTO);
+    }
+
+    #[tokio::test]
+    async fn session_takes_precedence_over_bad_app_credentials() {
+        let setup = setup().await;
+        let (status, _, bytes) = get(
+            &setup.router,
+            setup.user_id.as_str(),
+            Some(basic(&setup.client_id, "wrong-secret")),
+            Some(&setup.session_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(bytes, PHOTO);
+    }
 }
