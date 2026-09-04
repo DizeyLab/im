@@ -1,0 +1,159 @@
+// Ledger UI skin — warm paper, hairline rules, serif display (Newsreader).
+// Ported from izlek/style/_ledger.scss, adapted to im's actual component
+// classes (auth cards, profile section, session list, admin panel). Tokens
+// live in main.scss; skin-specific overrides for [data-ui="ledger"] land
+// here.
+//
+// Every selector carries the [data-ui="ledger"] prefix (one nested block
+// below). That attribute+class specificity outranks the same-name class
+// rules in main.scss, so the @use order never matters.
+
+[data-ui="ledger"] {
+  // --- Ledger skin: typography ---------------------------------------------
+
+  // The display face carries the named thing on each screen: the auth title.
+  // Labels, footers, counts and table headers stay IBM Plex Mono uppercase —
+  // main.scss's metadata idiom is left alone, and so is the wordmark, which
+  // is the same lockup on both skins.
+  .auth-title {
+    font-family: var(--font-display);
+    font-size: 22px;
+    font-weight: 500;
+    letter-spacing: 0;
+  }
+
+  // --- Ledger skin: rules & ornaments (no boxes) ---------------------------
+
+  // Cards give up their chrome: the paper itself is the surface and hairlines
+  // separate entries.
+  .auth-card {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  .admin-card {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+  }
+
+  .admin-card-head {
+    border-bottom: 2px solid var(--rule-strong);
+    padding: 0 0 10px;
+  }
+
+  // Table rows are entries in the ledger: hairlines only, no hover flooding.
+  .admin-table {
+    td {
+      border-top-color: var(--border);
+    }
+  }
+
+  // Sessions read as a ruled ledger column too.
+  .session-item {
+    border-top-color: var(--border);
+  }
+
+  // Notes and status boxes rule themselves onto the paper: transparent
+  // ground, the hue kept as ink and border.
+  .auth-note,
+  .auth-secret,
+  .auth-ok {
+    background: transparent;
+  }
+
+  .auth-problem {
+    background: transparent;
+  }
+
+  // --- Ledger skin: chips as inked text ------------------------------------
+
+  .chip {
+    display: inline-flex;
+    align-items: baseline;
+    height: auto;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-bottom: 1px dotted currentColor;
+    border-radius: 0;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+
+    // The tint fills and boxes go; the hue stays on as the ink color.
+    &-muted,
+    &-connected,
+    &-refused,
+    &-accent {
+      background: transparent;
+    }
+
+    &-accent {
+      border: none;
+      border-bottom: 1px dotted currentColor;
+    }
+  }
+
+  // --- Ledger skin: controls -------------------------------------------------
+
+  // The primary action is set in solid ink with paper text, inverting cleanly
+  // in the dark set because both sides are tokens.
+  .auth-submit {
+    background: var(--ink);
+    color: var(--bg);
+
+    &:hover {
+      background: var(--ink-soft);
+    }
+  }
+
+  // Row-level buttons wear the quiet ledger skin: transparent, ink-soft
+  // outline, no flooding on hover.
+  .admin-action {
+    background: transparent;
+    border-color: var(--ink-soft);
+
+    &:hover {
+      background: transparent;
+      border-color: var(--ink);
+      color: var(--ink);
+    }
+  }
+
+  // Delete keeps its danger hue on the outline.
+  .admin-danger {
+    border-color: var(--danger);
+
+    &:hover {
+      border-color: var(--danger);
+      background: transparent;
+    }
+  }
+
+  // Fields rule themselves onto the paper: transparent ground, ink outline.
+  .auth-input {
+    background: transparent;
+    border-color: var(--ink-soft);
+
+    &:focus-visible {
+      background: transparent;
+      border-color: var(--ink);
+    }
+  }
+
+  .auth-locked {
+    background: transparent;
+    border-color: var(--ink-soft);
+  }
+
+  // The active admin tab underlines in ink instead of boxing in shadow.
+  .admin-nav-on {
+    box-shadow: inset 0 -2px 0 var(--ink);
+  }
+}

@@ -13,6 +13,7 @@ use topcoat::view::view;
 
 use im_core::accounts;
 
+use crate::i18n::{Key, lang_of, t};
 use crate::layout::{avatar, shell, wordmark};
 use crate::server;
 
@@ -24,6 +25,7 @@ async fn people_page(cx: &Cx) -> Result {
     let Some(viewer) = server::current_user(cx).await else {
         return Err(not_found().into());
     };
+    let lang = lang_of(Some(&viewer));
     let target_id: &str = path_param::<UserId>(cx);
     let store = server::app(cx).store.clone();
     let target = im_core::model::UserId::from(target_id.to_string());
@@ -43,7 +45,7 @@ async fn people_page(cx: &Cx) -> Result {
                         if person.has_photo {
                             // The face opens the viewer here too — same as
                             // the landing, same as iz's person page.
-                            <button class="avatar-view" type="button" aria-label="View photo">
+                            <button class="avatar-view" type="button" aria-label=(t(lang, Key::ViewPhotoAria))>
                                 (avatar(cx, &person).await?)
                             </button>
                         } else {
@@ -53,50 +55,50 @@ async fn people_page(cx: &Cx) -> Result {
                             <div class="auth-title">(person.name.clone())</div>
                             <div class="profile-marks">
                                 if person.totp_confirmed {
-                                    <span class="chip chip-connected">"2FA on"</span>
+                                    <span class="chip chip-connected">(t(lang, Key::TwoFaOn))</span>
                                 } else {
-                                    <span class="chip chip-muted">"2FA off"</span>
+                                    <span class="chip chip-muted">(t(lang, Key::TwoFaOff))</span>
                                 }
                                 if person.admin {
-                                    <span class="chip chip-accent">"Admin"</span>
+                                    <span class="chip chip-accent">(t(lang, Key::AdminChip))</span>
                                 }
                             </div>
                         </div>
                     </div>
                     <dl class="profile-fields">
                         <div class="profile-field">
-                            <dt class="auth-label">"Email"</dt>
+                            <dt class="auth-label">(t(lang, Key::EmailLabel))</dt>
                             <dd class="profile-value mono">(person.email.clone())</dd>
                         </div>
                         <div class="profile-field">
-                            <dt class="auth-label">"Member since"</dt>
+                            <dt class="auth-label">(t(lang, Key::MemberSinceLabel))</dt>
                             <dd class="profile-value">(joined)</dd>
                         </div>
                     </dl>
                     if mine {
-                        <a class="auth-alt" href="/">"Edit profile"</a>
+                        <a class="auth-alt" href="/">(t(lang, Key::EditProfileLink))</a>
                     }
                 </div>
                 <div class="auth-card">
                     <dl class="profile-stats">
                         <div class="profile-stat">
                             <dd class="profile-stat-value">(stats.sign_ins)</dd>
-                            <dt class="auth-label">"Sign-ins"</dt>
+                            <dt class="auth-label">(t(lang, Key::StatSignIns))</dt>
                         </div>
                         <div class="profile-stat">
                             <dd class="profile-stat-value">(stats.active_sessions)</dd>
-                            <dt class="auth-label">"Active sessions"</dt>
+                            <dt class="auth-label">(t(lang, Key::StatActiveSessions))</dt>
                         </div>
                         <div class="profile-stat">
                             <dd class="profile-stat-value">(stats.connected_apps)</dd>
-                            <dt class="auth-label">"Connected apps"</dt>
+                            <dt class="auth-label">(t(lang, Key::StatConnectedApps))</dt>
                         </div>
                     </dl>
                 </div>
-                <div class="auth-footer">"im · Dizey SSO"</div>
+                <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
-        (crate::layout::avatar_script(cx).await?)
+        (crate::layout::avatar_script(cx, lang).await?)
     };
-    shell(cx, &format!("{} · im", person.name), stage).await
+    shell(cx, &format!("{} · im", person.name), Some(&viewer), stage).await
 }

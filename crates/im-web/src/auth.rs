@@ -293,7 +293,13 @@ async fn forgot(cx: &Cx, Form(input): Form<ForgotForm>) -> Redirect {
     let email = input.email.trim().to_string();
     if let Some(token) = accounts::create_reset(store, &email).await? {
         let issuer = server::app(cx).config.issuer.clone();
-        if crate::mailer::send_reset(store, &issuer, &email, token.expose())
+        // The mail follows the account's language; a missing account still
+        // answers identically, in English.
+        let lang = accounts::user_by_email(store, &email)
+            .await?
+            .map(|user| crate::i18n::Lang::from_code(&user.language))
+            .unwrap_or(crate::i18n::Lang::En);
+        if crate::mailer::send_reset(store, &issuer, &email, token.expose(), lang)
             .await
             .is_ok()
         {
@@ -369,4 +375,84 @@ async fn revoke_session(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Redire
     }
     server::log_event(cx, "session_revoked", Some(&user.email), ip.as_deref()).await;
     see("/?ok=session_revoked".to_string())
+}
+
+#[derive(Deserialize)]
+struct PreferencesForm {
+    theme: Option<String>,
+    ui: Option<String>,
+    language: Option<String>,
+}
+
+/// The landing's preferences: three selects, validated against the option
+/// lists. Absent or unknown refuses the whole save — nothing half-written —
+/// and the landing reads the refusal back through `pages::error_text`.
+#[route(POST "/preferences")]
+async fn preferences(cx: &Cx, Form(input): Form<PreferencesForm>) -> Redirect {
+    let Some(user) = server::current_user(cx).await else {
+        return see("/".to_string());
+    };
+    let Some(theme) = input.theme.as_deref() else {
+        return see("/?error=bad_theme".to_string());
+    };
+    if theme != "light" && theme != "dark" {
+        return see("/?error=bad_theme".to_string());
+    }
+    let Some(ui) = input.ui.as_deref() else {
+        return see("/?error=bad_ui".to_string());
+    };
+    if ui != "instrument" && ui != "ledger" {
+        return see("/?error=bad_ui".to_string());
+    }
+    let Some(language) = input.language.as_deref() else {
+        return see("/?error=bad_language".to_string());
+    };
+    if language != "en" && language != "tr" {
+        return see("/?error=bad_language".to_string());
+    }
+    let store = &server::app(cx).store;
+    im_core::accounts::set_preferences(store, &user.id, theme, language, ui).await?;
+    server::log_event(cx, "preferences_saved", Some(&user.email), None).await;
+    see("/?ok=preferences".to_string())
+}
+
+#[derive(Deserialize)]
+struct PasswordForm {
+    current: String,
+    password: String,
+    password_confirm: String,
+}
+
+/// The landing's password pane: the admin panel's account form without the
+/// admin gate — same field names, same refusal codes, and the same courtesy
+/// to the browser holding the form (every other session dies, this one
+/// proved the old password and keeps its own).
+#[route(POST "/password")]
+async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Redirect {
+    let Some(me) = server::current_user(cx).await else {
+        return see("/".to_string());
+    };
+    if input.password != input.password_confirm {
+        return see("/?error=passwords_differ".to_string());
+    }
+    let store = &server::app(cx).store;
+    match im_core::accounts::change_password(store, &me, &input.current, &input.password).await {
+        Ok(()) => {}
+        Err(im_core::accounts::AccountError::Password(problem)) => {
+            use im_core::accounts::PasswordProblem::*;
+            let code = match problem {
+                TooShort => "password_too_short",
+                LooksLikeYou => "password_personal",
+                WrongCurrent => "password_wrong",
+                IsCurrent => "password_same",
+            };
+            return see(format!("/?error={code}"));
+        }
+        Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
+    }
+    if let Some(token) = server::presented_session(cx) {
+        im_core::sessions::revoke_user_sessions_except(store, &me.id, &token).await?;
+    }
+    server::log_event(cx, "password_changed", Some(&me.email), None).await;
+    see("/?ok=password".to_string())
 }

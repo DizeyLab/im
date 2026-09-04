@@ -4,6 +4,7 @@
 
 use im_core::settings::{self, Smtp};
 use im_core::store::Store;
+use crate::i18n::{self, Lang};
 
 #[derive(Debug, thiserror::Error)]
 pub enum MailError {
@@ -71,36 +72,30 @@ async fn send(store: &Store, to: &str, subject: &str, body: String) -> Result<()
     Ok(())
 }
 
-/// The invite mail: the link is the whole payload.
+/// The invite mail: the link is the whole payload. The invitee has no
+/// account and no preference yet, so this stays English — iz does the same.
 pub async fn send_invite(store: &Store, issuer: &str, email: &str, token: &str) -> Result<String> {
     let link = format!("{issuer}/invite/{token}");
-    send(
-        store,
-        email,
-        "You're invited",
-        format!(
-            "You've been invited. This link is yours for {} days:\n\n{link}\n",
-            im_core::accounts::INVITE_DAYS
-        ),
-    )
-    .await?;
+    let (subject, body) = i18n::invite_mail(&link, im_core::accounts::INVITE_DAYS);
+    send(store, email, &subject, body).await?;
     Ok(link)
 }
 
 /// The reset mail: the link is the whole payload, and sending it retires
-/// every previous link for the address (see `accounts::create_reset`).
-pub async fn send_reset(store: &Store, issuer: &str, email: &str, token: &str) -> Result<String> {
+/// every previous link for the address (see `accounts::create_reset`). The
+/// subject and body follow the account's language — mirroring iz's
+/// `reset_mail` TR/EN branch.
+pub async fn send_reset(
+    store: &Store,
+    issuer: &str,
+    email: &str,
+    token: &str,
+    lang: Lang,
+) -> Result<String> {
     let link = format!("{issuer}/reset/{token}");
     let minutes = settings::reset_minutes(store).await?;
-    send(
-        store,
-        email,
-        "Reset your password",
-        format!(
-            "A password reset was asked for this address. The link is yours for {minutes} minutes:\n\n{link}\n\nIf that wasn't you, this mail changes nothing.\n"
-        ),
-    )
-    .await?;
+    let (subject, body) = i18n::reset_mail(lang, &link, minutes);
+    send(store, email, &subject, body).await?;
     Ok(link)
 }
 
@@ -132,13 +127,13 @@ pub async fn check(store: &Store) -> Result<u64> {
 }
 
 /// The panel's test button: proves the sender end to end, to the admin's own
-/// address.
-pub async fn send_test(store: &Store, to: &str) -> Result<()> {
+/// address, in the admin's language.
+pub async fn send_test(store: &Store, to: &str, lang: Lang) -> Result<()> {
     send(
         store,
         to,
-        "im mail test",
-        "im can send mail from this sender.\n".into(),
+        i18n::t(lang, i18n::Key::TestMailSubject),
+        i18n::t(lang, i18n::Key::TestMailBody).to_string(),
     )
     .await
 }

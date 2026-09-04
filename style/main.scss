@@ -1,14 +1,23 @@
-// im — the Dizey SSO. One screen family: the auth card. The palette,
-// rhythm and idioms are İzlek's "instrument" skin (warm-gray ground, quiet
-// borders, the same accent family), lifted from izlek/style/main.scss so the
-// two products read as one family.
+// Design tokens — two design languages selected by <html data-ui>, mirroring
+// izlek/style/main.scss:
 //
-// İzlek flips themes through a per-user `data-theme` setting; im has no
-// settings screen, so dark follows `prefers-color-scheme`. The token set is
-// the subset of İzlek's that the auth screens read.
+//   instrument  dense, neutral-cool tool (the default; the bare :root in the
+//               first block doubles as its light set and as a fallback for any
+//               document that somehow reaches this stylesheet without data-ui)
+//   ledger      warm paper, hairline rules, serif display face
+//
+// data-theme="dark" (the per-user preference) flips either language.
+// Signed-out pages render without the attributes: light instrument. There is
+// deliberately no OS-driven media-query rule — theme is explicit, never
+// OS-driven. The token set is the subset of İzlek's that the auth screens
+// read. Component rules below read only these custom properties; the ledger
+// skin overrides live in _ledger.scss. Instrument needs no partial: it IS the
+// styling below.
+@use "ledger";
 
 // Instrument, light (defaults; also the no-JS fallback).
-:root {
+:root,
+[data-ui="instrument"] {
   color-scheme: light;
   --bg: #f2f2f0;
   --surface: #fbfbfa;
@@ -49,33 +58,125 @@
 
 // Instrument, dark: near-black neutral-cool; tint fills go translucent and
 // tint borders go alpha so the ground shows through.
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --bg: #0d0e10;
-    --surface: #14161a;
-    --border: #23262c;
-    --border-strong: #2e323a;
-    --border-soft: #1f2226;
-    --ink: #e6e4de;
-    --muted: #7d8590;
-    --muted-soft: #4a4f58;
-    --accent: #8ba1e8;
-    --accent-tint: rgba(139, 161, 232, 0.14);
-    --accent-ink: #b9c6ee;
-    --accent-strong: #7e93d9;
+[data-ui="instrument"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0d0e10;
+  --surface: #14161a;
+  --border: #23262c;
+  --border-strong: #2e323a;
+  --border-soft: #1f2226;
+  --ink: #e6e4de;
+  --muted: #7d8590;
+  --muted-soft: #4a4f58;
+  --accent: #8ba1e8;
+  --accent-tint: rgba(139, 161, 232, 0.14);
+  --accent-ink: #b9c6ee;
+  --accent-strong: #7e93d9;
 
-    --field-bg: #101216;
-    --panel-sunken: #101216;
+  --field-bg: #101216;
+  --panel-sunken: #101216;
 
-    --danger: #e0906a;
-    --danger-tint-alt: rgba(224, 144, 106, 0.05);
-    --danger-border-soft: rgba(224, 144, 106, 0.3);
+  --danger: #e0906a;
+  --danger-tint-alt: rgba(224, 144, 106, 0.05);
+  --danger-border-soft: rgba(224, 144, 106, 0.3);
 
-    --positive: #9db98a;
-    --positive-tint: rgba(157, 185, 138, 0.13);
-    --positive-border: rgba(157, 185, 138, 0.4);
-  }
+  --positive: #9db98a;
+  --positive-tint: rgba(157, 185, 138, 0.13);
+  --positive-border: rgba(157, 185, 138, 0.4);
+}
+
+// Ledger, light: warm paper; hairline rules carry structure, ink carries
+// emphasis. Values copied verbatim from izlek for every token im defines;
+// --font-display, --ink-soft, --row-hover and --rule-strong are carried over
+// too — the _ledger.scss overrides below read them.
+[data-ui="ledger"] {
+  color-scheme: light;
+  --bg: #f6f1e6;
+  --surface: #f6f1e6;
+  --border: #ddd5c2;
+  --border-strong: #221f18;
+  --border-soft: #cfc6b0;
+  --ink: #221f18;
+  --muted: #7a7466;
+  --muted-soft: #a39b88;
+  --accent: #46557b;
+  --accent-tint: #eef0f5;
+  --accent-ink: #2f3c5c;
+  --accent-strong: #5a6a94;
+
+  --field-bg: #f1ebdd;
+  --panel-sunken: #f1ebdd;
+
+  --danger: #a04a24;
+  --danger-tint-alt: #fbf1ec;
+  --danger-border-soft: #eddcd3;
+
+  --positive: #5c7b46;
+  --positive-tint: #eef3e9;
+  --positive-border: #d3e0c6;
+
+  --font-sans: system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: 'Newsreader', Georgia, serif;
+
+  --ink-soft: #4a453a;
+  --row-hover: #efe9da;
+  --rule-strong: #221f18;
+
+  --control-h-lg: 40px;
+  --radius: 2px;
+  --radius-sm: var(--radius);
+  --radius-lg: 2px;
+  --shadow-2: none;
+
+  --dur-fast: 120ms;
+  --ease: ease-out;
+}
+
+// Ledger, dark: dimmed paper ground; semantic hues lifted for contrast, tint
+// fills translucent over the paper tone.
+[data-ui="ledger"][data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #171511;
+  --surface: #171511;
+  --border: #3a352a;
+  --border-strong: #e8e2d4;
+  --border-soft: #2e2a20;
+  --ink: #e8e2d4;
+  --muted: #97907f;
+  --muted-soft: #6e6757;
+  --accent: #9db0dd;
+  --accent-tint: rgba(157, 176, 221, 0.14);
+  --accent-ink: #c3cfee;
+  --accent-strong: #8497c9;
+
+  --field-bg: #1c1915;
+  --panel-sunken: #1b1814;
+
+  --danger: #d28a5a;
+  --danger-tint-alt: rgba(210, 138, 90, 0.05);
+  --danger-border-soft: rgba(210, 138, 90, 0.3);
+
+  --positive: #a3bd8b;
+  --positive-tint: rgba(163, 189, 139, 0.13);
+  --positive-border: rgba(163, 189, 139, 0.4);
+
+  --font-sans: system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: 'Newsreader', Georgia, serif;
+
+  --ink-soft: #cfc8b6;
+  --row-hover: #201c16;
+  --rule-strong: #e8e2d4;
+
+  --control-h-lg: 40px;
+  --radius: 2px;
+  --radius-sm: var(--radius);
+  --radius-lg: 2px;
+  --shadow-2: none;
+
+  --dur-fast: 120ms;
+  --ease: ease-out;
 }
 
 * { box-sizing: border-box; }

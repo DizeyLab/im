@@ -1,10 +1,13 @@
 //! The document shell every im page renders through. No hydration, no
 //! runtime script: pages are plain HTML forms, posted hard.
 
+use im_core::model::User;
 use topcoat::Result;
 use topcoat::asset::{Asset, asset};
 use topcoat::context::Cx;
 use topcoat::view::view;
+
+use crate::i18n::{Key, Lang, lang_of, t};
 
 /// `style/main.scss`, compiled by `build.rs` into `assets/main.css`.
 const STYLE: Asset = asset!("assets/main.css");
@@ -60,9 +63,14 @@ pub async fn avatar(cx: &Cx, user: &im_core::model::User) -> Result {
 /// document listeners, so the hard-post re-render never needs rewiring.
 /// Emitted by the landing and the person page — every surface that draws a
 /// clickable face.
-pub async fn avatar_script(cx: &Cx) -> Result {
+pub async fn avatar_script(cx: &Cx, lang: Lang) -> Result {
     use topcoat::view::Unescaped;
-    const JS: &str = "\
+    /// Single-quoted into the script below; the staged strings carry no
+    /// quoting of their own, and this keeps it true if one ever does.
+    fn js_escape(raw: &str) -> String {
+        raw.replace('\\', "\\\\").replace('\'', "\\'")
+    }
+    const JS_TEMPLATE: &str = "\
         (function () { \
             if (window.__imAvatar) { return; } \
             window.__imAvatar = true; \
@@ -87,12 +95,12 @@ pub async fn avatar_script(cx: &Cx) -> Result {
                         var change = document.createElement('label'); \
                         change.className = 'admin-action'; \
                         change.setAttribute('for', 'profile-photo-input'); \
-                        change.textContent = 'Change'; \
+                        change.textContent = '__IM_CHANGE__'; \
                         var remove = document.createElement('button'); \
                         remove.type = 'submit'; \
                         remove.className = 'admin-action admin-danger'; \
                         remove.setAttribute('form', 'profile-photo-remove'); \
-                        remove.textContent = 'Remove'; \
+                        remove.textContent = '__IM_REMOVE__'; \
                         actions.appendChild(change); \
                         actions.appendChild(remove); \
                         box.appendChild(actions); \
@@ -140,7 +148,7 @@ pub async fn avatar_script(cx: &Cx) -> Result {
                 cancel.type = 'button'; \
                 cancel.className = 'admin-action upload-cancel'; \
                 cancel.textContent = '\\u00d7'; \
-                cancel.setAttribute('aria-label', 'Cancel upload'); \
+                cancel.setAttribute('aria-label', '__IM_CANCEL_UPLOAD__'); \
                 row.appendChild(cancel); \
                 head.insertAdjacentElement('afterend', row); \
                 var settle = function () { \
@@ -165,17 +173,29 @@ pub async fn avatar_script(cx: &Cx) -> Result {
                 x.send(data); \
             }); \
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    let js = JS_TEMPLATE
+        .replace("__IM_CHANGE__", &js_escape(t(lang, Key::Change)))
+        .replace("__IM_REMOVE__", &js_escape(t(lang, Key::Remove)))
+        .replace(
+            "__IM_CANCEL_UPLOAD__",
+            &js_escape(t(lang, Key::CancelUploadLabel)),
+        );
+    view! { cx => <script>(Unescaped::new_unchecked(js))</script> }
 }
 
 /// A full document around an already-rendered stage — the same way
-/// izlek-web's `#[layout]` receives its slot.
-pub async fn shell(cx: &Cx, title: &str, stage: Result) -> Result {
+/// izlek-web's `#[layout]` receives its slot. The viewer stamps the chrome:
+/// their theme/language/ui when signed in, English/light/instrument when
+/// not — mirroring iz's root_layout, minus its build stamp.
+pub async fn shell(cx: &Cx, title: &str, viewer: Option<&User>, stage: Result) -> Result {
     let stage = stage?;
+    let lang = lang_of(viewer);
+    let dark = viewer.is_some_and(|user| user.theme == "dark");
+    let ui = viewer.map_or("instrument", |user| user.ui.as_str());
     view! {
         cx =>
         <!DOCTYPE html>
-        <html lang="en">
+        <html lang=(lang.code()) data-theme=(dark.then_some("dark")) data-ui=(ui)>
             <head>
                 <meta charset="utf-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">

@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS users (
   admin INTEGER NOT NULL DEFAULT 0,
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
-  photo_mime TEXT
+  photo_mime TEXT,
+  theme TEXT NOT NULL DEFAULT 'light',
+  language TEXT NOT NULL DEFAULT 'en',
+  ui TEXT NOT NULL DEFAULT 'instrument'
 );
 CREATE TABLE IF NOT EXISTS invites (
   token TEXT PRIMARY KEY,
@@ -189,6 +192,30 @@ impl Store {
                 conn.execute("ALTER TABLE users ADD COLUMN photo_mime TEXT", ())
                     .await
                     .map_err(backend)?;
+            }
+            // Per-user display preferences (theme/language/ui): databases
+            // born before these columns grow them here — TEXT NOT NULL with
+            // a DEFAULT so every existing row reads the default.
+            if !has_column(&conn, "users", "theme").await? {
+                conn.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'", ())
+                    .await
+                    .map_err(backend)?;
+            }
+            if !has_column(&conn, "users", "language").await? {
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'en'",
+                    (),
+                )
+                .await
+                .map_err(backend)?;
+            }
+            if !has_column(&conn, "users", "ui").await? {
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN ui TEXT NOT NULL DEFAULT 'instrument'",
+                    (),
+                )
+                .await
+                .map_err(backend)?;
             }
             // What a session remembers about its browser: the listing shows
             // these, so old databases grow them the same guarded way.

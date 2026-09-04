@@ -11,6 +11,7 @@ use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{page, path_param, route};
 use topcoat::view::view;
 
+use crate::i18n::{Key, Lang, lang_of, t};
 use crate::layout::{avatar, shell, wordmark};
 use crate::server::{self, PendingPurpose};
 
@@ -18,40 +19,44 @@ path_param!(token);
 
 /// What a refusal code reads as on the page. The code travels through the
 /// URL; the sentence never does.
-pub fn error_text(code: &str) -> &'static str {
+pub fn error_text(code: &str, lang: Lang) -> &'static str {
     match code {
-        "bad_login" => "Wrong email or password.",
-        "bad_code" => "That code didn't match — try again.",
-        "invite_invalid" => "This invite link is not valid.",
-        "invite_expired" => "This invite has expired. Ask for a fresh one.",
-        "invite_spent" => "This invite was already used.",
-        "email_taken" => "An account with this address already exists.",
-        "password_too_short" => "The password needs at least 10 characters.",
-        "password_personal" => "The password can't contain your address or your name.",
-        "passwords_differ" => "The two passwords don't match.",
-        "enroll_first" => "Set up your second factor first.",
-        "smtp_test" => "The test mail could not be sent.",
-        "password_wrong" => "That's not your current password.",
-        "password_same" => "That's already your password.",
-        "rate_limited" => "Too many tries — wait a while and try again.",
-        "photo_too_big" => "That image is over 5 MB.",
-        "not_an_image" => "That file is not an image.",
-        "no_file" => "Choose an image first.",
-        "reset_invalid" => "This reset link is not valid — ask for a fresh one.",
-        "session_unknown" => "That session is already gone.",
-        _ => "Something went wrong. Try again.",
+        "bad_login" => t(lang, Key::ErrBadLogin),
+        "bad_code" => t(lang, Key::ErrBadCode),
+        "invite_invalid" => t(lang, Key::ErrInviteInvalid),
+        "invite_expired" => t(lang, Key::ErrInviteExpired),
+        "invite_spent" => t(lang, Key::ErrInviteSpent),
+        "email_taken" => t(lang, Key::ErrEmailTaken),
+        "password_too_short" => t(lang, Key::ErrPasswordTooShort),
+        "password_personal" => t(lang, Key::ErrPasswordPersonal),
+        "passwords_differ" => t(lang, Key::ErrPasswordsDiffer),
+        "enroll_first" => t(lang, Key::ErrEnrollFirst),
+        "smtp_test" => t(lang, Key::ErrSmtpTest),
+        "password_wrong" => t(lang, Key::ErrPasswordWrong),
+        "password_same" => t(lang, Key::ErrPasswordSame),
+        "rate_limited" => t(lang, Key::ErrRateLimited),
+        "photo_too_big" => t(lang, Key::ErrPhotoTooBig),
+        "not_an_image" => t(lang, Key::ErrNotAnImage),
+        "no_file" => t(lang, Key::ErrNoFile),
+        "session_unknown" => t(lang, Key::ErrSessionUnknown),
+        "bad_theme" => t(lang, Key::ErrBadTheme),
+        "bad_ui" => t(lang, Key::ErrBadUi),
+        "bad_language" => t(lang, Key::ErrBadLanguage),
+        _ => t(lang, Key::ErrFallback),
     }
 }
 
 /// The good news, where a page carries an `ok` code in its URL.
-pub fn ok_text(code: &str) -> &'static str {
+pub fn ok_text(code: &str, lang: Lang) -> &'static str {
     match code {
-        "reset" => "Password changed — sign in with the new one.",
-        "enrolled" => "Two-factor sign-in is on. You're all set.",
-        "photo_saved" => "Profile photo updated.",
-        "photo_removed" => "Profile photo removed.",
-        "session_revoked" => "Session revoked.",
-        _ => "Done.",
+        "reset" => t(lang, Key::OkReset),
+        "enrolled" => t(lang, Key::OkEnrolled),
+        "photo_saved" => t(lang, Key::OkPhotoSaved),
+        "photo_removed" => t(lang, Key::OkPhotoRemoved),
+        "session_revoked" => t(lang, Key::OkSessionRevoked),
+        "preferences" => t(lang, Key::Saved),
+        "password" => t(lang, Key::PasswordSaved),
+        _ => t(lang, Key::OkDone),
     }
 }
 
@@ -122,6 +127,8 @@ async fn login(cx: &Cx) -> Result {
 }
 
 async fn login_card(cx: &Cx) -> Result {
+    // No session to read a preference from — mirroring iz's auth pages.
+    let lang = Lang::En;
     let query = current_query(cx);
     let back = query_value(&query, "back").unwrap_or_else(|| "/".to_string());
     let error = query_value(&query, "error");
@@ -133,19 +140,19 @@ async fn login_card(cx: &Cx) -> Result {
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="auth-head">
-                        <div class="auth-title">"Sign in"</div>
-                        <div class="auth-sub">"One account for everything Dizey."</div>
+                        <div class="auth-title">(t(lang, Key::SignInTitle))</div>
+                        <div class="auth-sub">(t(lang, Key::SignInSub))</div>
                     </div>
                     if let Some(code) = ok {
-                        <div class="auth-ok">(ok_text(&code))</div>
+                        <div class="auth-ok">(ok_text(&code, lang))</div>
                     }
                     if let Some(code) = error {
-                        <div class="auth-problem">(error_text(&code))</div>
+                        <div class="auth-problem">(error_text(&code, lang))</div>
                     }
                     <form method="post" action="/login">
                         <input type="hidden" name="back" value=(back)>
                         <label class="auth-field">
-                            <span class="auth-label">"Email"</span>
+                            <span class="auth-label">(t(lang, Key::EmailLabel))</span>
                             <input
                                 class="auth-input auth-input-mono"
                                 type="email"
@@ -155,7 +162,7 @@ async fn login_card(cx: &Cx) -> Result {
                             >
                         </label>
                         <label class="auth-field">
-                            <span class="auth-label">"Password"</span>
+                            <span class="auth-label">(t(lang, Key::PasswordLabel))</span>
                             <input
                                 class="auth-input auth-input-mono"
                                 type="password"
@@ -165,16 +172,16 @@ async fn login_card(cx: &Cx) -> Result {
                             >
                         </label>
                         <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">"Sign in"</span>
+                            <span class="auth-submit-text">(t(lang, Key::SignInButton))</span>
                         </button>
                     </form>
-                    <a class="auth-alt" href="/forgot">"Forgot it?"</a>
+                    <a class="auth-alt" href="/forgot">(t(lang, Key::ForgotIt))</a>
                 </div>
-                <div class="auth-footer">"im · Dizey SSO"</div>
+                <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
     };
-    shell(cx, "Sign in · im", stage).await
+    shell(cx, t(lang, Key::TitleSignIn), None, stage).await
 }
 
 /// The second factor. Reached only with a pending-login cookie; without one
@@ -183,6 +190,7 @@ async fn login_card(cx: &Cx) -> Result {
 async fn totp(cx: &Cx) -> Result<Response> {
     match server::opened_pending(cx) {
         Some(pending) if pending.purpose == PendingPurpose::Login => {
+            let lang = Lang::En;
             let query = current_query(cx);
             let error = query_value(&query, "error");
             let stage = view! {
@@ -192,15 +200,15 @@ async fn totp(cx: &Cx) -> Result<Response> {
                         (wordmark(cx).await?)
                         <div class="auth-card">
                             <div class="auth-head">
-                                <div class="auth-title">"Two-factor code"</div>
-                                <div class="auth-sub">"The 6-digit code from your authenticator."</div>
+                                <div class="auth-title">(t(lang, Key::TotpTitle))</div>
+                                <div class="auth-sub">(t(lang, Key::TotpSub))</div>
                             </div>
                             if let Some(code) = error {
-                                <div class="auth-problem">(error_text(&code))</div>
+                                <div class="auth-problem">(error_text(&code, lang))</div>
                             }
                             <form method="post" action="/login/totp">
                                 <label class="auth-field">
-                                    <span class="auth-label">"Code"</span>
+                                    <span class="auth-label">(t(lang, Key::CodeLabel))</span>
                                     <input
                                         class="auth-input auth-input-mono"
                                         type="text"
@@ -212,15 +220,15 @@ async fn totp(cx: &Cx) -> Result<Response> {
                                     >
                                 </label>
                                 <button class="auth-submit" type="submit">
-                                    <span class="auth-submit-text">"Verify"</span>
+                                    <span class="auth-submit-text">(t(lang, Key::VerifyButton))</span>
                                 </button>
                             </form>
                         </div>
-                        <div class="auth-footer">"im · Dizey SSO"</div>
+                        <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
                     </div>
                 </main>
             };
-            shell(cx, "Two-factor · im", stage).await?.into_response(cx)
+            shell(cx, t(lang, Key::TitleTotp), None, stage).await?.into_response(cx)
         }
         _ => see_other("/login").into_response(cx),
     }
@@ -230,6 +238,7 @@ async fn totp(cx: &Cx) -> Result<Response> {
 /// what the invite carries.
 #[route(GET "/invite/{token}")]
 async fn invite(cx: &Cx) -> Result<Response> {
+    let lang = Lang::En;
     let token: &str = path_param::<Token>(cx);
     let invite = im_core::accounts::invite_by_token(&server::app(cx).store, token).await?;
     let query = current_query(cx);
@@ -248,22 +257,22 @@ async fn invite(cx: &Cx) -> Result<Response> {
                     (wordmark(cx).await?)
                     <div class="auth-card">
                         <div class="auth-head">
-                            <div class="auth-title">"You're invited"</div>
-                            <div class="auth-sub">"Pick a name and a password. Next step sets up two-factor sign-in."</div>
+                            <div class="auth-title">(t(lang, Key::InviteTitle))</div>
+                            <div class="auth-sub">(t(lang, Key::InviteSub))</div>
                         </div>
                         if let Some(code) = error {
-                            <div class="auth-problem">(error_text(&code))</div>
+                            <div class="auth-problem">(error_text(&code, lang))</div>
                         }
                         <form method="post" action="/invite">
                             <input type="hidden" name="token" value=(token.to_string())>
                             <div class="auth-field">
-                                <span class="auth-label">"Email"</span>
+                                <span class="auth-label">(t(lang, Key::EmailLabel))</span>
                                 <div class="auth-locked">
                                     <span class="auth-locked-value">(invite.email)</span>
                                 </div>
                             </div>
                             <label class="auth-field">
-                                <span class="auth-label">"Your name"</span>
+                                <span class="auth-label">(t(lang, Key::YourNameLabel))</span>
                                 <input
                                     class="auth-input"
                                     type="text"
@@ -273,7 +282,7 @@ async fn invite(cx: &Cx) -> Result<Response> {
                                 >
                             </label>
                             <label class="auth-field">
-                                <span class="auth-label">"Password"</span>
+                                <span class="auth-label">(t(lang, Key::PasswordLabel))</span>
                                 <input
                                     class="auth-input auth-input-mono"
                                     type="password"
@@ -284,7 +293,7 @@ async fn invite(cx: &Cx) -> Result<Response> {
                                 >
                             </label>
                             <label class="auth-field">
-                                <span class="auth-label">"Password again"</span>
+                                <span class="auth-label">(t(lang, Key::PasswordAgainLabel))</span>
                                 <input
                                     class="auth-input auth-input-mono"
                                     type="password"
@@ -295,11 +304,11 @@ async fn invite(cx: &Cx) -> Result<Response> {
                                 >
                             </label>
                             <button class="auth-submit" type="submit">
-                                <span class="auth-submit-text">"Create account"</span>
+                                <span class="auth-submit-text">(t(lang, Key::CreateAccountButton))</span>
                             </button>
                         </form>
                     </div>
-                    <div class="auth-footer">"im · Dizey SSO"</div>
+                    <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
                 </div>
             </main>
         }
@@ -316,16 +325,16 @@ async fn invite(cx: &Cx) -> Result<Response> {
                     (wordmark(cx).await?)
                     <div class="auth-card">
                         <div class="auth-head">
-                            <div class="auth-title">"This link doesn't work"</div>
+                            <div class="auth-title">(t(lang, Key::InviteDeadTitle))</div>
                         </div>
-                        <div class="auth-problem">(error_text(code))</div>
-                        <a class="auth-alt" href="/">"Back to sign in"</a>
+                        <div class="auth-problem">(error_text(code, lang))</div>
+                        <a class="auth-alt" href="/">(t(lang, Key::BackToSignIn))</a>
                     </div>
                 </div>
             </main>
         }
     };
-    shell(cx, "You're invited · im", stage)
+    shell(cx, t(lang, Key::TitleInvited), None, stage)
         .await?
         .into_response(cx)
 }
@@ -366,6 +375,7 @@ async fn enroll(cx: &Cx) -> Result<Response> {
         .map_err(|e| topcoat::Error::from(std::io::Error::other(format!("qr: {e}"))))?;
     let manual = im_core::totp::display_secret(&secret);
     let _ = issuer;
+    let lang = Lang::En;
     let query = current_query(cx);
     let error = query_value(&query, "error");
 
@@ -376,17 +386,17 @@ async fn enroll(cx: &Cx) -> Result<Response> {
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="auth-head">
-                        <div class="auth-title">"Set up two-factor"</div>
-                        <div class="auth-sub">"Scan with your authenticator, then type the 6-digit code it shows."</div>
+                        <div class="auth-title">(t(lang, Key::EnrollTitle))</div>
+                        <div class="auth-sub">(t(lang, Key::EnrollSub))</div>
                     </div>
                     if let Some(code) = error {
-                        <div class="auth-problem">(error_text(&code))</div>
+                        <div class="auth-problem">(error_text(&code, lang))</div>
                     }
                     <div class="auth-qr">(topcoat::view::Unescaped::new_unchecked(qr))</div>
                     <div class="auth-secret">(manual)</div>
                     <form method="post" action="/enroll">
                         <label class="auth-field">
-                            <span class="auth-label">"Code"</span>
+                            <span class="auth-label">(t(lang, Key::CodeLabel))</span>
                             <input
                                 class="auth-input auth-input-mono"
                                 type="text"
@@ -398,15 +408,15 @@ async fn enroll(cx: &Cx) -> Result<Response> {
                             >
                         </label>
                         <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">"Confirm and sign in"</span>
+                            <span class="auth-submit-text">(t(lang, Key::ConfirmAndSignIn))</span>
                         </button>
                     </form>
                 </div>
-                <div class="auth-footer">"im · Dizey SSO"</div>
+                <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
     };
-    shell(cx, "Two-factor setup · im", stage)
+    shell(cx, t(lang, Key::TitleEnroll), None, stage)
         .await?
         .into_response(cx)
 }
@@ -426,9 +436,11 @@ fn escape(raw: &str) -> String {
 /// header. The full string stays one click away in the session's detail.
 /// Substring matching in precedence order (Edge before Chrome before Safari:
 /// each carries the later one's token too); shared with the admin panel.
-pub(crate) fn device_label(agent: Option<&str>) -> String {
+/// Browser and system names are proper nouns and stay untranslated; only the
+/// unknown-device fallback follows the viewer's language.
+pub(crate) fn device_label(agent: Option<&str>, lang: Lang) -> String {
     let Some(agent) = agent.filter(|agent| !agent.is_empty()) else {
-        return "Unknown device".to_string();
+        return t(lang, Key::UnknownDevice).to_string();
     };
     let browser = if agent.contains("Edg/") {
         "Edge"
@@ -477,15 +489,22 @@ fn stamp_min(when: time::OffsetDateTime) -> String {
 /// agent string, the stamps and the revoke live in the detail. The current
 /// session's button reads as the way out of this browser; every other names
 /// what it does.
-fn sessions_html(sessions: &[im_core::sessions::SessionInfo], current: Option<&str>) -> String {
+fn sessions_html(
+    sessions: &[im_core::sessions::SessionInfo],
+    current: Option<&str>,
+    lang: Lang,
+) -> String {
     let mut rows = String::new();
     for session in sessions {
         let mine = current == Some(session.token_hash.as_str());
         let seen = session.seen_at.unwrap_or(session.created_at);
         let chip = if mine {
-            r#" <span class="chip chip-connected">This session</span>"#
+            format!(
+                r#" <span class="chip chip-connected">{}</span>"#,
+                t(lang, Key::ThisSessionChip)
+            )
         } else {
-            ""
+            String::new()
         };
         let ip = session
             .ip
@@ -499,15 +518,15 @@ fn sessions_html(sessions: &[im_core::sessions::SessionInfo], current: Option<&s
                 r#"<span class="session-ip mono">{}</span>"#,
                 r#"</summary><div class="session-detail">"#,
                 r#"<dl class="profile-fields">"#,
-                r#"<div class="profile-field"><dt class="auth-label">Device</dt>"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
                 r#"<dd class="profile-value session-agent">{}</dd></div>"#,
-                r#"<div class="profile-field"><dt class="auth-label">Address</dt>"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
                 r#"<dd class="profile-value mono">{}</dd></div>"#,
-                r#"<div class="profile-field"><dt class="auth-label">Signed in</dt>"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
                 r#"<dd class="profile-value">{}</dd></div>"#,
-                r#"<div class="profile-field"><dt class="auth-label">Last seen</dt>"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
                 r#"<dd class="profile-value">{}</dd></div>"#,
-                r#"<div class="profile-field"><dt class="auth-label">Expires</dt>"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
                 r#"<dd class="profile-value">{}</dd></div>"#,
                 r#"</dl>"#,
                 r#"<form method="post" action="/sessions/revoke">"#,
@@ -515,21 +534,30 @@ fn sessions_html(sessions: &[im_core::sessions::SessionInfo], current: Option<&s
                 r#"<button class="admin-action" type="submit">{}</button></form>"#,
                 r#"</div></details>"#
             ),
-            escape(&device_label(session.agent.as_deref())),
+            escape(&device_label(session.agent.as_deref(), lang)),
             chip,
             ip,
+            t(lang, Key::DeviceLabel),
             session
                 .agent
                 .as_deref()
                 .filter(|agent| !agent.is_empty())
                 .map(escape)
-                .unwrap_or_else(|| "Unknown device".to_string()),
+                .unwrap_or_else(|| t(lang, Key::UnknownDevice).to_string()),
+            t(lang, Key::AddressLabel),
             ip,
+            t(lang, Key::SignedInLabel),
             session.created_at.date(),
+            t(lang, Key::LastSeenLabel),
             stamp_min(seen),
+            t(lang, Key::ExpiresLabel),
             session.expires_at.date(),
             escape(&session.token_hash),
-            if mine { "Sign out" } else { "Revoke" },
+            if mine {
+                t(lang, Key::SignOutButton)
+            } else {
+                t(lang, Key::RevokeButton)
+            },
         ));
     }
     rows
@@ -541,6 +569,7 @@ fn sessions_html(sessions: &[im_core::sessions::SessionInfo], current: Option<&s
 /// page under `/people`; im has exactly one signed-in screen, so the
 /// profile is a section of it.
 async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
+    let lang = lang_of(Some(user));
     let query = current_query(cx);
     let ok = query_value(&query, "ok");
     let error = query_value(&query, "error");
@@ -548,7 +577,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let joined = user.created_at.date().to_string();
     let sessions = im_core::sessions::list_sessions(&server::app(cx).store, &user.id).await?;
     let current = server::presented_session(cx).map(|token| im_core::accounts::hash_token(&token));
-    let sessions_html = sessions_html(&sessions, current.as_deref());
+    let sessions_html = sessions_html(&sessions, current.as_deref(), lang);
     let stage = view! {
         cx =>
         <main class="auth-stage">
@@ -565,7 +594,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             <button
                                 class="avatar-view"
                                 type="button"
-                                aria-label="View photo"
+                                aria-label=(t(lang, Key::ViewPhotoAria))
                                 data-own=""
                             >
                                 (avatar(cx, user).await?)
@@ -599,33 +628,33 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             <div class="auth-title">(user.name.clone())</div>
                             <div class="profile-marks">
                                 if user.totp_confirmed {
-                                    <span class="chip chip-connected">"2FA on"</span>
+                                    <span class="chip chip-connected">(t(lang, Key::TwoFaOn))</span>
                                 } else {
-                                    <span class="chip chip-muted">"2FA off"</span>
+                                    <span class="chip chip-muted">(t(lang, Key::TwoFaOff))</span>
                                 }
                                 if user.admin {
-                                    <span class="chip chip-accent">"Admin"</span>
+                                    <span class="chip chip-accent">(t(lang, Key::AdminChip))</span>
                                 }
                             </div>
                         </div>
                     </div>
                     if let Some(code) = ok {
-                        <div class="auth-ok">(ok_text(&code))</div>
+                        <div class="auth-ok">(ok_text(&code, lang))</div>
                     }
                     if let Some(code) = error {
-                        <div class="auth-problem">(error_text(&code))</div>
+                        <div class="auth-problem">(error_text(&code, lang))</div>
                     }
                     <dl class="profile-fields">
                         <div class="profile-field">
-                            <dt class="auth-label">"Email"</dt>
+                            <dt class="auth-label">(t(lang, Key::EmailLabel))</dt>
                             <dd class="profile-value mono">(user.email.clone())</dd>
                         </div>
                         <div class="profile-field">
-                            <dt class="auth-label">"Member since"</dt>
+                            <dt class="auth-label">(t(lang, Key::MemberSinceLabel))</dt>
                             <dd class="profile-value">(joined)</dd>
                         </div>
                     </dl>
-                    <a class="auth-alt" href=(format!("/people/{}", user.id))>"Public profile"</a>
+                    <a class="auth-alt" href=(format!("/people/{}", user.id))>(t(lang, Key::PublicProfileLink))</a>
                     // Both forms carry no visible chrome of their own: the
                     // picker input hides beside the face, the remove button
                     // lives in the viewer — all reaching here by `form=`.
@@ -647,44 +676,115 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                     <dl class="profile-stats">
                         <div class="profile-stat">
                             <dd class="profile-stat-value">(stats.sign_ins)</dd>
-                            <dt class="auth-label">"Sign-ins"</dt>
+                            <dt class="auth-label">(t(lang, Key::StatSignIns))</dt>
                         </div>
                         <div class="profile-stat">
                             <dd class="profile-stat-value">(stats.active_sessions)</dd>
-                            <dt class="auth-label">"Active sessions"</dt>
+                            <dt class="auth-label">(t(lang, Key::StatActiveSessions))</dt>
                         </div>
                         <div class="profile-stat">
                             <dd class="profile-stat-value">(stats.connected_apps)</dd>
-                            <dt class="auth-label">"Connected apps"</dt>
+                            <dt class="auth-label">(t(lang, Key::StatConnectedApps))</dt>
                         </div>
                     </dl>
                 </div>
                 <div class="auth-card">
-                    <div class="auth-title">"Sessions"</div>
+                    <div class="auth-title">(t(lang, Key::SessionsTitle))</div>
                     <div class="session-list">(topcoat::view::Unescaped::new_unchecked(sessions_html))</div>
+                </div>
+                <div class="auth-card" id="preferences">
+                    <div class="auth-title">(t(lang, Key::PreferencesLabel))</div>
+                    <form method="post" action="/preferences">
+                        <label class="auth-field">
+                            <span class="auth-label">(t(lang, Key::ThemeLabel))</span>
+                            <select class="auth-input" name="theme">
+                                <option value="light" selected=(user.theme == "light")>(t(lang, Key::LightOption))</option>
+                                <option value="dark" selected=(user.theme == "dark")>(t(lang, Key::DarkOption))</option>
+                            </select>
+                        </label>
+                        <label class="auth-field">
+                            <span class="auth-label">(t(lang, Key::UiLabel))</span>
+                            <select class="auth-input" name="ui">
+                                <option value="instrument" selected=(user.ui == "instrument")>(t(lang, Key::InstrumentOption))</option>
+                                <option value="ledger" selected=(user.ui == "ledger")>(t(lang, Key::LedgerOption))</option>
+                            </select>
+                        </label>
+                        <label class="auth-field">
+                            <span class="auth-label">(t(lang, Key::LanguageLabel))</span>
+                            <select class="auth-input" name="language">
+                                <option value="en" selected=(user.language == "en")>"English"</option>
+                                <option value="tr" selected=(user.language == "tr")>"Türkçe"</option>
+                            </select>
+                        </label>
+                        <button class="auth-submit" type="submit">
+                            <span class="auth-submit-text">(t(lang, Key::SaveButton))</span>
+                        </button>
+                    </form>
+                </div>
+                <div class="auth-card" id="password">
+                    <div class="auth-title">(t(lang, Key::ChangePassword))</div>
+                    <form method="post" action="/password">
+                        <label class="auth-field">
+                            <span class="auth-label">(t(lang, Key::CurrentPasswordLabel))</span>
+                            <input
+                                class="auth-input auth-input-mono"
+                                type="password"
+                                name="current"
+                                autocomplete="current-password"
+                                required=""
+                            >
+                        </label>
+                        <label class="auth-field">
+                            <span class="auth-label">(t(lang, Key::NewPasswordLabel))</span>
+                            <input
+                                class="auth-input auth-input-mono"
+                                type="password"
+                                name="password"
+                                autocomplete="new-password"
+                                minlength=(MIN_PASSWORD_CHARS.to_string())
+                                required=""
+                            >
+                        </label>
+                        <label class="auth-field">
+                            <span class="auth-label">(t(lang, Key::NewPasswordAgainLabel))</span>
+                            <input
+                                class="auth-input auth-input-mono"
+                                type="password"
+                                name="password_confirm"
+                                autocomplete="new-password"
+                                minlength=(MIN_PASSWORD_CHARS.to_string())
+                                required=""
+                            >
+                        </label>
+                        <button class="auth-submit" type="submit">
+                            <span class="auth-submit-text">(t(lang, Key::ChangePassword))</span>
+                        </button>
+                    </form>
+                    <div class="auth-sub">(t(lang, Key::AccountPasswordNote))</div>
                 </div>
                 <div class="auth-card">
                     <form method="post" action="/logout">
                         <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">"Sign out everywhere"</span>
+                            <span class="auth-submit-text">(t(lang, Key::SignOutEverywhere))</span>
                         </button>
                     </form>
                     if user.admin {
-                        <a class="auth-alt" href="/admin">"Admin panel"</a>
+                        <a class="auth-alt" href="/admin">(t(lang, Key::AdminPanelLink))</a>
                     }
                 </div>
-                <div class="auth-footer">"im · Dizey SSO"</div>
+                <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
-        (crate::layout::avatar_script(cx).await?)
+        (crate::layout::avatar_script(cx, lang).await?)
     };
-    shell(cx, "im", stage).await
+    shell(cx, "im", Some(user), stage).await
 }
 
 /// "Forgot it?" — the self-serve reset ask. It answers the same whether the
 /// address has an account: one quiet note, the same one for every address.
 #[page("/forgot")]
 async fn forgot(cx: &Cx) -> Result {
+    let lang = Lang::En;
     let query = current_query(cx);
     let error = query_value(&query, "error");
     let sent = query_value(&query, "ok").as_deref() == Some("sent");
@@ -695,18 +795,18 @@ async fn forgot(cx: &Cx) -> Result {
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="auth-head">
-                        <div class="auth-title">"Forgot it?"</div>
-                        <div class="auth-sub">"Your address gets a reset link, good for one password change. A fresh ask retires the last link."</div>
+                        <div class="auth-title">(t(lang, Key::ForgotTitle))</div>
+                        <div class="auth-sub">(t(lang, Key::ForgotSub))</div>
                     </div>
                     if sent {
-                        <div class="auth-ok">"If that address has an account, a link is on its way."</div>
+                        <div class="auth-ok">(t(lang, Key::ForgotSentNote))</div>
                     }
                     if let Some(code) = error {
-                        <div class="auth-problem">(error_text(&code))</div>
+                        <div class="auth-problem">(error_text(&code, lang))</div>
                     }
                     <form method="post" action="/forgot">
                         <label class="auth-field">
-                            <span class="auth-label">"Email"</span>
+                            <span class="auth-label">(t(lang, Key::EmailLabel))</span>
                             <input
                                 class="auth-input auth-input-mono"
                                 type="email"
@@ -716,22 +816,23 @@ async fn forgot(cx: &Cx) -> Result {
                             >
                         </label>
                         <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">"Send the link"</span>
+                            <span class="auth-submit-text">(t(lang, Key::SendLinkButton))</span>
                         </button>
                     </form>
-                    <a class="auth-alt" href="/">"Back to sign-in"</a>
+                    <a class="auth-alt" href="/">(t(lang, Key::BackToSignInDash))</a>
                 </div>
-                <div class="auth-footer">"im · Dizey SSO"</div>
+                <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
     };
-    shell(cx, "Forgot it? · im", stage).await
+    shell(cx, t(lang, Key::TitleForgot), None, stage).await
 }
 
 /// The reset link's destination: a new password, twice. A dead link never
 /// shows a working form — it goes back to the ask with the refusal named.
 #[route(GET "/reset/{token}")]
 async fn reset_page(cx: &Cx) -> Result<Response> {
+    let lang = Lang::En;
     let token: &str = path_param::<Token>(cx);
     if !im_core::accounts::reset_link_valid(&server::app(cx).store, token).await? {
         return see_other("/forgot?error=reset_invalid").into_response(cx);
@@ -745,16 +846,16 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="auth-head">
-                        <div class="auth-title">"A fresh password"</div>
-                        <div class="auth-sub">"The change signs every device out, this one included."</div>
+                        <div class="auth-title">(t(lang, Key::ResetTitle))</div>
+                        <div class="auth-sub">(t(lang, Key::ResetSub))</div>
                     </div>
                     if let Some(code) = error {
-                        <div class="auth-problem">(error_text(&code))</div>
+                        <div class="auth-problem">(error_text(&code, lang))</div>
                     }
                     <form method="post" action="/reset">
                         <input type="hidden" name="token" value=(token.to_string())>
                         <label class="auth-field">
-                            <span class="auth-label">"New password"</span>
+                            <span class="auth-label">(t(lang, Key::NewPasswordLabel))</span>
                             <input
                                 class="auth-input auth-input-mono"
                                 type="password"
@@ -765,7 +866,7 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
                             >
                         </label>
                         <label class="auth-field">
-                            <span class="auth-label">"New password, again"</span>
+                            <span class="auth-label">(t(lang, Key::NewPasswordAgainLabel))</span>
                             <input
                                 class="auth-input auth-input-mono"
                                 type="password"
@@ -776,15 +877,15 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
                             >
                         </label>
                         <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">"Change password"</span>
+                            <span class="auth-submit-text">(t(lang, Key::ChangePassword))</span>
                         </button>
                     </form>
                 </div>
-                <div class="auth-footer">"im · Dizey SSO"</div>
+                <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
     };
-    shell(cx, "A fresh password · im", stage)
+    shell(cx, t(lang, Key::TitleReset), None, stage)
         .await?
         .into_response(cx)
 }

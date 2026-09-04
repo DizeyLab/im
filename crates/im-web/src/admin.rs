@@ -14,6 +14,7 @@ use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{HeaderValue, StatusCode, header, route};
 use topcoat::view::view;
 
+use crate::i18n::{self, Key, lang_of, t};
 use crate::layout::shell;
 use crate::mailer;
 use crate::pages::{error_text, query_value};
@@ -120,6 +121,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
     };
+    let lang = lang_of(Some(&me));
     let query = topcoat::router::request::uri(cx)
         .query()
         .unwrap_or("")
@@ -132,11 +134,11 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
 
     let nav = |current: &str| {
         [
-            ("account", "Account"),
-            ("users", "Users"),
-            ("mail", "Mail"),
-            ("settings", "Settings"),
-            ("logs", "Logs"),
+            ("account", t(lang, Key::NavAccount)),
+            ("users", t(lang, Key::NavUsers)),
+            ("mail", t(lang, Key::NavMail)),
+            ("settings", t(lang, Key::NavSettings)),
+            ("logs", t(lang, Key::NavLogs)),
         ]
         .into_iter()
         .map(|(id, label)| {
@@ -149,34 +151,34 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
     };
 
     let section_html = match section.as_str() {
-        "mail" => mail_section(cx).await?,
-        "settings" => settings_section(cx).await?,
-        "logs" => logs_section(cx).await?,
-        "users" => users_section(cx, &me, invited.as_deref()).await?,
-        _ => account_section(&me),
+        "mail" => mail_section(cx, lang).await?,
+        "settings" => settings_section(cx, lang).await?,
+        "logs" => logs_section(cx, lang).await?,
+        "users" => users_section(cx, &me, invited.as_deref(), lang).await?,
+        _ => account_section(&me, lang),
     };
 
     let banner = match (ok.as_deref(), error.as_deref()) {
         (Some(code), _) => Some(format!(
             r#"<div class="auth-ok">{}</div>"#,
             match code {
-                "invited" => "Invite created.",
-                "revoked" => "Sessions revoked — every device is signed out.",
-                "session_revoked" => "Session revoked.",
-                "disabled" => "Account disabled.",
-                "enabled" => "Account enabled.",
-                "smtp" => "Mail settings saved.",
-                "smtp_test" => "Test mail sent.",
-                "password" => "Password changed — every other device is signed out.",
-                "uninvited" => "Invite invalidated — the link is dead.",
-                "deleted" => "Account deleted.",
-                "settings" => "Settings saved.",
-                _ => "Done.",
+                "invited" => t(lang, Key::OkInvited),
+                "revoked" => t(lang, Key::OkRevoked),
+                "session_revoked" => t(lang, Key::OkSessionRevoked),
+                "disabled" => t(lang, Key::OkDisabled),
+                "enabled" => t(lang, Key::OkEnabled),
+                "smtp" => t(lang, Key::OkSmtpSaved),
+                "smtp_test" => t(lang, Key::OkSmtpTest),
+                "password" => t(lang, Key::OkPasswordChanged),
+                "uninvited" => t(lang, Key::OkUninvited),
+                "deleted" => t(lang, Key::OkDeleted),
+                "settings" => t(lang, Key::OkSettingsSaved),
+                _ => t(lang, Key::OkDone),
             }
         )),
         (_, Some(code)) => Some(format!(
             r#"<div class="auth-problem">{}{}</div>"#,
-            error_text(code),
+            error_text(code, lang),
             why.as_deref()
                 .map(|detail| format!("<div class=\"muted\">{}</div>", escape(detail)))
                 .unwrap_or_default(),
@@ -201,42 +203,57 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
             </div>
         </main>
     };
-    shell(cx, "Admin · im", stage).await?.into_response(cx)
+    shell(cx, t(lang, Key::TitleAdmin), Some(&me), stage)
+        .await?
+        .into_response(cx)
 }
 /// The self-service half of the panel: the account the panel is signed in
 /// as. Izlek keeps this on the settings rail's first tab; so do we.
-fn account_section(me: &User) -> String {
+fn account_section(me: &User, lang: i18n::Lang) -> String {
     let two_factor = if me.totp_confirmed {
-        "two-factor is on"
+        t(lang, Key::TwoFactorOnNote)
     } else {
-        "two-factor is NOT on — sign out and back in to set it up"
+        t(lang, Key::TwoFactorOffNote)
     };
     format!(
         r#"<div class="admin-card">
-  <div class="auth-title">Account</div>
-  <div class="auth-sub">Signed in as <span class="mono">{}</span> · {two_factor}.</div>
+  <div class="auth-title">{title}</div>
+  <div class="auth-sub">{sub}</div>
   <form method="post" action="/admin/password" class="admin-form">
-    <label class="auth-field"><span class="auth-label">Current password</span>
+    <label class="auth-field"><span class="auth-label">{current}</span>
       <input class="auth-input auth-input-mono" type="password" name="current" autocomplete="current-password" required></label>
-    <label class="auth-field"><span class="auth-label">New password</span>
+    <label class="auth-field"><span class="auth-label">{new}</span>
       <input class="auth-input auth-input-mono" type="password" name="password" autocomplete="new-password" minlength="10" required></label>
-    <label class="auth-field"><span class="auth-label">New password, again</span>
+    <label class="auth-field"><span class="auth-label">{again}</span>
       <input class="auth-input auth-input-mono" type="password" name="password_confirm" autocomplete="new-password" minlength="10" required></label>
-    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Change password</span></button>
+    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">{change}</span></button>
   </form>
-  <div class="auth-sub">Changing it signs every other device out — this one stays.</div>
+  <div class="auth-sub">{note}</div>
 </div>"#,
-        escape(&me.email)
+        title = t(lang, Key::AccountTitle),
+        sub = i18n::account_sub(lang, &escape(&me.email), two_factor),
+        current = t(lang, Key::CurrentPasswordLabel),
+        new = t(lang, Key::NewPasswordLabel),
+        again = t(lang, Key::NewPasswordAgainLabel),
+        change = t(lang, Key::ChangePassword),
+        note = t(lang, Key::AccountPasswordNote),
     )
 }
 
 /// One person's live sessions as the disclosure under their row: a small
 /// table with a per-session revoke, or the muted line when nothing is live.
 /// The admin's own row gets one too — "you" still signs in from somewhere.
-fn sessions_row(user: &User, sessions: &[im_core::sessions::SessionInfo]) -> String {
+fn sessions_row(
+    user: &User,
+    sessions: &[im_core::sessions::SessionInfo],
+    lang: i18n::Lang,
+) -> String {
     let id = escape(&user.id.to_string());
     let body = if sessions.is_empty() {
-        r#"<div class="muted">No active sessions</div>"#.to_string()
+        format!(
+            r#"<div class="muted">{}</div>"#,
+            t(lang, Key::AdminSessionsEmpty)
+        )
     } else {
         let mut rows = String::new();
         for session in sessions {
@@ -256,7 +273,7 @@ fn sessions_row(user: &User, sessions: &[im_core::sessions::SessionInfo]) -> Str
                     r#"<form method="post" action="/admin/session_revoke">"#,
                     r#"<input type="hidden" name="user" value="{id}">"#,
                     r#"<input type="hidden" name="session" value="{}">"#,
-                    r#"<button class="admin-action" type="submit">Revoke</button>"#,
+                    r#"<button class="admin-action" type="submit">{}</button>"#,
                     r#"</form></td></tr>"#
                 ),
                 // The cell reads as a device; the raw agent rides the title
@@ -267,7 +284,7 @@ fn sessions_row(user: &User, sessions: &[im_core::sessions::SessionInfo]) -> Str
                     .filter(|agent| !agent.is_empty())
                     .map(escape)
                     .unwrap_or_default(),
-                escape(&crate::pages::device_label(session.agent.as_deref())),
+                escape(&crate::pages::device_label(session.agent.as_deref(), lang)),
                 session
                     .ip
                     .as_deref()
@@ -276,21 +293,26 @@ fn sessions_row(user: &User, sessions: &[im_core::sessions::SessionInfo]) -> Str
                 session.created_at.date(),
                 seen,
                 escape(&session.token_hash),
+                t(lang, Key::RevokeButton),
                 id = id,
             ));
         }
         format!(
             concat!(
                 r#"<table class="admin-table"><thead><tr>"#,
-                r#"<th>Device</th><th>Address</th><th>Signed in</th><th>Last seen</th><th></th>"#,
+                r#"<th>{device}</th><th>{address}</th><th>{signed_in}</th><th>{last_seen}</th><th></th>"#,
                 r#"</tr></thead><tbody>{rows}</tbody></table>"#
             ),
+            device = t(lang, Key::DeviceLabel),
+            address = t(lang, Key::AddressLabel),
+            signed_in = t(lang, Key::SignedInLabel),
+            last_seen = t(lang, Key::LastSeenLabel),
             rows = rows,
         )
     };
     format!(
-        r#"<tr><td colspan="4"><details class="admin-sessions"><summary class="muted">Sessions ({})</summary>{body}</details></td></tr>"#,
-        sessions.len()
+        r#"<tr><td colspan="4"><details class="admin-sessions"><summary class="muted">{}</summary>{body}</details></td></tr>"#,
+        i18n::sessions_summary(lang, sessions.len())
     )
 }
 
@@ -298,15 +320,16 @@ async fn users_section(
     cx: &Cx,
     me: &User,
     invited: Option<&str>,
+    lang: i18n::Lang,
 ) -> Result<String, topcoat::Error> {
     let users = accounts::list_users(&app(cx).store).await?;
     let pending = accounts::list_pending_invites(&app(cx).store).await?;
     let mut rows = String::new();
     for user in &users {
         let flags = [
-            user.admin.then_some("admin"),
-            user.disabled.then_some("disabled"),
-            (!user.totp_confirmed).then_some("no 2fa"),
+            user.admin.then_some(t(lang, Key::FlagAdmin)),
+            user.disabled.then_some(t(lang, Key::FlagDisabled)),
+            (!user.totp_confirmed).then_some(t(lang, Key::FlagNo2fa)),
         ]
         .into_iter()
         .flatten()
@@ -314,7 +337,10 @@ async fn users_section(
         .join(" · ");
         let actions = if user.id == me.id {
             // Never let the only admin lock themselves out by reflex.
-            r#"<span class="muted">you</span>"#.to_string()
+            format!(
+                r#"<span class="muted">{}</span>"#,
+                t(lang, Key::YouWord)
+            )
         } else {
             let id = escape(&user.id.to_string());
             let email = escape(&user.email);
@@ -326,34 +352,35 @@ async fn users_section(
                 confirm_action(
                     &id,
                     "/admin/enable",
-                    "Enable",
+                    t(lang, Key::EnableWord),
                     "",
-                    &format!("Enable {email}?"),
-                    "They can sign in again.",
-                    "Confirm enable",
+                    &i18n::enable_title(lang, &email),
+                    t(lang, Key::EnableCost),
+                    t(lang, Key::ConfirmEnable),
                 )
             } else {
                 confirm_action(
                     &id,
                     "/admin/disable",
-                    "Disable",
+                    t(lang, Key::DisableWord),
                     "",
-                    &format!("Disable {email}?"),
-                    "They cannot sign in, and every live session ends.",
-                    "Confirm disable",
+                    &i18n::disable_title(lang, &email),
+                    t(lang, Key::DisableCost),
+                    t(lang, Key::ConfirmDisable),
                 )
             };
             let remove = confirm_action(
                 &id,
                 "/admin/delete",
-                "Delete",
+                t(lang, Key::DeleteWord),
                 " admin-danger",
-                &format!("Delete {email}?"),
-                "The account, its sessions and every app token go with it. The address can be invited again, as somebody new.",
-                "Confirm delete",
+                &i18n::delete_title(lang, &email),
+                t(lang, Key::DeleteCost),
+                t(lang, Key::ConfirmDelete),
             );
             format!(
-                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">Sign out everywhere</button></form>{remove}"#
+                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">{sign_out}</button></form>{remove}"#,
+                sign_out = t(lang, Key::SignOutEverywhere),
             )
         };
         rows.push_str(&format!(
@@ -364,77 +391,88 @@ async fn users_section(
             actions
         ));
         let sessions = im_core::sessions::list_sessions(&app(cx).store, &user.id).await?;
-        rows.push_str(&sessions_row(user, &sessions));
+        rows.push_str(&sessions_row(user, &sessions, lang));
     }
     // Invites still waiting on their person sit in the same table — "waiting"
     // instead of a name, and the one action an outstanding link understands:
     for row in &pending {
-        let flags = [Some("invited"), row.admin.then_some("admin")]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" · ");
+        let flags = [
+            Some(t(lang, Key::FlagInvited)),
+            row.admin.then_some(t(lang, Key::FlagAdmin)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ");
         let expires = row
             .expires_at
             .format(&time::macros::format_description!("[year]-[month]-[day]"))
             .unwrap_or_default();
         rows.push_str(&format!(
-            r#"<tr><td class="mono">{}</td><td class="muted">waiting · until {}</td><td class="muted">{}</td><td class="actions"><form method="post" action="/admin/uninvite"><input type="hidden" name="invite" value="{}"><button class="admin-action" type="submit">Invalidate</button></form></td></tr>"#,
+            r#"<tr><td class="mono">{}</td><td class="muted">{}</td><td class="muted">{}</td><td class="actions"><form method="post" action="/admin/uninvite"><input type="hidden" name="invite" value="{}"><button class="admin-action" type="submit">{}</button></form></td></tr>"#,
             escape(&row.email),
-            expires,
+            i18n::waiting_label(lang, &expires),
             flags,
             escape(&row.token_hash),
+            t(lang, Key::InvalidateButton),
         ));
     }
     let invited_html = invited
         .map(|link| {
             format!(
-                r#"<div class="auth-note">The link exists once. It is shown once:<br><span class="mono">{}</span></div>"#,
+                r#"<div class="auth-note">{}<br><span class="mono">{}</span></div>"#,
+                t(lang, Key::InviteLinkNote),
                 escape(link)
             )
         })
         .unwrap_or_default();
     Ok(format!(
         r#"<div class="admin-card">
-  <div class="auth-title">People</div>
+  <div class="auth-title">{title}</div>
   {invited_html}
   <table class="admin-table">
-    <thead><tr><th>Email</th><th>Name</th><th></th><th></th></tr></thead>
+    <thead><tr><th>{email}</th><th>{name}</th><th></th><th></th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
   <form method="post" action="/admin/invite" class="admin-invite">
     <input class="auth-input auth-input-mono" type="email" name="email" placeholder="person@example.com" required>
     <select class="auth-input admin-role" name="role">
-      <option value="member">member</option>
-      <option value="admin">admin</option>
+      <option value="member">{member}</option>
+      <option value="admin">{admin}</option>
     </select>
-    <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">Invite</span></button>
+    <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{invite}</span></button>
   </form>
-</div>"#
+</div>"#,
+        title = t(lang, Key::PeopleTitle),
+        email = t(lang, Key::EmailCol),
+        name = t(lang, Key::NameCol),
+        member = t(lang, Key::RoleMember),
+        admin = t(lang, Key::RoleAdmin),
+        invite = t(lang, Key::InviteButton),
     ))
 }
 
 /// The knobs the code shipped with, now the panel's: invite and reset link
 /// lifetimes, the sign-in session's days, the pending marker's minutes, and
 /// the sign-in failure ceiling. Same form skin as Mail.
-async fn settings_section(cx: &Cx) -> Result<String, topcoat::Error> {
+async fn settings_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
     let policy = settings::policy(&app(cx).store).await?;
     Ok(format!(
         r#"<div class="admin-card">
-  <div class="auth-title">Settings</div>
-  <div class="auth-sub">The rules identity lives by. They apply from the next invite, sign-in or link — nothing already minted is rewritten.</div>
+  <div class="auth-title">{title}</div>
+  <div class="auth-sub">{sub}</div>
   <form method="post" action="/admin/settings" class="admin-form">
-    <label class="auth-field"><span class="auth-label">Invite link, days</span>
+    <label class="auth-field"><span class="auth-label">{invite_days}</span>
       <input class="auth-input auth-input-mono" type="number" name="invite_days" min="1" value="{}"></label>
-    <label class="auth-field"><span class="auth-label">Sign-in session, days</span>
+    <label class="auth-field"><span class="auth-label">{session_days}</span>
       <input class="auth-input auth-input-mono" type="number" name="session_days" min="1" value="{}"></label>
-    <label class="auth-field"><span class="auth-label">Second-factor window, minutes</span>
+    <label class="auth-field"><span class="auth-label">{pending_minutes}</span>
       <input class="auth-input auth-input-mono" type="number" name="pending_minutes" min="1" value="{}"></label>
-    <label class="auth-field"><span class="auth-label">Reset link, minutes</span>
+    <label class="auth-field"><span class="auth-label">{reset_minutes}</span>
       <input class="auth-input auth-input-mono" type="number" name="reset_minutes" min="1" value="{}"></label>
-    <label class="auth-field"><span class="auth-label">Failed sign-ins per address per hour</span>
+    <label class="auth-field"><span class="auth-label">{attempts}</span>
       <input class="auth-input auth-input-mono" type="number" name="login_attempts_per_hour" min="1" value="{}"></label>
-    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Save</span></button>
+    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">{save}</span></button>
   </form>
 </div>"#,
         policy.invite_days,
@@ -442,6 +480,14 @@ async fn settings_section(cx: &Cx) -> Result<String, topcoat::Error> {
         policy.pending_minutes,
         policy.reset_minutes,
         policy.login_attempts_per_hour,
+        title = t(lang, Key::SettingsTitle),
+        sub = t(lang, Key::SettingsSub),
+        invite_days = t(lang, Key::InviteDaysLabel),
+        session_days = t(lang, Key::SessionDaysLabel),
+        pending_minutes = t(lang, Key::PendingMinutesLabel),
+        reset_minutes = t(lang, Key::ResetMinutesLabel),
+        attempts = t(lang, Key::LoginAttemptsLabel),
+        save = t(lang, Key::SaveButton),
     ))
 }
 
@@ -476,13 +522,13 @@ async fn settings_save(cx: &Cx, Form(input): Form<PolicyForm>) -> Result<Respons
     back(cx, "settings", "&ok=settings")
 }
 
-async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
+async fn mail_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
     let store = &app(cx).store;
     let smtp = settings::smtp(store).await?;
     let password_note = if smtp.password.is_some() {
-        "password is set — fill to replace, leave empty to keep"
+        t(lang, Key::PasswordSetNote)
     } else {
-        "no password set"
+        t(lang, Key::NoPasswordNote)
     };
     // The standing chip, izlek's idiom: one colored chip that says what the
     // last probe proved, with the server's own words under it on a refusal.
@@ -497,26 +543,22 @@ async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
     let (chip_class, chip_text, lede) = match settings::standing(store).await? {
         settings::Standing::NotConfigured => (
             "chip chip-muted",
-            "not configured".to_string(),
+            t(lang, Key::ChipNotConfigured).to_string(),
             String::new(),
         ),
         settings::Standing::Unchecked => (
             "chip chip-muted",
-            "unchecked".to_string(),
-            "Saved, but never checked — the check dials the server and stops before sending."
-                .to_string(),
+            t(lang, Key::ChipUnchecked).to_string(),
+            t(lang, Key::UncheckedNote).to_string(),
         ),
         settings::Standing::Connected { at, took_ms } => (
             "chip chip-connected",
-            format!("connected · {took_ms} ms"),
-            format!(
-                "Checked {} — TLS, hello, password: all accepted.",
-                stamp(at)
-            ),
+            i18n::connected_chip(lang, took_ms),
+            i18n::checked_note(lang, &stamp(at)),
         ),
         settings::Standing::Refused { at, said } => (
             "chip chip-refused",
-            "refused".to_string(),
+            t(lang, Key::ChipRefused).to_string(),
             format!("{} — {}", stamp(at), escape(&said)),
         ),
     };
@@ -527,38 +569,49 @@ async fn mail_section(cx: &Cx) -> Result<String, topcoat::Error> {
     };
     Ok(format!(
         r#"<div class="admin-card">
-  <div class="admin-card-head"><div class="auth-title">Mail</div><span class="{chip_class}">{chip_text}</span></div>
-  <div class="auth-sub">Invites go out through this sender. The password is sealed under <span class="mono">im.key</span>; without a sender, invite links are shown here instead of mailed.</div>
+  <div class="admin-card-head"><div class="auth-title">{title}</div><span class="{chip_class}">{chip_text}</span></div>
+  <div class="auth-sub">{sub}</div>
   <form method="post" action="/admin/smtp" class="admin-form">
-    <label class="auth-field"><span class="auth-label">Host</span>
+    <label class="auth-field"><span class="auth-label">{host}</span>
       <input class="auth-input auth-input-mono" type="text" name="host" value="{}" placeholder="smtp.example.com"></label>
-    <label class="auth-field"><span class="auth-label">Port</span>
+    <label class="auth-field"><span class="auth-label">{port}</span>
       <input class="auth-input auth-input-mono" type="number" name="port" value="{}"></label>
-    <label class="auth-field"><span class="auth-label">Username</span>
+    <label class="auth-field"><span class="auth-label">{username}</span>
       <input class="auth-input auth-input-mono" type="text" name="username" value="{}"></label>
-    <label class="auth-field"><span class="auth-label">Password</span>
+    <label class="auth-field"><span class="auth-label">{password}</span>
       <input class="auth-input auth-input-mono" type="password" name="password" placeholder="{password_note}" autocomplete="off"></label>
-    <label class="auth-field"><span class="auth-label">From name</span>
+    <label class="auth-field"><span class="auth-label">{from_name}</span>
       <input class="auth-input auth-input-mono" type="text" name="from_name" value="{}" placeholder="im"></label>
-    <label class="auth-field"><span class="auth-label">From address</span>
+    <label class="auth-field"><span class="auth-label">{from_address}</span>
       <input class="auth-input auth-input-mono" type="text" name="from" value="{}" placeholder="auth@example.com"></label>
-    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">Save</span></button>
+    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">{save}</span></button>
   </form>
   {lede_html}
   <div class="admin-pair">
-    <form method="post" action="/admin/smtp_check"><button class="admin-action" type="submit">Check connection</button></form>
-    <form method="post" action="/admin/smtp_test"><button class="admin-action" type="submit">Send a test mail to myself</button></form>
+    <form method="post" action="/admin/smtp_check"><button class="admin-action" type="submit">{check}</button></form>
+    <form method="post" action="/admin/smtp_test"><button class="admin-action" type="submit">{test}</button></form>
   </div>
 </div>"#,
         escape(&smtp.host),
         smtp.port,
         escape(&smtp.username),
         escape(&smtp.from_name),
-        escape(&smtp.from)
+        escape(&smtp.from),
+        title = t(lang, Key::MailTitle),
+        sub = i18n::mail_sub(lang),
+        host = t(lang, Key::HostLabel),
+        port = t(lang, Key::PortLabel),
+        username = t(lang, Key::UsernameLabel),
+        password = t(lang, Key::MailPasswordLabel),
+        from_name = t(lang, Key::FromNameLabel),
+        from_address = t(lang, Key::FromAddressLabel),
+        save = t(lang, Key::SaveButton),
+        check = t(lang, Key::CheckConnectionButton),
+        test = t(lang, Key::SendTestMailButton),
     ))
 }
 
-async fn logs_section(cx: &Cx) -> Result<String, topcoat::Error> {
+async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
     let entries = events::list(&app(cx).store, 200).await?;
     let mut rows = String::new();
     for event in &entries {
@@ -572,13 +625,19 @@ async fn logs_section(cx: &Cx) -> Result<String, topcoat::Error> {
     }
     Ok(format!(
         r#"<div class="admin-card">
-  <div class="auth-title">Logs</div>
-  <div class="auth-sub">Everything identity did, newest first. Introspection is not logged — it runs per request and would drown the rest.</div>
+  <div class="auth-title">{title}</div>
+  <div class="auth-sub">{sub}</div>
   <table class="admin-table">
-    <thead><tr><th>When</th><th>What</th><th>Who</th><th>Detail</th></tr></thead>
+    <thead><tr><th>{when}</th><th>{what}</th><th>{who}</th><th>{detail}</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
-</div>"#
+</div>"#,
+        title = t(lang, Key::LogsTitle),
+        sub = t(lang, Key::LogsSub),
+        when = t(lang, Key::WhenCol),
+        what = t(lang, Key::WhatCol),
+        who = t(lang, Key::WhoCol),
+        detail = t(lang, Key::DetailCol),
     ))
 }
 
@@ -849,7 +908,7 @@ async fn smtp_test(cx: &Cx) -> Result<Response> {
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
     };
-    match mailer::send_test(&app(cx).store, &me.email).await {
+    match mailer::send_test(&app(cx).store, &me.email, lang_of(Some(&me))).await {
         Ok(()) => {
             server::log_event(cx, "smtp_test_sent", Some(&me.email), None).await;
             back(cx, "mail", "&ok=smtp_test")

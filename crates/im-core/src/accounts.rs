@@ -382,6 +382,9 @@ pub async fn create_user_from_invite(
         admin: invite.admin,
         disabled: false,
         created_at: store::now(),
+        theme: "light".to_string(),
+        language: "en".to_string(),
+        ui: "instrument".to_string(),
     };
     let password_hash = hash_password(password)?;
     // The lock is taken only now — the reads above (`invite_by_token`) lock
@@ -646,7 +649,7 @@ pub async fn verify_login(
     let mut rows = conn
         .query(
             "SELECT id, email, name, password_hash, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL FROM users WHERE email = ?1 COLLATE NOCASE",
+             photo_mime IS NOT NULL, theme, language, ui FROM users WHERE email = ?1 COLLATE NOCASE",
             turso::params![email],
         )
         .await
@@ -664,6 +667,9 @@ pub async fn verify_login(
         admin: store::int(&row, 5)? != 0,
         disabled: store::int(&row, 6)? != 0,
         created_at: store::parse_stamp(&store::text(&row, 7)?)?,
+        theme: store::text(&row, 9)?,
+        language: store::text(&row, 10)?,
+        ui: store::text(&row, 11)?,
     };
     let phc = store::text(&row, 3)?;
     if !verify_password(password, &phc) || user.disabled {
@@ -736,7 +742,7 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
     let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL FROM users WHERE id = ?1",
+             photo_mime IS NOT NULL, theme, language, ui FROM users WHERE id = ?1",
             turso::params![id.to_string()],
         )
         .await
@@ -753,6 +759,9 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
         admin: store::int(&row, 4)? != 0,
         disabled: store::int(&row, 5)? != 0,
         created_at: store::parse_stamp(&store::text(&row, 6)?)?,
+        theme: store::text(&row, 8)?,
+        language: store::text(&row, 9)?,
+        ui: store::text(&row, 10)?,
     }))
 }
 
@@ -783,7 +792,7 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
     let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL FROM users ORDER BY created_at",
+             photo_mime IS NOT NULL, theme, language, ui FROM users ORDER BY created_at",
             (),
         )
         .await
@@ -799,6 +808,9 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
             admin: store::int(&row, 4)? != 0,
             disabled: store::int(&row, 5)? != 0,
             created_at: store::parse_stamp(&store::text(&row, 6)?)?,
+            theme: store::text(&row, 8)?,
+            language: store::text(&row, 9)?,
+            ui: store::text(&row, 10)?,
         });
     }
     Ok(users)
@@ -825,6 +837,27 @@ pub async fn set_admin(store: &Store, user: &UserId, admin: bool) -> Result<()> 
     conn.execute(
         "UPDATE users SET admin = ?1 WHERE id = ?2",
         turso::params![admin as i64, user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// Stores a user's display preferences: theme (`light`/`dark`), language
+/// (`en`/`tr`), ui (`instrument`/`ledger`). Values are stored as given —
+/// validation lives in the web layer. One UPDATE statement, mirroring
+/// `set_admin`/`set_disabled` beside it.
+pub async fn set_preferences(
+    store: &Store,
+    user: &UserId,
+    theme: &str,
+    language: &str,
+    ui: &str,
+) -> Result<()> {
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "UPDATE users SET theme = ?1, language = ?2, ui = ?3 WHERE id = ?4",
+        turso::params![theme.to_string(), language.to_string(), ui.to_string(), user.to_string()],
     )
     .await
     .map_err(backend)?;

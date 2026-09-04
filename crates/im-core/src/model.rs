@@ -59,6 +59,12 @@ pub struct User {
     pub admin: bool,
     pub disabled: bool,
     pub created_at: OffsetDateTime,
+    /// Display preferences, server-side only: `light`/`dark`, `en`/`tr`,
+    /// `instrument`/`ledger`. Validation lives in the web layer; core
+    /// stores the strings.
+    pub theme: String,
+    pub language: String,
+    pub ui: String,
 }
 
 /// An outstanding (or spent) invite, as stored. The raw token exists only in

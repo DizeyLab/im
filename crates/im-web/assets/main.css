@@ -1,4 +1,102 @@
-:root {
+[data-ui=ledger] .auth-title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+[data-ui=ledger] .auth-card {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+[data-ui=ledger] .admin-card {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}
+[data-ui=ledger] .admin-card-head {
+  border-bottom: 2px solid var(--rule-strong);
+  padding: 0 0 10px;
+}
+[data-ui=ledger] .admin-table td {
+  border-top-color: var(--border);
+}
+[data-ui=ledger] .session-item {
+  border-top-color: var(--border);
+}
+[data-ui=ledger] .auth-note,
+[data-ui=ledger] .auth-secret,
+[data-ui=ledger] .auth-ok {
+  background: transparent;
+}
+[data-ui=ledger] .auth-problem {
+  background: transparent;
+}
+[data-ui=ledger] .chip {
+  display: inline-flex;
+  align-items: baseline;
+  height: auto;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-bottom: 1px dotted currentColor;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+[data-ui=ledger] .chip-muted, [data-ui=ledger] .chip-connected, [data-ui=ledger] .chip-refused, [data-ui=ledger] .chip-accent {
+  background: transparent;
+}
+[data-ui=ledger] .chip-accent {
+  border: none;
+  border-bottom: 1px dotted currentColor;
+}
+[data-ui=ledger] .auth-submit {
+  background: var(--ink);
+  color: var(--bg);
+}
+[data-ui=ledger] .auth-submit:hover {
+  background: var(--ink-soft);
+}
+[data-ui=ledger] .admin-action {
+  background: transparent;
+  border-color: var(--ink-soft);
+}
+[data-ui=ledger] .admin-action:hover {
+  background: transparent;
+  border-color: var(--ink);
+  color: var(--ink);
+}
+[data-ui=ledger] .admin-danger {
+  border-color: var(--danger);
+}
+[data-ui=ledger] .admin-danger:hover {
+  border-color: var(--danger);
+  background: transparent;
+}
+[data-ui=ledger] .auth-input {
+  background: transparent;
+  border-color: var(--ink-soft);
+}
+[data-ui=ledger] .auth-input:focus-visible {
+  background: transparent;
+  border-color: var(--ink);
+}
+[data-ui=ledger] .auth-locked {
+  background: transparent;
+  border-color: var(--ink-soft);
+}
+[data-ui=ledger] .admin-nav-on {
+  box-shadow: inset 0 -2px 0 var(--ink);
+}
+
+:root,
+[data-ui=instrument] {
   color-scheme: light;
   --bg: #f2f2f0;
   --surface: #fbfbfa;
@@ -31,31 +129,104 @@
   --ease: ease-out;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --bg: #0d0e10;
-    --surface: #14161a;
-    --border: #23262c;
-    --border-strong: #2e323a;
-    --border-soft: #1f2226;
-    --ink: #e6e4de;
-    --muted: #7d8590;
-    --muted-soft: #4a4f58;
-    --accent: #8ba1e8;
-    --accent-tint: rgba(139, 161, 232, 0.14);
-    --accent-ink: #b9c6ee;
-    --accent-strong: #7e93d9;
-    --field-bg: #101216;
-    --panel-sunken: #101216;
-    --danger: #e0906a;
-    --danger-tint-alt: rgba(224, 144, 106, 0.05);
-    --danger-border-soft: rgba(224, 144, 106, 0.3);
-    --positive: #9db98a;
-    --positive-tint: rgba(157, 185, 138, 0.13);
-    --positive-border: rgba(157, 185, 138, 0.4);
-  }
+[data-ui=instrument][data-theme=dark] {
+  color-scheme: dark;
+  --bg: #0d0e10;
+  --surface: #14161a;
+  --border: #23262c;
+  --border-strong: #2e323a;
+  --border-soft: #1f2226;
+  --ink: #e6e4de;
+  --muted: #7d8590;
+  --muted-soft: #4a4f58;
+  --accent: #8ba1e8;
+  --accent-tint: rgba(139, 161, 232, 0.14);
+  --accent-ink: #b9c6ee;
+  --accent-strong: #7e93d9;
+  --field-bg: #101216;
+  --panel-sunken: #101216;
+  --danger: #e0906a;
+  --danger-tint-alt: rgba(224, 144, 106, 0.05);
+  --danger-border-soft: rgba(224, 144, 106, 0.3);
+  --positive: #9db98a;
+  --positive-tint: rgba(157, 185, 138, 0.13);
+  --positive-border: rgba(157, 185, 138, 0.4);
 }
+
+[data-ui=ledger] {
+  color-scheme: light;
+  --bg: #f6f1e6;
+  --surface: #f6f1e6;
+  --border: #ddd5c2;
+  --border-strong: #221f18;
+  --border-soft: #cfc6b0;
+  --ink: #221f18;
+  --muted: #7a7466;
+  --muted-soft: #a39b88;
+  --accent: #46557b;
+  --accent-tint: #eef0f5;
+  --accent-ink: #2f3c5c;
+  --accent-strong: #5a6a94;
+  --field-bg: #f1ebdd;
+  --panel-sunken: #f1ebdd;
+  --danger: #a04a24;
+  --danger-tint-alt: #fbf1ec;
+  --danger-border-soft: #eddcd3;
+  --positive: #5c7b46;
+  --positive-tint: #eef3e9;
+  --positive-border: #d3e0c6;
+  --font-sans: system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-display: "Newsreader", Georgia, serif;
+  --ink-soft: #4a453a;
+  --row-hover: #efe9da;
+  --rule-strong: #221f18;
+  --control-h-lg: 40px;
+  --radius: 2px;
+  --radius-sm: var(--radius);
+  --radius-lg: 2px;
+  --shadow-2: none;
+  --dur-fast: 120ms;
+  --ease: ease-out;
+}
+
+[data-ui=ledger][data-theme=dark] {
+  color-scheme: dark;
+  --bg: #171511;
+  --surface: #171511;
+  --border: #3a352a;
+  --border-strong: #e8e2d4;
+  --border-soft: #2e2a20;
+  --ink: #e8e2d4;
+  --muted: #97907f;
+  --muted-soft: #6e6757;
+  --accent: #9db0dd;
+  --accent-tint: rgba(157, 176, 221, 0.14);
+  --accent-ink: #c3cfee;
+  --accent-strong: #8497c9;
+  --field-bg: #1c1915;
+  --panel-sunken: #1b1814;
+  --danger: #d28a5a;
+  --danger-tint-alt: rgba(210, 138, 90, 0.05);
+  --danger-border-soft: rgba(210, 138, 90, 0.3);
+  --positive: #a3bd8b;
+  --positive-tint: rgba(163, 189, 139, 0.13);
+  --positive-border: rgba(163, 189, 139, 0.4);
+  --font-sans: system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-display: "Newsreader", Georgia, serif;
+  --ink-soft: #cfc8b6;
+  --row-hover: #201c16;
+  --rule-strong: #e8e2d4;
+  --control-h-lg: 40px;
+  --radius: 2px;
+  --radius-sm: var(--radius);
+  --radius-lg: 2px;
+  --shadow-2: none;
+  --dur-fast: 120ms;
+  --ease: ease-out;
+}
+
 * {
   box-sizing: border-box;
 }
