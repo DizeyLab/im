@@ -427,7 +427,15 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 (wordmark(cx).await?)
                 <div class="auth-card">
                     <div class="profile-head">
-                        (avatar(cx, user).await?)
+                        if user.has_photo {
+                            (avatar(cx, user).await?)
+                        } else {
+                            // iz's no-photo idiom: the face itself is the
+                            // upload affordance — the label opens the picker.
+                            <label class="profile-avatar-upload" for="profile-photo-input">
+                                (avatar(cx, user).await?)
+                            </label>
+                        }
                         <div class="profile-heading">
                             <div class="auth-title">(user.name.clone())</div>
                             <div class="profile-marks">
@@ -440,6 +448,43 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                     <span class="chip chip-accent">"Admin"</span>
                                 }
                             </div>
+                            <form
+                                class="profile-photo-form"
+                                method="post"
+                                action="/api/profile_photo"
+                                enctype="multipart/form-data"
+                            >
+                                <input
+                                    id="profile-photo-input"
+                                    class="profile-file-hidden"
+                                    type="file"
+                                    name="photo"
+                                    accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+                                    required=""
+                                >
+                                <label class="admin-action" for="profile-photo-input">
+                                    if user.has_photo {
+                                        "Change"
+                                    } else {
+                                        "Add photo"
+                                    }
+                                </label>
+                                // No script on im: where iz auto-submits on
+                                // change, a quiet Save appears once the input
+                                // holds a file (`:has(:valid)`, CSS-only).
+                                <button class="admin-action profile-photo-save" type="submit">
+                                    "Save"
+                                </button>
+                                if user.has_photo {
+                                    <button
+                                        class="admin-action"
+                                        type="submit"
+                                        form="profile-photo-remove"
+                                    >
+                                        "Remove"
+                                    </button>
+                                }
+                            </form>
                         </div>
                     </div>
                     if let Some(code) = ok {
@@ -458,41 +503,6 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             <dd class="profile-value">(joined)</dd>
                         </div>
                     </dl>
-                    <form
-                        class="profile-photo-form"
-                        method="post"
-                        action="/api/profile_photo"
-                        enctype="multipart/form-data"
-                    >
-                        <label class="auth-field">
-                            <span class="auth-label">"Profile photo"</span>
-                            <input
-                                class="auth-input profile-file"
-                                type="file"
-                                name="photo"
-                                accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
-                                required=""
-                            >
-                        </label>
-                        <div class="profile-photo-actions">
-                            <button class="auth-submit profile-upload" type="submit">
-                                if user.has_photo {
-                                    <span class="auth-submit-text">"Change"</span>
-                                } else {
-                                    <span class="auth-submit-text">"Upload"</span>
-                                }
-                            </button>
-                            if user.has_photo {
-                                <button
-                                    class="admin-action"
-                                    type="submit"
-                                    form="profile-photo-remove"
-                                >
-                                    "Remove"
-                                </button>
-                            }
-                        </div>
-                    </form>
                     <a class="auth-alt" href=(format!("/people/{}", user.id))>"Public profile"</a>
                     if user.has_photo {
                         <form

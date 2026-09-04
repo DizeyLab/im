@@ -362,6 +362,7 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
 }
 
 .profile-heading {
+  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -398,35 +399,37 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   font-size: 13px;
 }
 
-.profile-photo-actions {
+.auth-card .profile-photo-form {
   display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
 }
-.profile-photo-actions .profile-upload {
-  flex: 1;
-  width: auto;
+.auth-card .profile-photo-form label.admin-action {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+.profile-file-hidden {
+  display: none;
+}
+
+.profile-photo-save {
+  display: none;
+}
+
+.profile-photo-form:has(.profile-file-hidden:valid) .profile-photo-save {
+  display: inline-flex;
 }
 
 #profile-photo-remove {
   display: none;
 }
 
-.profile-file {
-  height: auto;
-  padding: 7px 12px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.profile-file::file-selector-button {
-  margin-right: 10px;
-  padding: 4px 10px;
-  background: var(--panel-sunken);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  color: var(--ink);
-  font-family: var(--font-sans);
-  font-size: 12px;
+.profile-avatar-upload {
   cursor: pointer;
 }
 
