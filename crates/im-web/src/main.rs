@@ -12,6 +12,7 @@ use topcoat::router::{BodyLimit, Router, RouterBuilderDiscoverExt, route};
 
 mod admin;
 mod auth;
+mod directory;
 mod config;
 mod dropdown;
 mod i18n;

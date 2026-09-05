@@ -179,7 +179,7 @@ fn not_found() -> (StatusCode, HeaderMap, Vec<u8>) {
 /// is distinguishable on the wire.
 #[route(GET "/photo/{user_id}")]
 async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
-    if server::current_user(cx).await.is_none() && !valid_app(cx).await {
+    if server::current_user(cx).await.is_none() && !server::valid_app(cx).await {
         return Ok(not_found());
     }
     let target = im_core::model::UserId::from(path_param::<UserId>(cx).to_string());
@@ -215,34 +215,6 @@ async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     Ok((StatusCode::OK, headers, bytes))
 }
 
-/// Whether this request carries a registered OIDC app's credentials: HTTP
-/// Basic over `client_id:client_secret`, checked against the client
-/// registry. Anything unparseable, unknown, or wrong is simply false — the
-/// caller answers its one not-found and never says which.
-async fn valid_app(cx: &Cx) -> bool {
-    use base64::Engine as _;
-    let Some(encoded) = request_headers(cx)
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Basic "))
-    else {
-        return false;
-    };
-    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
-        return false;
-    };
-    let Ok(pair) = std::str::from_utf8(&decoded) else {
-        return false;
-    };
-    let Some((client_id, secret)) = pair.split_once(':') else {
-        return false;
-    };
-    let store = server::app(cx).store.clone();
-    let Ok(Some(client)) = im_core::oidc::client_by_id(&store, client_id).await else {
-        return false;
-    };
-    im_core::oidc::verify_client_secret(&client, secret)
-}
 
 #[cfg(test)]
 mod tests {
