@@ -279,6 +279,14 @@ body:has(.auth-stage) {
   padding: 4px 0 10px;
 }
 
+// The landing top-anchors: sections differ in height, and a centred column
+// would move the tab row under the mouse between them. Fixed offset, the
+// admin panel's posture; the auth gates stay centred.
+.landing-stage .auth-column {
+  margin-top: 40px;
+  margin-bottom: 40px;
+}
+
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -852,6 +860,12 @@ body:has(.admin-shell) {
 }
 
 .admin-bar .auth-alt { margin-left: auto; align-self: auto; }
+
+// A brand that is also a link keeps the wordmark's look, not the link's.
+a.wordmark-home {
+  text-decoration: none;
+  color: inherit;
+}
 
 .admin-card {
   background: var(--surface);

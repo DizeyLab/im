@@ -168,7 +168,9 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         <main class="admin-shell">
             <div class="admin-column">
                 <div class="admin-bar">
-                    <span class="wordmark-text">"im"</span>
+                    // The brand is the way back to the landing, as in iz's
+                    // topbar; the address stays a link too.
+                    <a class="wordmark-text wordmark-home" href="/">"im"</a>
                     <nav class="admin-tabs">(topcoat::view::Unescaped::new_unchecked(nav(&section)))</nav>
                     <a class="auth-alt" href="/">(escape(&me.email))</a>
                 </div>

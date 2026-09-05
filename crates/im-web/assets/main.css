@@ -318,6 +318,11 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   padding: 4px 0 10px;
 }
 
+.landing-stage .auth-column {
+  margin-top: 40px;
+  margin-bottom: 40px;
+}
+
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -845,6 +850,11 @@ body:has(.admin-shell) {
 .admin-bar .auth-alt {
   margin-left: auto;
   align-self: auto;
+}
+
+a.wordmark-home {
+  text-decoration: none;
+  color: inherit;
 }
 
 .admin-card {
