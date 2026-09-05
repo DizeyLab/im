@@ -779,10 +779,10 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         format!(r#"<div class="muted">{}</div>"#, t(lang, Key::LogsEmpty))
     } else {
         format!(
-            r#"<table class="admin-table log-list" data-rows="{limit}" data-section="logs">
+            r#"<div class="log-list-wrap"><table class="admin-table log-list" data-rows="{limit}" data-section="logs">
     <thead><tr><th>{when}</th><th>{what}</th><th>{who}</th><th>{detail}</th></tr></thead>
     <tbody>{rows}</tbody>
-  </table>"#,
+  </table></div>"#,
             when = t(lang, Key::WhenCol),
             what = t(lang, Key::WhatCol),
             who = t(lang, Key::WhoCol),
@@ -931,7 +931,8 @@ const LOG_FIT_SCRIPT: &str = r#"<script>(function () {
   // first row re-measures whenever its height changes (font swap, layout
   // settle), a window resize re-measures for the new viewport, and the
   // debounce folds the burst into one. A wrong early value is corrected by
-  // the next firing; the reload guard caps the round trips.
+  // the next firing. A resize also re-opens the reload budget — the hops
+  // spent against the old geometry say nothing about the new one.
   var timer = null;
   function schedule() {
     if (timer) { clearTimeout(timer); }
@@ -939,7 +940,7 @@ const LOG_FIT_SCRIPT: &str = r#"<script>(function () {
   }
   var row = document.querySelector('.log-list[data-rows] tbody tr');
   if (row && window.ResizeObserver) { new ResizeObserver(schedule).observe(row); }
-  window.addEventListener('resize', schedule);
+  window.addEventListener('resize', function () { window.sessionStorage.removeItem('imLogFitHops'); schedule(); });
   schedule();
 })();</script>"#;
 

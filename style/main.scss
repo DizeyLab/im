@@ -902,6 +902,31 @@ a.wordmark-home {
   }
 }
 
+// The logs page never outgrows the window, whatever the fit script managed:
+// when the script's page size is right the table ends where the foot sits,
+// and when it is not (script off, a stale cookie, a mid-session resize) the
+// card caps at the room below the bar and the table scrolls inside itself
+// instead of pushing rows past the fold. Scoped by `:has(.log-list)` so the
+// other sections keep the page's natural scroll.
+body:has(.log-list) {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+
+  .admin-shell { height: 100%; }
+
+  .admin-column { height: 100%; }
+
+  // The card is a flex column that may shrink below its content; the wrap is
+  // the piece that gives, taking the scroll the page would have owned.
+  .admin-card:has(.log-list) { min-height: 0; }
+}
+
+.log-list-wrap {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .logs-foot {
   display: flex;
   align-items: center;
@@ -984,8 +1009,10 @@ a.wordmark-home {
   }
 
   // The role picker: same field skin as the inputs, just narrower — izlek's
-  // invite row uses a select here too, not a checkbox.
-  .admin-role {
+  // invite row uses a select here too, not a checkbox. `select`-scoped so the
+  // enhancement's trigger button (which wears the same classes) keeps only
+  // its own ::after caret instead of doubling this one.
+  select.admin-role {
     flex: 0 0 auto;
     width: auto;
     padding: 0 28px 0 12px;
@@ -1139,6 +1166,11 @@ input[type="checkbox"] { accent-color: var(--accent); }
 // (auth-input included), so the closed control already matches the design.
 
 .dd-native { display: none; }
+
+.admin-invite .dd-trigger {
+  flex: 0 0 auto;
+  width: auto;
+}
 
 .dd-trigger {
   display: flex;

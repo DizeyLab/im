@@ -880,6 +880,26 @@ a.wordmark-home {
   min-width: 0;
 }
 
+body:has(.log-list) {
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+body:has(.log-list) .admin-shell {
+  height: 100%;
+}
+body:has(.log-list) .admin-column {
+  height: 100%;
+}
+body:has(.log-list) .admin-card:has(.log-list) {
+  min-height: 0;
+}
+
+.log-list-wrap {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .logs-foot {
   display: flex;
   align-items: center;
@@ -962,7 +982,7 @@ a.wordmark-home {
   height: var(--control-h);
   box-sizing: border-box;
 }
-.admin-invite .admin-role {
+.admin-invite select.admin-role {
   flex: 0 0 auto;
   width: auto;
   padding: 0 28px 0 12px;
@@ -1106,6 +1126,11 @@ input[type=checkbox] {
 }
 .dd-native {
   display: none;
+}
+
+.admin-invite .dd-trigger {
+  flex: 0 0 auto;
+  width: auto;
 }
 
 .dd-trigger {
