@@ -181,6 +181,7 @@ pub enum Key {
     OlderLink,
     LogsEmpty,
     OrderLabel,
+    SearchLabel,
 
     // Landing password pane.
     AccountPasswordNote,
@@ -546,6 +547,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (LogsEmpty, En) => "Nothing matches.",
         (OrderLabel, En) => "Order",
         (OrderLabel, Tr) => "Sıra",
+        (SearchLabel, En) => "Search",
+        (SearchLabel, Tr) => "Ara",
         (LogsEmpty, Tr) => "Eşleşen kayıt yok.",
 
         (AccountPasswordNote, En) => "Changing it signs every other device out — this one stays.",

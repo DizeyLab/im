@@ -661,6 +661,9 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         kind: pick("kind"),
         actor: pick("actor"),
         day,
+        q: pick("q")
+            .map(|raw| raw.trim().to_string())
+            .filter(|s| !s.is_empty()),
     };
     let dir = if pick("dir").as_deref() == Some("oldest") {
         events::Dir::Oldest
@@ -712,6 +715,9 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
     }
     if dir == events::Dir::Oldest {
         suffix += "&dir=oldest";
+    }
+    if let Some(q) = &filter.q {
+        suffix += &format!("&q={}", crate::oidc::urlencode(q));
     }
 
     let kinds = events::distinct_kinds(store).await?;
@@ -823,6 +829,8 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
       <input class="auth-input" type="date" name="to" value="{to_value}" data-autosubmit></label>
     <label class="auth-field"><span class="auth-label">{dir_label}</span>
       <select class="auth-input" name="dir" data-autosubmit>{dir_options}</select></label>
+    <label class="auth-field logs-q"><span class="auth-label">{search_label}</span>
+      <input class="auth-input" type="text" name="q" value="{q_value}"></label>
   </form>
   {body}
   {foot}
@@ -834,6 +842,8 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         from_label = t(lang, Key::FromLabel),
         to_label = t(lang, Key::ToLabel),
         dir_label = t(lang, Key::OrderLabel),
+        search_label = t(lang, Key::SearchLabel),
+        q_value = escape(filter.q.as_deref().unwrap_or("")),
         from_value = escape(&pick("from").unwrap_or_default()),
         to_value = escape(&pick("to").unwrap_or_default()),
         dir_options = format!(

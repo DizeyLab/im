@@ -1,3 +1,4 @@
+@charset "UTF-8";
 [data-ui=ledger] .auth-title {
   font-family: var(--font-display);
   font-size: 22px;
@@ -1102,4 +1103,84 @@ input[type=checkbox] {
   .admin-invite {
     flex-wrap: wrap;
   }
+}
+.dd-native {
+  display: none;
+}
+
+.dd-trigger {
+  display: flex;
+  align-items: center;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.dd-trigger::after {
+  content: "▾";
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.dd-panel {
+  position: fixed;
+  z-index: 60;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  padding: 8px;
+  display: none;
+}
+.dd-panel.dd-open {
+  display: block;
+}
+
+.dd-option {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+}
+.dd-option:hover, .dd-option:focus, .dd-option.dd-option-active {
+  background: var(--row-hover);
+  outline: none;
+}
+
+.dd-option-selected {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+
+.dd-option-hidden {
+  display: none;
+}
+
+.dd-search {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.logs-filters .logs-q {
+  flex: 2 1 200px;
 }

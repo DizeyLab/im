@@ -41,6 +41,10 @@ pub async fn log(store: &Store, kind: &str, actor: Option<&str>, detail: Option<
 pub struct EventFilter {
     pub kind: Option<String>,
     pub actor: Option<String>,
+    /// Free text against detail, actor and kind — ASCII case-folded
+    /// substring, no wildcards, like izlek's board search but in SQL (the
+    /// fold must live in the predicate or the keyset pages lie).
+    pub q: Option<String>,
     /// Half-open day range `[from, to)`; both ends UTC stamps.
     pub day: Option<(time::OffsetDateTime, time::OffsetDateTime)>,
 }
@@ -84,6 +88,13 @@ fn filter_sql(filter: &EventFilter, params: &mut Vec<turso::Value>) -> String {
         sql += " AND at >= ? AND at < ?";
         params.push(store::stamp(*from).expect("rfc3339 of range start").into());
         params.push(store::stamp(*to).expect("rfc3339 of range end").into());
+    }
+    if let Some(q) = &filter.q {
+        sql += " AND (lower(coalesce(detail, '')) LIKE ? OR lower(coalesce(actor, '')) LIKE ? OR lower(kind) LIKE ?)";
+        let needle = q.to_lowercase();
+        params.push(format!("%{needle}%").into());
+        params.push(format!("%{needle}%").into());
+        params.push(format!("%{needle}%").into());
     }
     sql
 }
@@ -260,6 +271,22 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].kind, "login_fail");
         assert_eq!(events[1].actor.as_deref(), Some("ann@example.com"));
+        // Search: substring hits detail, actor and kind; a miss admits nothing.
+        for (q, want) in [("password", 1), ("ann@", 1), ("login", 2), ("zzz", 0)] {
+            let hits = list_filtered(
+                &store,
+                10,
+                &EventPage::Newest,
+                Dir::Newest,
+                &EventFilter {
+                    q: Some(q.to_string()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(hits.len(), want, "search {q:?}");
+        }
     }
 
     #[tokio::test]

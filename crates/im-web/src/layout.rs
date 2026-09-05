@@ -199,6 +199,57 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
   var nav = 0;
   function step() { nav += 1; return nav; }
 
+  // Field preservation, izlek's model: only a dirty or focused field is
+  // worth saving, and the caret offsets come along — a live search typing
+  // through a refresh keeps both focus and cursor.
+  function keyOf(el) {
+    var form = el.form ? (el.form.getAttribute('action') || '') : '';
+    return form + '|' + (el.name || '') + '|' + (el.type || '') + '|' + (el.tagName || '');
+  }
+  function editable(el) {
+    return el.type !== 'hidden' && el.type !== 'password' && el.type !== 'file';
+  }
+  function captureFields() {
+    var active = document.activeElement, out = [];
+    document.querySelectorAll('input, textarea, select').forEach(function (el) {
+      if (!editable(el)) { return; }
+      var moved;
+      if (el.type === 'checkbox' || el.type === 'radio') { moved = el.checked !== el.defaultChecked; }
+      else if (el.tagName === 'SELECT') {
+        var def = -1;
+        for (var j = 0; j < el.options.length; j++) { if (el.options[j].defaultSelected) { def = j; break; } }
+        if (def < 0) { def = 0; }
+        moved = el.selectedIndex !== def;
+      } else { moved = el.value !== el.defaultValue; }
+      var focused = el === active;
+      if (!moved && !focused) { return; }
+      var start = -1, end = -1;
+      try { if (el.selectionStart != null) { start = el.selectionStart; end = el.selectionEnd; } } catch (err) { }
+      out.push({ k: keyOf(el), v: el.value, c: el.checked, i: el.selectedIndex, f: focused, s: start, e: end });
+    });
+    return out;
+  }
+  function restoreFields(saved) {
+    if (!saved || !saved.length) { return; }
+    var fields = document.querySelectorAll('input, textarea, select');
+    saved.forEach(function (was) {
+      var el = null;
+      for (var i = 0; i < fields.length; i++) {
+        if (keyOf(fields[i]) === was.k) { el = fields[i]; break; }
+      }
+      if (!el) { return; }
+      if (el.type === 'checkbox' || el.type === 'radio') { el.checked = was.c; }
+      else if (el.tagName === 'SELECT') { el.selectedIndex = was.i; }
+      else { el.value = was.v; }
+      if (was.f) {
+        try {
+          el.focus();
+          if (was.s >= 0 && el.setSelectionRange) { el.setSelectionRange(was.s, was.e); }
+        } catch (err) { }
+      }
+    });
+  }
+
   function adopt(doc, preserve) {
     document.title = doc.title;
     var root = doc.documentElement;
@@ -206,14 +257,7 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
       if (root.hasAttribute(a)) { document.documentElement.setAttribute(a, root.getAttribute(a)); }
       else { document.documentElement.removeAttribute(a); }
     });
-    var fields = null;
-    if (preserve) {
-      fields = {};
-      document.querySelectorAll('input[name], select[name], textarea[name]').forEach(function (f) {
-        if (f.type === 'password' || f.type === 'file' || f.type === 'hidden') { return; }
-        fields[f.name] = f.value;
-      });
-    }
+    var keep = preserve ? captureFields() : null;
     document.body.replaceChildren();
     Array.from(doc.body.childNodes).forEach(function (n) { document.body.appendChild(document.importNode(n, true)); });
     document.querySelectorAll('script').forEach(function (old) {
@@ -221,11 +265,8 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
       s.textContent = old.textContent;
       old.replaceWith(s);
     });
-    if (fields) {
-      document.querySelectorAll('input[name], select[name], textarea[name]').forEach(function (f) {
-        if (Object.prototype.hasOwnProperty.call(fields, f.name)) { f.value = fields[f.name]; }
-      });
-    }
+    if (window.__imDdEnhance) { window.__imDdEnhance(); }
+    if (keep) { restoreFields(keep); }
   }
 
   function swap(html, url, fresh, push) {
@@ -285,9 +326,41 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
     c.form.requestSubmit();
   });
 
+  // izlek's __izQuery: a filtered view asked for in place — the URL swaps
+  // under replaceState (no history entry per keystroke), fields and caret
+  // come through the adopt.
+  window.__imQuery = function (url) {
+    var mark = step();
+    fetch(url, { headers: { accept: 'text/html' } })
+      .then(function (r) { return r.text().then(function (text) { return { text: text, url: r.url }; }); })
+      .then(function (res) {
+        if (mark !== nav) { return; }
+        var doc = new DOMParser().parseFromString(res.text, 'text/html');
+        if (!doc.body) { return; }
+        var x = window.scrollX, y = window.scrollY;
+        adopt(doc, true);
+        history.replaceState(null, '', res.url);
+        window.scrollTo(x, y);
+      })
+      .catch(function () {});
+  };
+
+  // The logs search box: two hundred still milliseconds after the last key,
+  // the whole filter form rides the query — kind, actor, dates, direction
+  // and q together.
+  var searchTimer = null;
+  document.addEventListener('input', function (e) {
+    var el = e.target;
+    if (!el || el.name !== 'q' || !el.closest || !el.closest('.logs-filters')) { return; }
+    if (searchTimer) { clearTimeout(searchTimer); }
+    searchTimer = setTimeout(function () {
+      searchTimer = null;
+      if (!el.form) { return; }
+      window.__imQuery((el.form.getAttribute('action') || location.pathname) + '?' + new URLSearchParams(new FormData(el.form)).toString());
+    }, 200);
+  });
+
   window.__imRefresh = function () {
-    var active = document.activeElement;
-    if (active && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) { return; }
     fetch(location.href, { headers: { accept: 'text/html' } })
       .then(function (r) { return r.text(); })
       .then(function (html) {
@@ -356,6 +429,7 @@ pub async fn shell(cx: &Cx, title: &str, viewer: Option<&User>, stage: Result) -
                 (soft_nav_script(cx).await?)
                 if viewer.is_some() {
                     (live_script(cx).await?)
+                    (crate::dropdown::dropdown_script(cx).await?)
                 }
             </body>
         </html>

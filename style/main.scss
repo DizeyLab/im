@@ -1132,3 +1132,86 @@ input[type="checkbox"] { accent-color: var(--accent); }
   .admin-shell { padding: 16px 12px 32px; }
   .admin-invite { flex-wrap: wrap; }
 }
+
+// --- Themed dropdown (izlek's dropdown, on im's tokens) --------------------
+// The native select hides but keeps posting; the trigger wears its classes
+// (auth-input included), so the closed control already matches the design.
+
+.dd-native { display: none; }
+
+.dd-trigger {
+  display: flex;
+  align-items: center;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+
+  &::after {
+    content: "▾";
+    margin-left: auto;
+    padding-left: 8px;
+    color: var(--muted);
+    font-size: 11px;
+  }
+}
+
+.dd-panel {
+  position: fixed;
+  z-index: 60;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  padding: 8px;
+  display: none;
+
+  &.dd-open { display: block; }
+}
+
+.dd-option {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--ink);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease);
+
+  &:hover,
+  &:focus,
+  &.dd-option-active {
+    background: var(--row-hover);
+    outline: none;
+  }
+}
+
+.dd-option-selected {
+  background: var(--accent-tint);
+  color: var(--accent-ink);
+}
+
+.dd-option-hidden { display: none; }
+
+.dd-search {
+  display: block;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 8px 10px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+// The search box in the logs filter row takes the room the selects leave.
+.logs-filters .logs-q { flex: 2 1 200px; }
