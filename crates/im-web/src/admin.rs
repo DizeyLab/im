@@ -114,6 +114,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         [
             ("users", t(lang, Key::NavUsers)),
             ("mail", t(lang, Key::NavMail)),
+            ("message", t(lang, Key::NavMessage)),
             ("settings", t(lang, Key::NavSettings)),
             ("logs", t(lang, Key::NavLogs)),
         ]
@@ -129,6 +130,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
 
     let section_html = match section.as_str() {
         "mail" => mail_section(cx, lang).await?,
+        "message" => message_section(cx, lang).await?,
         "settings" => settings_section(cx, lang).await?,
         "logs" => logs_section(cx, lang).await?,
         "users" => users_section(cx, &me, invited.as_deref(), lang).await?,
@@ -511,38 +513,6 @@ async fn mail_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
     } else {
         format!(r#"<div class="admin-standing">{lede}</div>"#)
     };
-    let users = accounts::list_users(store).await?;
-    let mut options = format!(
-        r#"<option value="everyone">{}</option>"#,
-        t(lang, Key::EveryoneOption)
-    );
-    for person in &users {
-        options.push_str(&format!(
-            r#"<option value="{}">{} · {}</option>"#,
-            escape(person.id.as_str()),
-            escape(&person.name),
-            escape(&person.email),
-        ));
-    }
-    let message_card = format!(
-        r#"<div class="admin-card">
-  <div class="admin-card-head"><div class="auth-title">{msg_title}</div></div>
-  <form method="post" action="/admin/message" class="admin-form">
-    <label class="auth-field"><span class="auth-label">{to_label}</span>
-      <select class="auth-input" name="to">{options}</select></label>
-    <label class="auth-field"><span class="auth-label">{subject_label}</span>
-      <input class="auth-input" type="text" name="subject" required></label>
-    <label class="auth-field"><span class="auth-label">{body_label}</span>
-      <textarea class="auth-input" name="body" rows="5" required></textarea></label>
-    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">{send}</span></button>
-  </form>
-</div>"#,
-        msg_title = t(lang, Key::MessageTitle),
-        to_label = t(lang, Key::MessageToLabel),
-        subject_label = t(lang, Key::MessageSubjectLabel),
-        body_label = t(lang, Key::MessageBodyLabel),
-        send = t(lang, Key::SendMessageButton),
-    );
     Ok(format!(
         r#"<div class="admin-card">
   <div class="admin-card-head"><div class="auth-title">{title}</div><span class="{chip_class}">{chip_text}</span></div>
@@ -585,36 +555,302 @@ async fn mail_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         check = t(lang, Key::CheckConnectionButton),
         test = t(lang, Key::SendTestMailButton),
     ))
-    .map(|smtp_card| smtp_card + &message_card)
 }
 
-async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
-    let entries = events::list(&app(cx).store, 200).await?;
-    let mut rows = String::new();
-    for event in &entries {
-        rows.push_str(&format!(
-            "<tr><td class=\"mono muted\">{}</td><td class=\"mono\">{}</td><td>{}</td><td class=\"muted\">{}</td></tr>",
-            escape(&event.at.format(&time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]")).unwrap_or_default()),
-            escape(&event.kind),
-            escape(event.actor.as_deref().unwrap_or("")),
-            escape(event.detail.as_deref().unwrap_or("")),
+/// The compose half of mail, its own tab like izlek's settings rail keeps
+/// Message beside Outgoing: the sender's settings live one tab over, this
+/// page is only "to whom, what, send".
+async fn message_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
+    let store = &app(cx).store;
+    let users = accounts::list_users(store).await?;
+    let mut options = format!(
+        r#"<option value="everyone">{}</option>"#,
+        t(lang, Key::EveryoneOption)
+    );
+    for person in &users {
+        options.push_str(&format!(
+            r#"<option value="{}">{} · {}</option>"#,
+            escape(person.id.as_str()),
+            escape(&person.name),
+            escape(&person.email),
         ));
     }
     Ok(format!(
         r#"<div class="admin-card">
-  <div class="auth-title">{title}</div>
-  <div class="auth-sub">{sub}</div>
-  <table class="admin-table">
+  <div class="admin-card-head"><div class="auth-title">{msg_title}</div></div>
+  <form method="post" action="/admin/message" class="admin-form">
+    <label class="auth-field"><span class="auth-label">{to_label}</span>
+      <select class="auth-input" name="to">{options}</select></label>
+    <label class="auth-field"><span class="auth-label">{subject_label}</span>
+      <input class="auth-input" type="text" name="subject" required></label>
+    <label class="auth-field"><span class="auth-label">{body_label}</span>
+      <textarea class="auth-input" name="body" rows="5" required></textarea></label>
+    <button class="auth-submit admin-action-wide" type="submit"><span class="auth-submit-text">{send}</span></button>
+  </form>
+</div>"#,
+        msg_title = t(lang, Key::MessageTitle),
+        to_label = t(lang, Key::MessageToLabel),
+        subject_label = t(lang, Key::MessageSubjectLabel),
+        body_label = t(lang, Key::MessageBodyLabel),
+        send = t(lang, Key::SendMessageButton),
+    ))
+}
+
+/// One page of the log: fifty rows, izlek's default. The log grows without
+/// bound; the page does not.
+const LOGS_LIMIT: i64 = 50;
+
+/// The cursor on the wire: `rfc3339~id`, percent-encoded into `before`/`after`.
+fn cursor_q(cursor: &events::EventCursor) -> String {
+    crate::oidc::urlencode(&format!("{}~{}", events_cursor_stamp(cursor), cursor.id))
+}
+
+fn events_cursor_stamp(cursor: &events::EventCursor) -> String {
+    cursor
+        .at
+        .format(&time::macros::format_description!(
+            "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
+        ))
+        .unwrap_or_default()
+}
+
+fn parse_cursor(raw: Option<String>) -> Option<events::EventCursor> {
+    let raw = raw?;
+    let (at, id) = raw.split_once('~')?;
+    let at =
+        time::OffsetDateTime::parse(at, &time::format_description::well_known::Rfc3339).ok()?;
+    if id.is_empty() {
+        return None;
+    }
+    Some(events::EventCursor {
+        at,
+        id: id.to_string(),
+    })
+}
+
+/// YYYY-MM-DD at the UTC midnight that opens the day; `to` is handed the
+/// midnight that closes it. Backwards ranges swap, garbage opens the end.
+fn parse_day(raw: Option<String>) -> Option<time::OffsetDateTime> {
+    let raw = raw?;
+    let date = time::Date::parse(
+        &raw,
+        &time::macros::format_description!("[year]-[month]-[day]"),
+    )
+    .ok()?;
+    date.with_hms(0, 0, 0).ok().map(|dt| dt.assume_utc())
+}
+
+async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
+    let store = &app(cx).store;
+    let query = topcoat::router::request::uri(cx)
+        .query()
+        .unwrap_or("")
+        .to_string();
+    let pick = |name: &str| query_value(&query, name).filter(|v| !v.is_empty());
+
+    let from = parse_day(pick("from"));
+    let to = parse_day(pick("to")).and_then(|d| d.checked_add(time::Duration::days(1)));
+    let day = match (from, to) {
+        (Some(a), Some(b)) if a > b => Some((b, a)),
+        (Some(a), Some(b)) => Some((a, b)),
+        (Some(a), None) => Some((a, time::Date::MAX.with_hms(0, 0, 0).unwrap().assume_utc())),
+        (None, Some(b)) => Some((time::OffsetDateTime::UNIX_EPOCH, b)),
+        (None, None) => None,
+    };
+    let filter = events::EventFilter {
+        kind: pick("kind"),
+        actor: pick("actor"),
+        day,
+    };
+    let dir = if pick("dir").as_deref() == Some("oldest") {
+        events::Dir::Oldest
+    } else {
+        events::Dir::Newest
+    };
+    let mut page = match (parse_cursor(pick("before")), parse_cursor(pick("after"))) {
+        (Some(cursor), _) => events::EventPage::Before(cursor),
+        (None, Some(cursor)) => events::EventPage::After(cursor),
+        _ => events::EventPage::Newest,
+    };
+    let mut window = events::list_filtered(store, LOGS_LIMIT + 1, &page, dir, &filter).await?;
+    // Ran off the top walking back: answer with the freshest page instead.
+    if matches!(page, events::EventPage::After(_)) && window.is_empty() {
+        page = events::EventPage::Newest;
+        window = events::list_filtered(store, LOGS_LIMIT + 1, &page, dir, &filter).await?;
+    }
+    let has_more = window.len() as i64 > LOGS_LIMIT;
+    window.truncate(LOGS_LIMIT as usize);
+
+    let total = events::count_filtered(store, &filter).await?;
+    let preceding = events::count_preceding(
+        store,
+        &filter,
+        dir,
+        window
+            .first()
+            .map(|e| events::EventCursor {
+                at: e.at,
+                id: e.id.clone(),
+            })
+            .as_ref(),
+    )
+    .await?;
+
+    // A page turn re-appends every filter: turning never drops the narrowing.
+    let mut suffix = String::new();
+    if let Some(kind) = &filter.kind {
+        suffix += &format!("&kind={}", crate::oidc::urlencode(kind));
+    }
+    if let Some(actor) = &filter.actor {
+        suffix += &format!("&actor={}", crate::oidc::urlencode(actor));
+    }
+    if let Some(raw) = pick("from") {
+        suffix += &format!("&from={}", crate::oidc::urlencode(&raw));
+    }
+    if let Some(raw) = pick("to") {
+        suffix += &format!("&to={}", crate::oidc::urlencode(&raw));
+    }
+    if dir == events::Dir::Oldest {
+        suffix += "&dir=oldest";
+    }
+
+    let kinds = events::distinct_kinds(store).await?;
+    let actors = events::distinct_actors(store).await?;
+    let mut kind_options = format!(r#"<option value="">{}</option>"#, t(lang, Key::AllOption));
+    for kind in &kinds {
+        kind_options.push_str(&format!(
+            r#"<option value="{}"{}>{}</option>"#,
+            escape(kind),
+            if filter.kind.as_deref() == Some(kind) {
+                " selected"
+            } else {
+                ""
+            },
+            escape(&i18n::kind_word(lang, kind)),
+        ));
+    }
+    let mut actor_options = format!(r#"<option value="">{}</option>"#, t(lang, Key::AllOption));
+    for actor in &actors {
+        actor_options.push_str(&format!(
+            r#"<option value="{}"{}>{}</option>"#,
+            escape(actor),
+            if filter.actor.as_deref() == Some(actor) {
+                " selected"
+            } else {
+                ""
+            },
+            escape(actor),
+        ));
+    }
+
+    let mut rows = String::new();
+    for event in &window {
+        rows.push_str(&format!(
+            "<tr><td class=\"mono muted\">{}</td><td class=\"mono\">{}</td><td>{}</td><td class=\"muted\">{}</td></tr>",
+            escape(&event.at.format(&time::macros::format_description!("[year]-[month]-[day] [hour]:[minute]:[second]")).unwrap_or_default()),
+            escape(&i18n::kind_word(lang, &event.kind)),
+            escape(event.actor.as_deref().unwrap_or("")),
+            escape(event.detail.as_deref().unwrap_or("")),
+        ));
+    }
+
+    let body = if window.is_empty() {
+        format!(r#"<div class="muted">{}</div>"#, t(lang, Key::LogsEmpty))
+    } else {
+        format!(
+            r#"<table class="admin-table">
     <thead><tr><th>{when}</th><th>{what}</th><th>{who}</th><th>{detail}</th></tr></thead>
     <tbody>{rows}</tbody>
-  </table>
+  </table>"#,
+            when = t(lang, Key::WhenCol),
+            what = t(lang, Key::WhatCol),
+            who = t(lang, Key::WhoCol),
+            detail = t(lang, Key::DetailCol),
+        )
+    };
+
+    // izlek's link visibility: the freshest page shows only Older, a middle
+    // page shows both, the last page hides Older.
+    let mut foot = String::new();
+    if !window.is_empty() {
+        let newest = events::EventCursor {
+            at: window.first().unwrap().at,
+            id: window.first().unwrap().id.clone(),
+        };
+        let oldest = events::EventCursor {
+            at: window.last().unwrap().at,
+            id: window.last().unwrap().id.clone(),
+        };
+        let show_older = matches!(page, events::EventPage::After(_)) || has_more;
+        let show_newer = matches!(page, events::EventPage::Before(_))
+            || (matches!(page, events::EventPage::After(_)) && has_more);
+        let mut links = String::new();
+        if show_newer {
+            links += &format!(
+                r#"<a class="auth-alt" href="/admin?section=logs{suffix}&after={}">{}</a>"#,
+                cursor_q(&newest),
+                t(lang, Key::NewerLink),
+            );
+        }
+        if show_older {
+            links += &format!(
+                r#"<a class="auth-alt" href="/admin?section=logs{suffix}&before={}">{}</a>"#,
+                cursor_q(&oldest),
+                t(lang, Key::OlderLink),
+            );
+        }
+        foot = format!(
+            r#"<div class="logs-foot"><span class="log-count">{}–{} / {}</span><div class="logs-links">{links}</div></div>"#,
+            preceding + 1,
+            preceding + window.len() as u64,
+            total,
+        );
+    }
+
+    Ok(format!(
+        r#"<div class="admin-card">
+  <div class="auth-title">{title}</div>
+  <div class="auth-sub">{sub}</div>
+  <form method="get" action="/admin" class="logs-filters">
+    <input type="hidden" name="section" value="logs">
+    <label class="auth-field"><span class="auth-label">{kind_label}</span>
+      <select class="auth-input" name="kind" data-autosubmit>{kind_options}</select></label>
+    <label class="auth-field"><span class="auth-label">{actor_label}</span>
+      <select class="auth-input" name="actor" data-autosubmit>{actor_options}</select></label>
+    <label class="auth-field"><span class="auth-label">{from_label}</span>
+      <input class="auth-input" type="date" name="from" value="{from_value}" data-autosubmit></label>
+    <label class="auth-field"><span class="auth-label">{to_label}</span>
+      <input class="auth-input" type="date" name="to" value="{to_value}" data-autosubmit></label>
+    <label class="auth-field"><span class="auth-label">{dir_label}</span>
+      <select class="auth-input" name="dir" data-autosubmit>{dir_options}</select></label>
+  </form>
+  {body}
+  {foot}
 </div>"#,
         title = t(lang, Key::LogsTitle),
         sub = t(lang, Key::LogsSub),
-        when = t(lang, Key::WhenCol),
-        what = t(lang, Key::WhatCol),
-        who = t(lang, Key::WhoCol),
-        detail = t(lang, Key::DetailCol),
+        kind_label = t(lang, Key::KindLabel),
+        actor_label = t(lang, Key::ActorLabel),
+        from_label = t(lang, Key::FromLabel),
+        to_label = t(lang, Key::ToLabel),
+        dir_label = t(lang, Key::OrderLabel),
+        from_value = escape(&pick("from").unwrap_or_default()),
+        to_value = escape(&pick("to").unwrap_or_default()),
+        dir_options = format!(
+            r#"<option value=""{}>{}</option><option value="oldest"{}>{}</option>"#,
+            if dir == events::Dir::Newest {
+                " selected"
+            } else {
+                ""
+            },
+            t(lang, Key::NewestFirst),
+            if dir == events::Dir::Oldest {
+                " selected"
+            } else {
+                ""
+            },
+            t(lang, Key::OldestFirst),
+        ),
     ))
 }
 
@@ -892,15 +1128,15 @@ async fn message(cx: &Cx, Form(input): Form<MessageForm>) -> Result<Response> {
     };
     let store = &app(cx).store;
     if !settings::smtp(store).await?.configured() {
-        return back(cx, "mail", "&error=sender_unset");
+        return back(cx, "message", "&error=sender_unset");
     }
     let subject = input.subject.trim();
     if subject.is_empty() {
-        return back(cx, "mail", "&error=empty_subject");
+        return back(cx, "message", "&error=empty_subject");
     }
     let body = input.body.trim();
     if body.is_empty() {
-        return back(cx, "mail", "&error=empty_body");
+        return back(cx, "message", "&error=empty_body");
     }
     let users = accounts::list_users(store).await?;
     let recipients: Vec<String> = if input.to == "everyone" {
@@ -915,18 +1151,18 @@ async fn message(cx: &Cx, Form(input): Form<MessageForm>) -> Result<Response> {
             .find(|person| person.id.as_str() == input.to)
         {
             Some(person) => vec![person.email],
-            None => return back(cx, "mail", "&error=no_such_user"),
+            None => return back(cx, "message", "&error=no_such_user"),
         }
     };
     if recipients.is_empty() {
-        return back(cx, "mail", "&error=no_such_user");
+        return back(cx, "message", "&error=no_such_user");
     }
     for recipient in &recipients {
         if let Err(e) = mailer::send_message(store, recipient, subject, body.to_string()).await {
             server::log_event(cx, "message_failed", Some(&me.email), Some(&e.to_string())).await;
             return back(
                 cx,
-                "mail",
+                "message",
                 &format!(
                     "&error=message&why={}",
                     crate::oidc::urlencode(&e.to_string())
@@ -935,7 +1171,7 @@ async fn message(cx: &Cx, Form(input): Form<MessageForm>) -> Result<Response> {
         }
     }
     server::log_event(cx, "message_sent", Some(&me.email), Some(subject)).await;
-    back(cx, "mail", "&ok=message")
+    back(cx, "message", "&ok=message")
 }
 /// Dials the mail server without sending, on an admin's say-so, and writes
 /// down what it said. The result shows on the Mail section as the standing

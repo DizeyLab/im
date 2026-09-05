@@ -277,6 +277,14 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
 
   window.addEventListener('popstate', function () { go(location.pathname + location.search, false, false); });
 
+  // Filter controls submit their form on pick; file inputs with
+  // data-autosubmit belong to the avatar script's uploader, not to this.
+  document.addEventListener('change', function (e) {
+    var c = e.target && e.target.closest ? e.target.closest('[data-autosubmit]') : null;
+    if (!c || !c.form || c.type === 'file') { return; }
+    c.form.requestSubmit();
+  });
+
   window.__imRefresh = function () {
     var active = document.activeElement;
     if (active && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) { return; }

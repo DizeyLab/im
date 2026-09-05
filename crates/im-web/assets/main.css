@@ -796,12 +796,13 @@ textarea.auth-input {
 body:has(.admin-shell) {
   min-height: 100vh;
   min-height: 100dvh;
+  scrollbar-gutter: stable;
 }
 
 .admin-shell {
   display: flex;
   justify-content: center;
-  padding: 24px 24px 48px;
+  padding: max(24px, (100dvh - 640px) / 2) 24px 48px;
 }
 
 .admin-column {
@@ -866,6 +867,32 @@ a.wordmark-home {
   flex-direction: column;
   gap: 16px;
   overflow-x: auto;
+}
+
+.logs-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+}
+.logs-filters .auth-field {
+  flex: 1 1 120px;
+  min-width: 0;
+}
+
+.logs-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.logs-foot .log-count {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted-soft);
+}
+.logs-foot .logs-links {
+  display: flex;
+  gap: 16px;
 }
 
 .admin-table {

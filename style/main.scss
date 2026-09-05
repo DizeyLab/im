@@ -808,18 +808,21 @@ textarea.auth-input {
 }
 
 // --- Admin panel ------------------------------------------------------------
-// Same skin, different posture: top-anchored and wider than the auth stage —
-// a tool, not a gate.
+// Same skin, same posture as the landing: the bar holds the landing's line
+// (the tallest-section centre line) so the mouse never moves between the two
+// panels, and the scrollbar's gutter is reserved so a section that grows a
+// scrollbar does not push the bar sideways.
 
 body:has(.admin-shell) {
   min-height: 100vh;
   min-height: 100dvh;
+  scrollbar-gutter: stable;
 }
 
 .admin-shell {
   display: flex;
   justify-content: center;
-  padding: 24px 24px 48px;
+  padding: max(24px, calc((100dvh - 640px) / 2)) 24px 48px;
 }
 
 .admin-column {
@@ -883,6 +886,37 @@ a.wordmark-home {
   // Logs/users tables are wider than a phone; the card scrolls sideways
   // instead of pushing the whole page out.
   overflow-x: auto;
+}
+
+// The logs filter row: five small fields in one wrapping line; a page turn's
+// foot splits the position note from the Newer/Older links.
+.logs-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+
+  .auth-field {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+}
+
+.logs-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+
+  .log-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--muted-soft);
+  }
+
+  .logs-links {
+    display: flex;
+    gap: 16px;
+  }
 }
 
 .admin-table {

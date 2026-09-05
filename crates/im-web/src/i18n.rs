@@ -144,6 +144,7 @@ pub enum Key {
     NavMail,
     NavSettings,
     NavLogs,
+    NavMessage,
     OkInvited,
     OkRevoked,
     OkDisabled,
@@ -167,6 +168,19 @@ pub enum Key {
     ErrNoSuchUser,
     ErrMessageFailed,
     ErrSenderUnset,
+
+    // Logs filtering and paging.
+    AllOption,
+    KindLabel,
+    ActorLabel,
+    FromLabel,
+    ToLabel,
+    NewestFirst,
+    OldestFirst,
+    NewerLink,
+    OlderLink,
+    LogsEmpty,
+    OrderLabel,
 
     // Landing password pane.
     AccountPasswordNote,
@@ -465,6 +479,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (NavSettings, Tr) => "Ayarlar",
         (NavLogs, En) => "Logs",
         (NavLogs, Tr) => "Kayıtlar",
+        (NavMessage, En) => "Message",
+        (NavMessage, Tr) => "Mesaj",
         (OkInvited, En) => "Invite created.",
         (OkInvited, Tr) => "Davet oluşturuldu.",
         (OkRevoked, En) => "Sessions revoked — every device is signed out.",
@@ -508,6 +524,29 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ErrMessageFailed, Tr) => "Posta gönderilemedi — sunucunun söyledikleri aşağıda.",
         (ErrSenderUnset, En) => "Set up the sender above first.",
         (ErrSenderUnset, Tr) => "Önce yukarıdan göndereni kur.",
+
+        (AllOption, En) => "All",
+        (AllOption, Tr) => "Tümü",
+        (KindLabel, En) => "Kind",
+        (KindLabel, Tr) => "Tür",
+        (ActorLabel, En) => "Actor",
+        (ActorLabel, Tr) => "Yapan",
+        (FromLabel, En) => "From",
+        (FromLabel, Tr) => "Başlangıç",
+        (ToLabel, En) => "To",
+        (ToLabel, Tr) => "Bitiş",
+        (NewestFirst, En) => "Newest first",
+        (NewestFirst, Tr) => "Önce en yeni",
+        (OldestFirst, En) => "Oldest first",
+        (OldestFirst, Tr) => "Önce en eski",
+        (NewerLink, En) => "← Newer",
+        (NewerLink, Tr) => "← Daha yeni",
+        (OlderLink, En) => "Older →",
+        (OlderLink, Tr) => "Daha eski →",
+        (LogsEmpty, En) => "Nothing matches.",
+        (OrderLabel, En) => "Order",
+        (OrderLabel, Tr) => "Sıra",
+        (LogsEmpty, Tr) => "Eşleşen kayıt yok.",
 
         (AccountPasswordNote, En) => "Changing it signs every other device out — this one stays.",
         (AccountPasswordNote, Tr) => {
@@ -699,6 +738,48 @@ pub fn sessions_summary(lang: Lang, n: usize) -> String {
     match lang {
         Lang::En => format!("Sessions ({n})"),
         Lang::Tr => format!("Oturumlar ({n})"),
+    }
+}
+
+/// A log row's kind as a word, izlek's `activity_kind_word`: the stored
+/// string is the stable identifier, the words are presentation. A kind this
+/// build does not know shows as itself.
+pub fn kind_word(lang: Lang, kind: &str) -> String {
+    let pair = match kind {
+        "login_ok" => ("Sign-in", "Giriş"),
+        "login_fail" => ("Failed sign-in", "Başarısız giriş"),
+        "login_limited" => ("Rate-limited sign-in", "Sınırlanmış giriş"),
+        "totp_fail" => ("Failed 2FA code", "Başarısız 2FA kodu"),
+        "invite_accepted" => ("Invite accepted", "Davet kabul edildi"),
+        "invite_created" => ("Invite created", "Davet oluşturuldu"),
+        "invite_revoked" => ("Invite revoked", "Davet iptal edildi"),
+        "enrolled" => ("2FA set up", "2FA kuruldu"),
+        "logout" => ("Sign-out", "Çıkış"),
+        "reset_sent" => ("Reset mail sent", "Sıfırlama postası gönderildi"),
+        "password_reset" => ("Password reset", "Parola sıfırlandı"),
+        "password_changed" => ("Password changed", "Parola değiştirildi"),
+        "session_revoked" => ("Session revoked", "Oturum kapatıldı"),
+        "sessions_revoked" => ("Sessions revoked", "Oturumlar kapatıldı"),
+        "preferences_saved" => ("Preferences saved", "Tercihler kaydedildi"),
+        "photo_saved" => ("Photo updated", "Fotoğraf güncellendi"),
+        "photo_removed" => ("Photo removed", "Fotoğraf kaldırıldı"),
+        "code_exchanged" => ("App sign-in", "Uygulama girişi"),
+        "settings_updated" => ("Settings updated", "Ayarlar güncellendi"),
+        "user_deleted" => ("User deleted", "Kullanıcı silindi"),
+        "user_disabled" => ("User disabled", "Kullanıcı devre dışı"),
+        "user_enabled" => ("User enabled", "Kullanıcı etkin"),
+        "user_promoted" => ("Admin granted", "Yönetici yetkisi verildi"),
+        "smtp_updated" => ("Mail settings saved", "Posta ayarları kaydedildi"),
+        "smtp_test_sent" => ("Test mail sent", "Test postası gönderildi"),
+        "smtp_test_failed" => ("Test mail failed", "Test postası başarısız"),
+        "smtp_checked" => ("Mail server checked", "Posta sunucusu denetlendi"),
+        "message_sent" => ("Message sent", "Mesaj gönderildi"),
+        "message_failed" => ("Message failed", "Mesaj başarısız"),
+        _ => return kind.to_string(),
+    };
+    match lang {
+        Lang::En => pair.0.to_string(),
+        Lang::Tr => pair.1.to_string(),
     }
 }
 
