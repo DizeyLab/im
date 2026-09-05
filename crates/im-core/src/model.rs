@@ -54,8 +54,9 @@ pub struct User {
     /// Whether this person has a profile photo: the row keeps the mime
     /// type, the bytes live as a file under the storage tree (`photos.rs`).
     pub has_photo: bool,
-    /// im's own admin flag — never crosses a token; AuthN stays the only
-    /// thing apps receive.
+    /// im's own admin flag — crosses only via /introspect to registered apps,
+    /// never in id_token/userinfo; apps may derive their own admin
+    /// authorization from it.
     pub admin: bool,
     pub disabled: bool,
     pub created_at: OffsetDateTime,

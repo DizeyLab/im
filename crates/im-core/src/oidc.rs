@@ -444,9 +444,11 @@ pub async fn issue_app_session(
     Ok(token)
 }
 
-/// RFC 7662's answer shape: who this token is, or inactive. Inactive covers
-/// unknown, expired, revoked, a revoked central session, a disabled user, or
-/// a token presented by a client it was never issued to.
+/// RFC 7662's answer shape: who this token is, or inactive. The active answer
+/// carries im's admin flag so registered apps can derive their own admin
+/// authorization from it. Inactive covers unknown, expired, revoked, a
+/// revoked central session, a disabled user, or a token presented by a client
+/// it was never issued to.
 pub async fn introspect_app_session(
     store: &Store,
     token: &str,
@@ -509,6 +511,7 @@ pub async fn introspect_app_session(
         "sub": user.id.as_str(),
         "email": user.email,
         "name": user.name,
+        "admin": user.admin,
         "exp": expires.unix_timestamp(),
     })))
 }
@@ -557,6 +560,33 @@ mod tests {
                 .is_none(),
             "no ghost after admin revocation"
         );
+    }
+
+    #[tokio::test]
+    async fn app_session_introspection_carries_admin_flag() {
+        let (store, client_id, user_id) = fixture().await;
+        let invite = create_invite(&store, "ada@example.com", None, true)
+            .await
+            .unwrap();
+        let admin = create_user_from_invite(&store, invite.expose(), "Ada", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        for (id, want) in [(user_id, false), (admin.id, true)] {
+            let session = create_session(&store, &id, &SessionMeta::default())
+                .await
+                .unwrap();
+            let app_token = issue_app_session(&store, &id, &client_id, &session.hash())
+                .await
+                .unwrap();
+            let active =
+                introspect_app_session(&store, app_token.expose(), client_id.as_str())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(active["active"], true);
+            assert_eq!(active["sub"], id.as_str());
+            assert_eq!(active["admin"], want);
+        }
     }
 
     async fn fixture() -> (Store, ClientId, UserId) {

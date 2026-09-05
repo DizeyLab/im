@@ -318,17 +318,6 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   padding: 4px 0 10px;
 }
 
-.landing-stage {
-  flex-direction: column;
-}
-.landing-stage .landing-chrome {
-  margin: 24px auto 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-}
-
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);

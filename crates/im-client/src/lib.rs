@@ -6,10 +6,8 @@
 //! `im_client::current_user(cx)` wherever it needs the person.
 //!
 //! The model: im holds the central session; this crate holds the app's side
-//! of it — an encrypted cookie with the identity claims and the refresh
-//! token. When the access token ages out, `current_user` silently rotates it
-//! against im; when im has revoked the central session, the rotation is
-//! refused and the app sees a signed-out user.
+//! of it — an encrypted cookie holding the opaque session token, introspected
+//! against im on every request.
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as b64url;
@@ -138,6 +136,7 @@ async fn introspect(state: &ImClient, token: &str) -> Option<(User, i64)> {
             sub: answer["sub"].as_str()?.to_string(),
             email: answer["email"].as_str()?.to_string(),
             name: answer["name"].as_str()?.to_string(),
+            admin: answer["admin"].as_bool().unwrap_or(false),
         },
         answer["exp"].as_i64()?,
     ))
@@ -149,6 +148,8 @@ pub struct User {
     pub sub: String,
     pub email: String,
     pub name: String,
+    #[serde(default)]
+    pub admin: bool,
 }
 
 // ---------------------------------------------------------------------------
