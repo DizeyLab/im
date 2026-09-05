@@ -119,7 +119,7 @@ pub async fn current_user(cx: &Cx) -> Option<User> {
 }
 
 // ---------------------------------------------------------------------------
-// The pending marker: between password and TOTP, between invite and enrolment
+// The pending marker: between password and TOTP
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -127,8 +127,6 @@ pub async fn current_user(cx: &Cx) -> Option<User> {
 pub enum PendingPurpose {
     /// Password verified, TOTP code still owed.
     Login,
-    /// Account created, TOTP enrolment still owed.
-    Enroll,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

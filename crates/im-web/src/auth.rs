@@ -101,17 +101,12 @@ async fn login(cx: &Cx, Form(input): Form<LoginForm>) -> Redirect {
             see("/login/totp".to_string())
         }
         Ok(user) => {
-            // An account without confirmed 2FA — everyone who migrated from
-            // İzlek — enrols before any session exists: same bar as an
-            // invited account.
-            if im_core::totp::totp_secret(store, &user.id).await?.is_none() {
-                let secret = im_core::totp::generate_secret();
-                im_core::totp::set_totp(store, &user.id, &secret).await?;
-            }
-            let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, back).await;
-            server::set_pending_cookie(cx, sealed).await;
             let _ = accounts::clear_login_failures(store, &key).await;
-            see("/enroll".to_string())
+            let token =
+                im_core::sessions::create_session(store, &user.id, &session_meta(cx)).await?;
+            server::set_session_cookie(cx, token.expose());
+            server::log_event(cx, "login_ok", Some(&user.email), None).await;
+            see(back)
         }
         Err(_) => {
             // The failure is logged against the address tried, never the
@@ -220,47 +215,33 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Redirect {
             return see(format!("/invite/{}?error={code}", input.token));
         }
     };
-    // TOTP enrolment is not optional: the account exists from here, and the
-    // enrolment page is the only way forward.
-    let secret = im_core::totp::generate_secret();
-    im_core::totp::set_totp(store, &user.id, &secret).await?;
-    let sealed = server::mint_pending(cx, &user.id, PendingPurpose::Enroll, "/".to_string()).await;
-    server::set_pending_cookie(cx, sealed).await;
+    let token = im_core::sessions::create_session(store, &user.id, &session_meta(cx)).await?;
     server::log_event(cx, "invite_accepted", Some(&user.email), None).await;
-    see("/enroll".to_string())
+    server::set_session_cookie(cx, token.expose());
+    see("/".to_string())
 }
 
 #[route(POST "/enroll")]
 async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
-    let Some(pending) = server::opened_pending(cx) else {
+    let Some(user) = server::current_user(cx).await else {
         return see("/login".to_string());
     };
-    if pending.purpose != PendingPurpose::Enroll {
-        return see("/login".to_string());
+    if user.totp_confirmed {
+        return see("/".to_string());
     }
     let store = &server::app(cx).store;
-    let user_id = UserId::from(pending.user);
-    let Some((secret, _)) = im_core::totp::totp_secret(store, &user_id).await? else {
-        return see("/login?error=enroll_first".to_string());
+    let Some((secret, _)) = im_core::totp::totp_secret(store, &user.id).await? else {
+        return see("/enroll".to_string());
     };
     if !im_core::totp::verify_totp(&secret, input.code.trim(), time::OffsetDateTime::now_utc()) {
         return see("/enroll?error=bad_code".to_string());
     }
-    im_core::totp::confirm_totp(store, &user_id).await?;
-    let token = im_core::sessions::create_session(store, &user_id, &session_meta(cx)).await?;
-    let email = accounts::user_by_id(store, &user_id)
+    im_core::totp::confirm_totp(store, &user.id).await?;
+    let email = accounts::user_by_id(store, &user.id)
         .await?
         .map(|u| u.email);
     server::log_event(cx, "enrolled", email.as_deref(), None).await;
-    server::clear_pending_cookie(cx);
-    server::set_session_cookie(cx, token.expose());
-    // A migrated user who was mid-`/authorize` continues to their app; a
-    // fresh invite lands on the welcome banner.
-    if pending.back == "/" {
-        see("/?ok=enrolled".to_string())
-    } else {
-        see(pending.back)
-    }
+    see("/?ok=enrolled".to_string())
 }
 
 /// "Sign out everywhere": the central session dies, and with it every

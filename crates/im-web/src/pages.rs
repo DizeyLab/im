@@ -30,7 +30,6 @@ pub fn error_text(code: &str, lang: Lang) -> &'static str {
         "password_too_short" => t(lang, Key::ErrPasswordTooShort),
         "password_personal" => t(lang, Key::ErrPasswordPersonal),
         "passwords_differ" => t(lang, Key::ErrPasswordsDiffer),
-        "enroll_first" => t(lang, Key::ErrEnrollFirst),
         "smtp_test" => t(lang, Key::ErrSmtpTest),
         "password_wrong" => t(lang, Key::ErrPasswordWrong),
         "password_same" => t(lang, Key::ErrPasswordSame),
@@ -347,26 +346,24 @@ async fn invite(cx: &Cx) -> Result<Response> {
 }
 
 /// TOTP enrolment: the QR, the manual key, and the first code that proves
-/// the authenticator agrees. Reached with a pending-enroll cookie, set when
-/// the account was created.
+/// the authenticator agrees. Reached from the landing's activation link by a
+/// signed-in user without confirmed two-factor.
 #[route(GET "/enroll")]
 async fn enroll(cx: &Cx) -> Result<Response> {
-    let Some(pending) = server::opened_pending(cx) else {
+    let Some(user) = server::current_user(cx).await else {
         return see_other("/login").into_response(cx);
     };
-    if pending.purpose != PendingPurpose::Enroll {
-        return see_other("/login").into_response(cx);
+    if user.totp_confirmed {
+        return see_other("/").into_response(cx);
     }
-    let user = im_core::accounts::user_by_id(
-        &server::app(cx).store,
-        &im_core::model::UserId::from(pending.user.clone()),
-    )
-    .await?
-    .ok_or_else(|| topcoat::Error::from(std::io::Error::other("pending user is gone")))?;
-    let Some((secret, _confirmed)) =
-        im_core::totp::totp_secret(&server::app(cx).store, &user.id).await?
-    else {
-        return see_other("/login?error=enroll_first").into_response(cx);
+    let store = &server::app(cx).store;
+    let secret = match im_core::totp::totp_secret(store, &user.id).await? {
+        Some((secret, _confirmed)) => secret,
+        None => {
+            let secret = im_core::totp::generate_secret();
+            im_core::totp::set_totp(store, &user.id, &secret).await?;
+            secret
+        }
     };
 
     let issuer = &server::app(cx).config.issuer;
@@ -415,7 +412,7 @@ async fn enroll(cx: &Cx) -> Result<Response> {
                             >
                         </label>
                         <button class="auth-submit" type="submit">
-                            <span class="auth-submit-text">(t(lang, Key::ConfirmAndSignIn))</span>
+                            <span class="auth-submit-text">(t(lang, Key::ConfirmEnroll))</span>
                         </button>
                     </form>
                 </div>
@@ -423,7 +420,7 @@ async fn enroll(cx: &Cx) -> Result<Response> {
             </div>
         </main>
     };
-    shell(cx, t(lang, Key::TitleEnroll), None, stage)
+    shell(cx, t(lang, Key::TitleEnroll), Some(&user), stage)
         .await?
         .into_response(cx)
 }
@@ -771,6 +768,9 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             </div>
                         </dl>
                         <a class="auth-alt" href=(format!("/people/{}", user.id))>(t(lang, Key::PublicProfileLink))</a>
+                        if !user.totp_confirmed {
+                            <a class="auth-alt" href="/enroll">(t(lang, Key::Activate2fa))</a>
+                        }
                         if user.admin {
                             <a class="auth-alt" href="/admin">(t(lang, Key::AdminPanelLink))</a>
                         }
