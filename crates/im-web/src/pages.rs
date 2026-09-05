@@ -606,7 +606,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     .collect::<String>();
     let stage = view! {
         cx =>
-        <main class="auth-stage">
+        <main class="auth-stage landing-stage">
             <div class="auth-column">
                 (wordmark(cx).await?)
                 <nav class="admin-tabs landing-nav">(topcoat::view::Unescaped::new_unchecked(nav))</nav>

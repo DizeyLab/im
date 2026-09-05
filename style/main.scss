@@ -279,6 +279,17 @@ body:has(.auth-stage) {
   padding: 4px 0 10px;
 }
 
+// The landing's column tops out where it would sit if the TALLEST section
+// were the one being centred: the wordmark and tab row hold that line on
+// every section, and shorter sections simply end sooner below it. 640px
+// covers the password and profile blocks with their chrome and footer; a
+// section that outgrows the window (a long session list) lands on the
+// 24px floor and scrolls instead.
+.landing-stage .auth-column {
+  margin-top: max(24px, calc((100dvh - 640px) / 2));
+  margin-bottom: 24px;
+}
+
 
 
 .auth-card {

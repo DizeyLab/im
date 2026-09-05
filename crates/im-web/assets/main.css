@@ -318,6 +318,11 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   padding: 4px 0 10px;
 }
 
+.landing-stage .auth-column {
+  margin-top: max(24px, (100dvh - 640px) / 2);
+  margin-bottom: 24px;
+}
+
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);
