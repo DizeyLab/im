@@ -9,6 +9,7 @@ use im_core::settings::{self, Smtp};
 use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
+use topcoat::cookie::Cookies;
 use topcoat::router::content::Form;
 use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{HeaderValue, StatusCode, header, route};
@@ -600,6 +601,19 @@ async fn message_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::E
 /// bound; the page does not.
 const LOGS_LIMIT: i64 = 50;
 
+/// The page size fitted to the browser's own viewport: the log-fit script
+/// measures a real rendered row against the window and says how many rows
+/// fit, through the `im_rows_logs` cookie — read clamped, so a stale or
+/// tampered value cannot ask for an absurd window. `LOGS_LIMIT` when the
+/// cookie is absent or unparsable. Ported from izlek's `resolve_limit`.
+fn resolve_log_limit(cx: &Cx) -> i64 {
+    topcoat::cookie::cookies(cx)
+        .get("im_rows_logs")
+        .and_then(|c| c.value().parse::<i64>().ok())
+        .map(|rows| rows.clamp(5, 200))
+        .unwrap_or(LOGS_LIMIT)
+}
+
 /// The cursor on the wire: `rfc3339~id`, percent-encoded into `before`/`after`.
 fn cursor_q(cursor: &events::EventCursor) -> String {
     crate::oidc::urlencode(&format!("{}~{}", events_cursor_stamp(cursor), cursor.id))
@@ -675,14 +689,15 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         (None, Some(cursor)) => events::EventPage::After(cursor),
         _ => events::EventPage::Newest,
     };
-    let mut window = events::list_filtered(store, LOGS_LIMIT + 1, &page, dir, &filter).await?;
+    let limit = resolve_log_limit(cx);
+    let mut window = events::list_filtered(store, limit + 1, &page, dir, &filter).await?;
     // Ran off the top walking back: answer with the freshest page instead.
     if matches!(page, events::EventPage::After(_)) && window.is_empty() {
         page = events::EventPage::Newest;
-        window = events::list_filtered(store, LOGS_LIMIT + 1, &page, dir, &filter).await?;
+        window = events::list_filtered(store, limit + 1, &page, dir, &filter).await?;
     }
-    let has_more = window.len() as i64 > LOGS_LIMIT;
-    window.truncate(LOGS_LIMIT as usize);
+    let has_more = window.len() as i64 > limit;
+    window.truncate(limit as usize);
 
     let total = events::count_filtered(store, &filter).await?;
     let preceding = events::count_preceding(
@@ -764,7 +779,7 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         format!(r#"<div class="muted">{}</div>"#, t(lang, Key::LogsEmpty))
     } else {
         format!(
-            r#"<table class="admin-table">
+            r#"<table class="admin-table log-list" data-rows="{limit}" data-section="logs">
     <thead><tr><th>{when}</th><th>{what}</th><th>{who}</th><th>{detail}</th></tr></thead>
     <tbody>{rows}</tbody>
   </table>"#,
@@ -862,7 +877,71 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
             t(lang, Key::OldestFirst),
         ),
     ))
+    .map(|card| card + LOG_FIT_SCRIPT)
 }
+/// Fits the log's page size to the browser's own viewport: measured against
+/// the first rendered row, never against a guess at the row height. A fit
+/// that would change the page size reloads once through a fresh
+/// `im_rows_logs` cookie; the `sessionStorage` guard, keyed to the exact fit
+/// computed, stops a borderline measurement from reloading forever. The
+/// measure runs again once fonts settle — a row measured under the fallback
+/// face is shorter than the row the webfont draws, and the first fit would
+/// otherwise overflow by exactly that difference. A container too short to
+/// measure (no rows yet) is left alone rather than guessed at. Ported from
+/// izlek's `log_fit_script`.
+const LOG_FIT_SCRIPT: &str = r#"<script>(function () {
+  var waits = 0;
+  function measure() {
+    // Never measure while the document's fonts are still arriving — every
+    // fresh document repaints the rows in the fallback face first, and a
+    // fit confirmed under it is wrong by half. Defer until the set is done;
+    // after forty waits the CDN is presumed dead and the fallback face is
+    // the truth the page will keep.
+    if (document.fonts && document.fonts.status === 'loading' && waits < 40) {
+      waits++;
+      setTimeout(measure, 300);
+      return;
+    }
+    var list = document.querySelector('.log-list[data-rows]');
+    if (!list) { return; }
+    var current = parseInt(list.dataset.rows, 10);
+
+    var row = list.querySelector('tbody tr');
+    if (!row || !row.offsetHeight) { return; }
+    var avail = window.innerHeight - list.getBoundingClientRect().top - 100;
+    var fit = Math.min(200, Math.max(5, Math.floor(avail / row.offsetHeight)));
+    if (fit === current) { lastFit = -1; window.sessionStorage.removeItem('imLogFitHops'); return; }
+    // A fit is committed only when two measures in a row — geometry events
+    // are at least the debounce apart — agree on it. The font swap flips
+    // row heights once, so the transient value never confirms; the settled
+    // one always does. The hop budget — not a per-value veto — stops the
+    // loop if the geometry never settles: a vetoed value would otherwise
+    // stay wrong for the whole session.
+    if (fit !== lastFit) { lastFit = fit; setTimeout(measure, 350); return; }
+    var hops = parseInt(window.sessionStorage.getItem('imLogFitHops') || '0', 10);
+    if (hops >= 5) { return; }
+    window.sessionStorage.setItem('imLogFitHops', String(hops + 1));
+    document.cookie = 'im_rows_logs=' + fit + ';path=/';
+    location.replace(location.href);
+  }
+  var lastFit = -1;
+  // No event is the right moment to measure: `load` can precede the
+  // webfont, and a face that arrives late redraws every row taller. So the
+  // measurement is driven by the geometry itself — a ResizeObserver on the
+  // first row re-measures whenever its height changes (font swap, layout
+  // settle), a window resize re-measures for the new viewport, and the
+  // debounce folds the burst into one. A wrong early value is corrected by
+  // the next firing; the reload guard caps the round trips.
+  var timer = null;
+  function schedule() {
+    if (timer) { clearTimeout(timer); }
+    timer = setTimeout(function () { timer = null; measure(); }, 200);
+  }
+  var row = document.querySelector('.log-list[data-rows] tbody tr');
+  if (row && window.ResizeObserver) { new ResizeObserver(schedule).observe(row); }
+  window.addEventListener('resize', schedule);
+  schedule();
+})();</script>"#;
 
 // ---------------------------------------------------------------------------
 // Handlers

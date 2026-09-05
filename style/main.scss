@@ -808,10 +808,11 @@ textarea.auth-input {
 }
 
 // --- Admin panel ------------------------------------------------------------
-// Same skin, same posture as the landing: the bar holds the landing's line
-// (the tallest-section centre line) so the mouse never moves between the two
-// panels, and the scrollbar's gutter is reserved so a section that grows a
-// scrollbar does not push the bar sideways.
+// Same skin, tool posture: the bar top-anchors at a fixed line so it never
+// moves between sections, and the scrollbar's gutter is reserved so a
+// section that grows a scrollbar does not push the bar sideways. The
+// landing's centred line is not copied here — the logs fit their page size
+// to the window, and a viewport-scaled offset would eat the room that buys.
 
 body:has(.admin-shell) {
   min-height: 100vh;
@@ -822,7 +823,7 @@ body:has(.admin-shell) {
 .admin-shell {
   display: flex;
   justify-content: center;
-  padding: max(24px, calc((100dvh - 640px) / 2)) 24px 48px;
+  padding: 24px 24px 48px;
 }
 
 .admin-column {

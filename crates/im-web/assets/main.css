@@ -803,7 +803,7 @@ body:has(.admin-shell) {
 .admin-shell {
   display: flex;
   justify-content: center;
-  padding: max(24px, (100dvh - 640px) / 2) 24px 48px;
+  padding: 24px 24px 48px;
 }
 
 .admin-column {
