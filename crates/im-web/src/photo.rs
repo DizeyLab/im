@@ -167,16 +167,67 @@ fn not_found() -> (StatusCode, HeaderMap, Vec<u8>) {
     (StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new())
 }
 
+/// The response for served bytes: the ETag and cache policy, the 304 when
+/// the caller's copy is already this one.
+fn bytes_response(
+    cx: &Cx,
+    bytes: Vec<u8>,
+    content_type: &str,
+    cache: &'static str,
+) -> (StatusCode, HeaderMap, Vec<u8>) {
+    let etag = format!("\"{:x}\"", fnv1a(&bytes));
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
+    let if_none_match = request_headers(cx)
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok());
+    if if_none_match == Some(etag.as_str()) {
+        return (StatusCode::NOT_MODIFIED, headers, Vec::new());
+    }
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(content_type)
+            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
+    );
+    (StatusCode::OK, headers, bytes)
+}
+
+/// The default face, as an image: the name's first letter on a quiet tile —
+/// the same answer im's own pages give a photoless profile (the initial span
+/// in `layout::avatar`), rendered to SVG so an app's `<img>` can carry it.
+/// The colors are fixed (mid tile, light letter) because the tile ships to
+/// apps whose themes im does not know.
+fn default_avatar(initial: &str) -> Vec<u8> {
+    // The initial is one character off a name, but escape anyway: nothing
+    // stops a name from starting with `&`, `<`, or `>`.
+    let escaped = initial
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;");
+    format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 96 96\">\
+         <rect width=\"96\" height=\"96\" rx=\"6\" fill=\"#3a3f47\"/>\
+         <text x=\"48\" y=\"48\" dy=\"0.35em\" text-anchor=\"middle\" \
+         font-family=\"ui-monospace, monospace\" font-size=\"40\" \
+         fill=\"#9aa1ab\">{escaped}</text></svg>"
+    )
+    .into_bytes()
+}
+
 /// Serves one person's photo. Signed-in only — either through the session
 /// cookie or as a registered OIDC app presenting HTTP Basic over
-/// `client_id:client_secret` — and a missing photo reads exactly like a
-/// missing person: the not-found, never a `403`.
+/// `client_id:client_secret`.
 ///
-/// Apps count as signed-in viewers because registration is the trust: im
-/// hands the client secret out exactly once, keeps only its digest, and the
-/// app presents it on every fetch. Unknown clients, wrong secrets, unknown
-/// users and missing photos all answer the same not-found, so no failure
-/// is distinguishable on the wire.
+/// A person with no photo gets the default face — the name's first letter
+/// on a quiet tile, the same face im's own pages render — so an app's
+/// `<img>` shows a person, never a broken-image glyph. An unknown id gets
+/// the same tile with a `?`, so an authenticated fetch still cannot tell a
+/// missing person from a missing photo; only the missing credential reads
+/// as the not-found. The tile answers `no-cache` (revalidating on its
+/// ETag) where the photo answers `immutable`: apps fetch this URL without
+/// the stamp im's own pages add, so a photo uploaded later must replace
+/// the tile, and a year of `immutable` would pin the letter forever.
 #[route(GET "/photo/{user_id}")]
 async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     if server::current_user(cx).await.is_none() && !server::valid_app(cx).await {
@@ -184,43 +235,42 @@ async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     }
     let target = im_core::model::UserId::from(path_param::<UserId>(cx).to_string());
     let store = server::app(cx).store.clone();
-    let Ok(Some((bytes, mime))) = photos::photo(&store, &target).await else {
-        return Ok(not_found());
-    };
-
-    let etag = format!("\"{:x}\"", fnv1a(&bytes));
-    let mut headers = HeaderMap::new();
-    headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
-    // The stamp in the URL is the other half of this caching: `upload`
-    // bumps it whenever the bytes change, so a year of `immutable` never
-    // shows an old photo — a changed photo is a changed URL. `private`
-    // because the route is session-gated.
-    headers.insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("private, max-age=31536000, immutable"),
-    );
-
-    let if_none_match = request_headers(cx)
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok());
-    if if_none_match == Some(etag.as_str()) {
-        return Ok((StatusCode::NOT_MODIFIED, headers, Vec::new()));
+    if let Ok(Some((bytes, mime))) = photos::photo(&store, &target).await {
+        // The stamp in the URL is the other half of this caching: `upload`
+        // bumps it whenever the bytes change, so a year of `immutable`
+        // never shows an old photo — a changed photo is a changed URL.
+        // `private` because the route is session-gated.
+        return Ok(bytes_response(
+            cx,
+            bytes,
+            &mime,
+            "private, max-age=31536000, immutable",
+        ));
     }
-
-    headers.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_str(&mime)
-            .unwrap_or(HeaderValue::from_static("application/octet-stream")),
-    );
-    Ok((StatusCode::OK, headers, bytes))
+    let initial = match im_core::accounts::user_by_id(&store, &target).await {
+        Ok(Some(user)) => user
+            .name
+            .chars()
+            .next()
+            .unwrap_or('?')
+            .to_uppercase()
+            .to_string(),
+        _ => "?".to_string(),
+    };
+    Ok(bytes_response(
+        cx,
+        default_avatar(&initial),
+        "image/svg+xml",
+        "private, no-cache",
+    ))
 }
-
 
 #[cfg(test)]
 mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
+    use super::PhotoStamps;
     use im_core::accounts::{create_invite, create_user_from_invite};
     use im_core::model::UserId;
     use im_core::oidc::create_client;
@@ -230,7 +280,6 @@ mod tests {
     use topcoat::cookie::RouterBuilderCookieExt as _;
     use topcoat::router::{Body, HeaderMap, Router, RouterBuilderDiscoverExt as _, StatusCode};
     use topcoat::router::{header, to_bytes};
-    use super::PhotoStamps;
 
     use crate::config::Config;
     use crate::server::{self, SESSION_COOKIE};
@@ -248,9 +297,10 @@ mod tests {
 
     async fn setup() -> Setup {
         let store = Store::open(Path::new(":memory:")).await.unwrap();
-        let (client_id, secret) = create_client(&store, "drive", vec!["http://app/callback".into()])
-            .await
-            .unwrap();
+        let (client_id, secret) =
+            create_client(&store, "drive", vec!["http://app/callback".into()])
+                .await
+                .unwrap();
         let invite = create_invite(&store, "ann@example.com", None, false)
             .await
             .unwrap();
@@ -334,10 +384,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(bytes, PHOTO);
-        assert_eq!(
-            headers.get(header::CONTENT_TYPE).unwrap(),
-            "image/png"
-        );
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/png");
     }
 
     #[tokio::test]
@@ -390,31 +437,44 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn app_credentials_unknown_user_is_not_found() {
+    async fn app_credentials_unknown_user_gets_the_unknown_avatar() {
         let setup = setup().await;
-        let (status, _, bytes) = get(
+        let (status, headers, bytes) = get(
             &setup.router,
             "no-such-user",
             Some(basic(&setup.client_id, &setup.secret)),
             None,
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(bytes.is_empty());
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/svg+xml");
+        let body = String::from_utf8(bytes).unwrap();
+        assert!(body.contains(">?<"), "unknown user gets the ? tile: {body}");
     }
 
     #[tokio::test]
-    async fn app_credentials_missing_photo_is_not_found() {
+    async fn app_credentials_missing_photo_gets_the_initial_avatar() {
         let setup = setup().await;
-        let (status, _, bytes) = get(
+        let (status, headers, bytes) = get(
             &setup.router,
             setup.plain_id.as_str(),
             Some(basic(&setup.client_id, &setup.secret)),
             None,
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert!(bytes.is_empty());
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "image/svg+xml");
+        // The tile revalidates instead of caching immutably: a photo
+        // uploaded later has to be able to replace it.
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "private, no-cache"
+        );
+        let body = String::from_utf8(bytes).unwrap();
+        assert!(
+            body.contains(">B<"),
+            "photoless Ben gets his initial: {body}"
+        );
     }
 
     #[tokio::test]
