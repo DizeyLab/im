@@ -279,12 +279,21 @@ body:has(.auth-stage) {
   padding: 4px 0 10px;
 }
 
-// The landing top-anchors: sections differ in height, and a centred column
-// would move the tab row under the mouse between them. Fixed offset, the
-// admin panel's posture; the auth gates stay centred.
-.landing-stage .auth-column {
-  margin-top: 40px;
-  margin-bottom: 40px;
+// The landing pins its chrome — wordmark and section tabs — at the top, so
+// the row never moves between sections, and centres the section's cards in
+// the room left below. The column's `margin: auto` does the centring and
+// still top-anchors when a section outgrows the window; the auth gates keep
+// their plain centred stage.
+.landing-stage {
+  flex-direction: column;
+
+  .landing-chrome {
+    margin: 24px auto 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
 }
 
 .auth-card {
