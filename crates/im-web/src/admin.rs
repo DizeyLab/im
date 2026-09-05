@@ -63,35 +63,13 @@ fn confirm_action(
         r#"<details class="admin-confirm"><summary class="admin-action{extra_class}">{word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{title}</div><div class="muted">{cost}</div><form method="post" action="{action}"><input type="hidden" name="user" value="{id}"><button class="admin-action{extra_class}" type="submit">{confirm}</button></form></div></details>"#
     )
 }
-/// The panel's live wiring, the client half of `live.rs`. One EventSource
-/// per tab; a tick re-fetches the page and swaps the panel's body. iz's
-/// lesson is honored in miniature: the swap must not throw away what someone
-/// is doing, so a focused field suspends the refresh until the next tick,
-/// and the morph is one innerHTML swap of the column — small DOM, no diffing
-/// library needed.
-///
-/// The same script closes an open confirm disclosure on outside click and
-/// Escape — the one bit of behavior the no-script markup cannot do itself.
-const LIVE_SCRIPT: &str = r#"<script>(function () {
-  if (window.__imLive) { return; }
-  window.__imLive = true;
-  var timer = null;
-  function refresh() {
-    timer = null;
-    var active = document.activeElement;
-    if (active && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) { return; }
-    fetch(location.href).then(function (r) { return r.text(); }).then(function (html) {
-      var fresh = new DOMParser().parseFromString(html, 'text/html');
-      var here = document.querySelector('.admin-column');
-      var there = fresh.querySelector('.admin-column');
-      if (here && there) { here.innerHTML = there.innerHTML; }
-    }).catch(function () {});
-  }
-  var source = new EventSource('/admin/live');
-  source.onmessage = function () {
-    if (timer) { return; }
-    timer = setTimeout(refresh, 200);
-  };
+/// The panel's live wiring moved into the shell: `layout::live_script` runs
+/// on every signed-in page and morphs through `__imRefresh`. What stays here
+/// is the one bit of behavior the no-script markup cannot do itself — an open
+/// confirm disclosure closes on outside click and Escape.
+const ADMIN_SCRIPT: &str = r#"<script>(function () {
+  if (window.__imAdmin) { return; }
+  window.__imAdmin = true;
   document.addEventListener('click', function (e) {
     document.querySelectorAll('.admin-confirm[open]').forEach(function (d) {
       if (!d.contains(e.target)) { d.removeAttribute('open'); }
@@ -198,7 +176,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                     (topcoat::view::Unescaped::new_unchecked(banner))
                 }
                 (topcoat::view::Unescaped::new_unchecked(section_html))
-                (topcoat::view::Unescaped::new_unchecked(LIVE_SCRIPT.to_string()))
+                (topcoat::view::Unescaped::new_unchecked(ADMIN_SCRIPT.to_string()))
             </div>
         </main>
     };

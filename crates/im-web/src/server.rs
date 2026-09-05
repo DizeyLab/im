@@ -3,9 +3,10 @@
 //! and second factor), and the refusal codes a redirect carries back to the
 //! page that posted the form.
 //!
-//! im serves no client-side script, so there is no refusal-carrying layer as
-//! in İzlek: every form post answers a plain 303 whose query names the
-//! refusal, and the page reads it back on render.
+//! Every form post answers a plain 303 whose query names the refusal, and
+//! the page reads it back on render. The soft-nav script replays posts over
+//! fetch with `accept: text/html`, so the 303's target document is what
+//! comes back — no refusal-carrying layer as in İzlek is needed.
 
 use std::sync::Arc;
 

@@ -154,7 +154,7 @@ async fn login_card(cx: &Cx) -> Result {
                     if let Some(code) = error {
                         <div class="auth-problem">(error_text(&code, lang))</div>
                     }
-                    <form method="post" action="/login">
+                    <form method="post" action="/login" data-hard="">
                         <input type="hidden" name="back" value=(back)>
                         <label class="auth-field">
                             <span class="auth-label">(t(lang, Key::EmailLabel))</span>
@@ -211,7 +211,7 @@ async fn totp(cx: &Cx) -> Result<Response> {
                             if let Some(code) = error {
                                 <div class="auth-problem">(error_text(&code, lang))</div>
                             }
-                            <form method="post" action="/login/totp">
+                            <form method="post" action="/login/totp" data-hard="">
                                 <label class="auth-field">
                                     <span class="auth-label">(t(lang, Key::CodeLabel))</span>
                                     <input
@@ -270,7 +270,7 @@ async fn invite(cx: &Cx) -> Result<Response> {
                         if let Some(code) = error {
                             <div class="auth-problem">(error_text(&code, lang))</div>
                         }
-                        <form method="post" action="/invite">
+                        <form method="post" action="/invite" data-hard="">
                             <input type="hidden" name="token" value=(token.to_string())>
                             <div class="auth-field">
                                 <span class="auth-label">(t(lang, Key::EmailLabel))</span>
@@ -401,7 +401,7 @@ async fn enroll(cx: &Cx) -> Result<Response> {
                     }
                     <div class="auth-qr">(topcoat::view::Unescaped::new_unchecked(qr))</div>
                     <div class="auth-secret">(manual)</div>
-                    <form method="post" action="/enroll">
+                    <form method="post" action="/enroll" data-hard="">
                         <label class="auth-field">
                             <span class="auth-label">(t(lang, Key::CodeLabel))</span>
                             <input
@@ -622,7 +622,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                         <div class="session-list">(topcoat::view::Unescaped::new_unchecked(sessions_html))</div>
                     </div>
                     <div class="auth-card">
-                        <form method="post" action="/logout">
+                        <form method="post" action="/logout" data-hard="">
                             <button class="auth-submit" type="submit">
                                 <span class="auth-submit-text">(t(lang, Key::SignOutEverywhere))</span>
                             </button>
@@ -888,7 +888,7 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
                     if let Some(code) = error {
                         <div class="auth-problem">(error_text(&code, lang))</div>
                     }
-                    <form method="post" action="/reset">
+                    <form method="post" action="/reset" data-hard="">
                         <input type="hidden" name="token" value=(token.to_string())>
                         <label class="auth-field">
                             <span class="auth-label">(t(lang, Key::NewPasswordLabel))</span>

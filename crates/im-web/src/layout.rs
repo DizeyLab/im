@@ -165,6 +165,7 @@ pub async fn avatar_script(cx: &Cx, lang: Lang) -> Result {
                 }; \
                 x.onload = function () { \
                     settle(); \
+                    if (window.__imRefresh) { window.__imRefresh(); return; } \
                     window.location.href = x.responseURL || form.getAttribute('action'); \
                 }; \
                 x.onerror = function () { settle(); form.submit(); }; \
@@ -181,6 +182,140 @@ pub async fn avatar_script(cx: &Cx, lang: Lang) -> Result {
             &js_escape(t(lang, Key::CancelUploadLabel)),
         );
     view! { cx => <script>(Unescaped::new_unchecked(js))</script> }
+}
+
+/// Soft navigation, iz's model cut to im's shape: same-app links and form
+/// posts are fetched and swapped in place — no full reload, no white flash,
+/// no lost scroll on a save. Session-changing forms (sign-in, enroll,
+/// redeem, sign-out) carry `data-hard` and post natively; multipart forms
+/// belong to the avatar script above and are left to it. Global listeners
+/// live on document/window and survive every swap; the guard makes the
+/// re-created script a no-op.
+pub async fn soft_nav_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = r#"(function () {
+  if (window.__imSoft) { return; }
+  window.__imSoft = true;
+  var nav = 0;
+  function step() { nav += 1; return nav; }
+
+  function adopt(doc, preserve) {
+    document.title = doc.title;
+    var root = doc.documentElement;
+    ['lang', 'data-theme', 'data-ui'].forEach(function (a) {
+      if (root.hasAttribute(a)) { document.documentElement.setAttribute(a, root.getAttribute(a)); }
+      else { document.documentElement.removeAttribute(a); }
+    });
+    var fields = null;
+    if (preserve) {
+      fields = {};
+      document.querySelectorAll('input[name], select[name], textarea[name]').forEach(function (f) {
+        if (f.type === 'password' || f.type === 'file' || f.type === 'hidden') { return; }
+        fields[f.name] = f.value;
+      });
+    }
+    document.body.replaceChildren();
+    Array.from(doc.body.childNodes).forEach(function (n) { document.body.appendChild(document.importNode(n, true)); });
+    document.querySelectorAll('script').forEach(function (old) {
+      var s = document.createElement('script');
+      s.textContent = old.textContent;
+      old.replaceWith(s);
+    });
+    if (fields) {
+      document.querySelectorAll('input[name], select[name], textarea[name]').forEach(function (f) {
+        if (Object.prototype.hasOwnProperty.call(fields, f.name)) { f.value = fields[f.name]; }
+      });
+    }
+  }
+
+  function swap(html, url, fresh, push) {
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    if (!doc.body) { location.assign(url); return; }
+    var x = window.scrollX, y = window.scrollY;
+    adopt(doc, false);
+    if (push) { history.pushState(null, '', url); } else { history.replaceState(null, '', url); }
+    if (fresh) { window.scrollTo(0, 0); } else { window.scrollTo(x, y); }
+  }
+
+  function go(url, fresh, push) {
+    var mark = step();
+    fetch(url, { headers: { accept: 'text/html' } })
+      .then(function (r) { return r.text().then(function (text) { return { text: text, url: r.url }; }); })
+      .then(function (res) { if (mark === nav) { swap(res.text, res.url, fresh, push); } })
+      .catch(function () { location.assign(url); });
+  }
+
+  document.addEventListener('click', function (e) {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) { return; }
+    var a = e.target.closest ? e.target.closest('a') : null;
+    if (!a || a.target || a.hasAttribute('download') || a.hasAttribute('data-hard')) { return; }
+    var href = a.getAttribute('href') || '';
+    if (href.indexOf('/') !== 0) { return; }
+    e.preventDefault();
+    go(href, true, true);
+  }, true);
+
+  document.addEventListener('submit', function (e) {
+    var form = e.target;
+    if (!form || !form.action || form.hasAttribute('data-hard')) { return; }
+    if ((form.enctype || '').indexOf('multipart') === 0) { return; }
+    if ((form.method || 'get').toLowerCase() === 'get') {
+      e.preventDefault();
+      var q = new URLSearchParams(new FormData(form)).toString();
+      go(form.action.split('?')[0] + (q ? '?' + q : ''), true, true);
+      return;
+    }
+    e.preventDefault();
+    var mark = step();
+    var data = new FormData(form);
+    if (e.submitter && e.submitter.name) { data.append(e.submitter.name, e.submitter.value); }
+    fetch(form.action, { method: 'POST', headers: { accept: 'text/html' }, body: new URLSearchParams(data) })
+      .then(function (r) { return r.text().then(function (text) { return { text: text, url: r.url }; }); })
+      .then(function (res) { if (mark === nav) { swap(res.text, res.url, false, false); } })
+      .catch(function () { form.submit(); });
+  });
+
+  window.addEventListener('popstate', function () { go(location.pathname + location.search, false, false); });
+
+  window.__imRefresh = function () {
+    var active = document.activeElement;
+    if (active && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName)) { return; }
+    fetch(location.href, { headers: { accept: 'text/html' } })
+      .then(function (r) { return r.text(); })
+      .then(function (html) {
+        var doc = new DOMParser().parseFromString(html, 'text/html');
+        if (!doc.body) { return; }
+        var x = window.scrollX, y = window.scrollY;
+        adopt(doc, true);
+        window.scrollTo(x, y);
+      })
+      .catch(function () {});
+  };
+})();"#;
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+}
+
+/// The live channel's client, iz's shape: a bare tick says *something*
+/// moved; the page re-fetches itself through the ordinary route — where the
+/// ordinary gate answers — and morphs with fields and scroll intact. A
+/// focused field freezes the refresh mid-typing. Mounted only for a signed-in
+/// viewer, so auth screens never reconnect against a 401.
+pub async fn live_script(cx: &Cx) -> Result {
+    use topcoat::view::Unescaped;
+    const JS: &str = r#"(function () {
+  if (window.__imLive) { return; }
+  window.__imLive = true;
+  var timer = null;
+  function schedule() {
+    if (timer) { clearTimeout(timer); }
+    timer = setTimeout(function () { timer = null; if (window.__imRefresh) { window.__imRefresh(); } }, 200);
+  }
+  try {
+    var src = new EventSource('/live');
+    src.onmessage = function () { schedule(); };
+  } catch (err) {}
+})();"#;
+    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
 }
 
 /// A full document around an already-rendered stage — the same way
@@ -210,6 +345,10 @@ pub async fn shell(cx: &Cx, title: &str, viewer: Option<&User>, stage: Result) -
             </head>
             <body>
                 (stage)
+                (soft_nav_script(cx).await?)
+                if viewer.is_some() {
+                    (live_script(cx).await?)
+                }
             </body>
         </html>
     }

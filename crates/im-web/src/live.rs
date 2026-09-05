@@ -1,11 +1,11 @@
-//! The live channel: one long-lived connection per open admin tab, carrying
-//! the news that something changed — ported from iz's `live.rs`.
+//! The live channel: one long-lived connection per open signed-in tab,
+//! carrying the news that something changed — ported from iz's `live.rs`.
 //!
 //! What travels here is a bare tick and nothing else — never a row, never a
-//! name. The client is told only *that* the panel moved, and re-fetches it
-//! through the ordinary route, where the ordinary admin gate answers. The
-//! route itself is admin-gated, and the whole panel behind it is admin-only,
-//! so there is no per-topic filtering to get wrong.
+//! name. The client is told only *that* the page moved, and re-fetches it
+//! through the ordinary route, where the ordinary gate answers. Every page
+//! behind it needs the same session the stream asked for, so there is no
+//! per-topic filtering to get wrong.
 
 use std::time::{Duration, Instant};
 
@@ -36,14 +36,10 @@ const WINDOW: Duration = Duration::from_secs(50 * 60);
 #[derive(Clone)]
 pub struct Shutdown(pub tokio::sync::watch::Receiver<bool>);
 
-#[route(GET "/admin/live")]
+#[route(GET "/live")]
 async fn live(cx: &Cx) -> topcoat::Result<Response> {
     // Resolved once, here, and never again for the life of this connection.
-    let Ok(_admin) = server::current_user(cx)
-        .await
-        .filter(|user| user.admin)
-        .ok_or(())
-    else {
+    let Ok(_user) = server::current_user(cx).await.ok_or(()) else {
         return (StatusCode::UNAUTHORIZED, "").into_response(cx);
     };
     let rx = server::app(cx).live.subscribe();
