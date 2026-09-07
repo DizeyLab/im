@@ -24,12 +24,13 @@ pub async fn wordmark(cx: &Cx) -> Result {
     }
 }
 
-/// The signed-in chrome's app trio: every configured service's wordmark,
+/// The signed-in chrome's app trio: every family service's wordmark,
 /// middots between, the home one (`im`) inked and marked current, its
-/// siblings plain links. A deployment that names no services renders
-/// nothing — the single mark above stays the whole chrome.
+/// siblings plain links. A family with no members renders nothing — the
+/// single mark above stays the whole chrome. The list is the stored one,
+/// the same rows `/family` serves.
 pub async fn service_trio(cx: &Cx) -> Result {
-    let services = &server::app(cx).config.services;
+    let services = im_core::services::list(&server::app(cx).store).await?;
     let marks = (!services.is_empty()).then(|| {
         services
             .iter()

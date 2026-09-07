@@ -16,6 +16,8 @@ pub mod oidc;
 #[cfg(feature = "server")]
 pub mod photos;
 #[cfg(feature = "server")]
+pub mod services;
+#[cfg(feature = "server")]
 mod secret;
 #[cfg(feature = "server")]
 pub mod sessions;

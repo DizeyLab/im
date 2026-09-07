@@ -143,6 +143,33 @@ async fn open_store(config: &Config) -> Arc<Store> {
     )
 }
 
+/// The one-time seed: a database with no services yet takes the config's
+/// `[[services]]` list as the family's starting rows. Afterwards the admin
+/// panel owns the list and the same file lines are dead letters — the seed
+/// only fires again if the table is emptied.
+async fn seed_services(store: &Store, config: &Config) {
+    if config.services.is_empty() {
+        return;
+    }
+    let seed: Vec<im_core::services::Service> = config
+        .services
+        .iter()
+        .map(|service| im_core::services::Service {
+            key: service.key.clone(),
+            name: service.name.clone(),
+            url: service.url.clone(),
+        })
+        .collect();
+    match im_core::services::seed_from(store, &seed).await {
+        Ok(true) => println!(
+            "im      services seeded from config ({} entries)",
+            seed.len()
+        ),
+        Ok(false) => {}
+        Err(e) => eprintln!("im: seeding services from config failed: {e}"),
+    }
+}
+
 /// `im-web invite <email> [--admin]`: creates the invite, mails it when the
 /// panel has configured a sender, prints the link otherwise (dev mode).
 ///
@@ -215,6 +242,7 @@ async fn serve(config: Config) {
         println!("im      {line}");
     }
     let store = open_store(&config).await;
+    seed_services(&store, &config).await;
     let (live, _) = tokio::sync::broadcast::channel(64);
     // Told when the process is stopping, so the live streams end instead of
     // being waited out — see `live::Shutdown`.

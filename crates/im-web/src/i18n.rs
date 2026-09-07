@@ -65,6 +65,7 @@ pub enum Key {
     ErrBadTheme,
     ErrBadUi,
     ErrBadLanguage,
+    ErrBadService,
     ErrFallback,
 
     // Good-news codes (`pages.rs`'s `ok_text`).
@@ -127,6 +128,10 @@ pub enum Key {
     StatConnectedApps,
     SessionsTitle,
     ServicesTitle,
+    ServiceKeyLabel,
+    ServiceAdd,
+    ServiceMoveUp,
+    ServiceMoveDown,
     SignOutEverywhere,
     AdminPanelLink,
     ViewPhotoAria,
@@ -329,6 +334,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ErrBadUi, Tr) => "Bu bir arayüz değil.",
         (ErrBadLanguage, En) => "That is not a language.",
         (ErrBadLanguage, Tr) => "Bu bir dil değil.",
+        (ErrBadService, En) => {
+            "A service needs a key of lowercase letters, digits, or dashes, a name, and an http(s) address."
+        }
+        (ErrBadService, Tr) => {
+            "Bir hizmet; küçük harf, rakam ya da tire ile yazılmış bir anahtar, bir ad ve http(s) adresi ister."
+        }
         (ErrFallback, En) => "Something went wrong. Try again.",
         (ErrFallback, Tr) => "Bir şeyler ters gitti. Yeniden dene.",
 
@@ -450,6 +461,14 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (SessionsTitle, Tr) => "Oturumlar",
         (ServicesTitle, En) => "Services",
         (ServicesTitle, Tr) => "Hizmetler",
+        (ServiceKeyLabel, En) => "Key",
+        (ServiceKeyLabel, Tr) => "Anahtar",
+        (ServiceAdd, En) => "Add service",
+        (ServiceAdd, Tr) => "Hizmet ekle",
+        (ServiceMoveUp, En) => "Move up",
+        (ServiceMoveUp, Tr) => "Yukarı taşı",
+        (ServiceMoveDown, En) => "Move down",
+        (ServiceMoveDown, Tr) => "Aşağı taşı",
         (SignOutEverywhere, En) => "Sign out everywhere",
         (SignOutEverywhere, Tr) => "Her yerde oturumu kapat",
         (AdminPanelLink, En) => "Admin panel",

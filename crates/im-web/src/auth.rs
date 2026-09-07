@@ -45,10 +45,10 @@ fn safe_back(raw: &str) -> &str {
 
 /// Where a logout sends the browser. A local absolute path always
 /// qualifies — the login `back` rule. An absolute URL qualifies when its
-/// origin is exactly one of the configured services': the sibling app that
-/// sent the browser here gets it handed back. A foreign origin — and
+/// origin is exactly one of the family's stored services': the sibling app
+/// that sent the browser here gets it handed back. A foreign origin — and
 /// anything unparseable — is refused to the front door.
-fn logout_target(raw: Option<&str>, services: &[crate::config::Service]) -> String {
+fn logout_target(raw: Option<&str>, services: &[im_core::services::Service]) -> String {
     let Some(raw) = raw else {
         return "/".to_string();
     };
@@ -320,10 +320,121 @@ async fn logout_return(cx: &Cx) -> Redirect {
         .to_string();
     let back = crate::pages::query_value(&query, "back");
     sign_out_everywhere(cx).await?;
-    see(logout_target(
-        back.as_deref(),
-        &server::app(cx).config.services,
-    ))
+    let services = im_core::services::list(&server::app(cx).store).await?;
+    see(logout_target(back.as_deref(), &services))
+}
+
+// ---------------------------------------------------------------------------
+// The landing Services card's writes
+// ---------------------------------------------------------------------------
+
+/// The admin behind this request, or `None` — the handlers below send a
+/// non-admin to the front door, where the card carries no forms anyway.
+/// The admin panel's `require_admin` is the same gate with the same answer.
+async fn landing_admin(cx: &Cx) -> Option<im_core::model::User> {
+    match server::current_user(cx).await {
+        Some(user) if user.admin => Some(user),
+        _ => None,
+    }
+}
+
+/// One user of the card's forms: key, name, address. The add form fills all
+/// three; the edit form carries the key in its hidden field.
+#[derive(Deserialize)]
+pub struct ServiceForm {
+    key: String,
+    name: String,
+    url: String,
+}
+
+/// The landing answer to a services write: back to the card with the good
+/// news, or with the card's one refusal when the store said the value is
+/// against the rules. Anything else is a real failure and travels as one.
+fn service_outcome(outcome: im_core::store::Result<()>) -> Redirect {
+    match outcome {
+        Ok(()) => see("/?ok=services".to_string()),
+        Err(im_core::store::StoreError::Invalid(_)) => see("/?error=bad_service".to_string()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[route(POST "/services/add")]
+async fn service_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Redirect {
+    let Some(me) = landing_admin(cx).await else {
+        return see("/".to_string());
+    };
+    let outcome = im_core::services::add(
+        &server::app(cx).store,
+        &im_core::services::Service {
+            key: input.key,
+            name: input.name,
+            url: input.url,
+        },
+    )
+    .await;
+    if outcome.is_ok() {
+        server::log_event(cx, "services_updated", Some(&me.email), None).await;
+    }
+    service_outcome(outcome)
+}
+
+#[route(POST "/services/edit")]
+async fn service_edit(cx: &Cx, Form(input): Form<ServiceForm>) -> Redirect {
+    let Some(me) = landing_admin(cx).await else {
+        return see("/".to_string());
+    };
+    let outcome = im_core::services::edit(
+        &server::app(cx).store,
+        &input.key,
+        &input.name,
+        &input.url,
+    )
+    .await;
+    if outcome.is_ok() {
+        server::log_event(cx, "services_updated", Some(&me.email), None).await;
+    }
+    service_outcome(outcome)
+}
+
+#[derive(Deserialize)]
+struct ServiceKeyForm {
+    key: String,
+}
+
+#[route(POST "/services/remove")]
+async fn service_remove(cx: &Cx, Form(input): Form<ServiceKeyForm>) -> Redirect {
+    let Some(me) = landing_admin(cx).await else {
+        return see("/".to_string());
+    };
+    let outcome = im_core::services::remove(&server::app(cx).store, &input.key).await;
+    if outcome.is_ok() {
+        server::log_event(cx, "services_updated", Some(&me.email), None).await;
+    }
+    service_outcome(outcome)
+}
+
+#[derive(Deserialize)]
+struct ServiceMoveForm {
+    key: String,
+    dir: String,
+}
+
+/// Up or down one slot; anything else in `dir` is the card's refusal.
+#[route(POST "/services/move")]
+async fn service_move(cx: &Cx, Form(input): Form<ServiceMoveForm>) -> Redirect {
+    let Some(me) = landing_admin(cx).await else {
+        return see("/".to_string());
+    };
+    let up = match input.dir.as_str() {
+        "up" => true,
+        "down" => false,
+        _ => return see("/?error=bad_service".to_string()),
+    };
+    let outcome = im_core::services::move_service(&server::app(cx).store, &input.key, up).await;
+    if outcome.is_ok() {
+        server::log_event(cx, "services_updated", Some(&me.email), None).await;
+    }
+    service_outcome(outcome)
 }
 
 #[derive(Deserialize)]

@@ -17,6 +17,10 @@ pub enum StoreError {
     Corrupt(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    /// A value a panel form offered is against the stored rules — the
+    /// caller turns it into the page's refusal, never a database problem.
+    #[error("{0}")]
+    Invalid(String),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
@@ -126,6 +130,12 @@ CREATE INDEX IF NOT EXISTS login_attempts_key ON login_attempts(key, at);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS services (
+  key TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  url TEXT NOT NULL,
+  position INTEGER NOT NULL
 );
 ";
 

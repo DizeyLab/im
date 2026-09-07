@@ -41,6 +41,7 @@ pub fn error_text(code: &str, lang: Lang) -> &'static str {
         "bad_theme" => t(lang, Key::ErrBadTheme),
         "bad_ui" => t(lang, Key::ErrBadUi),
         "bad_language" => t(lang, Key::ErrBadLanguage),
+        "bad_service" => t(lang, Key::ErrBadService),
         "empty_subject" => t(lang, Key::ErrEmptySubject),
         "empty_body" => t(lang, Key::ErrEmptyBody),
         "no_such_user" => t(lang, Key::ErrNoSuchUser),
@@ -59,6 +60,7 @@ pub fn ok_text(code: &str, lang: Lang) -> &'static str {
         "photo_removed" => t(lang, Key::OkPhotoRemoved),
         "session_revoked" => t(lang, Key::OkSessionRevoked),
         "preferences" => t(lang, Key::Saved),
+        "services" => t(lang, Key::Saved),
         "password" => t(lang, Key::PasswordSaved),
         _ => t(lang, Key::OkDone),
     }
@@ -601,13 +603,13 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
         )
     })
     .collect::<String>();
-    // The services home: one card per configured app — wordmark and name,
+    // The services home: one card per family member — wordmark and name,
     // the whole card the link. im's own card reads current. Above the
     // profile sections: im is the account center, and its landing is the
-    // door to the rest.
-    let services_html = server::app(cx)
-        .config
-        .services
+    // door to the rest. The list is the stored one — the rows `/family`
+    // serves — and an admin gets the handles on it right under the cards.
+    let services = im_core::services::list(&server::app(cx).store).await?;
+    let services_html = services
         .iter()
         .map(|service| {
             let current = service.key == "im";
@@ -624,6 +626,11 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
             )
         })
         .collect::<String>();
+    let services_manage = if user.admin {
+        services_manage_html(&services, lang)
+    } else {
+        String::new()
+    };
     let stage = view! {
         cx =>
         <main class="auth-stage landing-stage">
@@ -631,10 +638,11 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 (wordmark(cx).await?)
                 (service_trio(cx).await?)
                 <nav class="admin-tabs landing-nav">(topcoat::view::Unescaped::new_unchecked(nav))</nav>
-                if !services_html.is_empty() {
+                if !services_html.is_empty() || user.admin {
                     <div class="auth-card">
                         <div class="auth-title">(t(lang, Key::ServicesTitle))</div>
                         <div class="service-grid">(topcoat::view::Unescaped::new_unchecked(services_html))</div>
+                        (topcoat::view::Unescaped::new_unchecked(services_manage))
                     </div>
                 }
                 if let Some(code) = ok {
@@ -844,6 +852,63 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
         (crate::layout::avatar_script(cx, lang).await?)
     };
     shell(cx, "im", Some(user), stage).await
+}
+
+/// The admin's handles under the services grid: a name-and-address edit per
+/// row, the up/down pair, the remove, and the add form. Every action is a
+/// plain form post answering a 303 back to this card — the landing idiom —
+/// wearing the admin panel's quiet row-button skin, laid out by the same
+/// flex row the panel's invite line uses.
+fn services_manage_html(services: &[im_core::services::Service], lang: Lang) -> String {
+    let mut rows = String::new();
+    for service in services {
+        let key = escape(&service.key);
+        rows.push_str(&format!(
+            r#"<div class="admin-invite">
+  <form method="post" action="/services/edit">
+    <input type="hidden" name="key" value="{key}">
+    <input class="auth-input" type="text" name="name" value="{name}" aria-label="{name_label}" required="">
+    <input class="auth-input" type="text" name="url" value="{url}" aria-label="{url_label}" required="">
+    <button class="admin-action" type="submit">{save}</button>
+  </form>
+  <form method="post" action="/services/move">
+    <input type="hidden" name="key" value="{key}"><input type="hidden" name="dir" value="up">
+    <button class="admin-action" type="submit" aria-label="{up}">&#8593;</button>
+  </form>
+  <form method="post" action="/services/move">
+    <input type="hidden" name="key" value="{key}"><input type="hidden" name="dir" value="down">
+    <button class="admin-action" type="submit" aria-label="{down}">&#8595;</button>
+  </form>
+  <form method="post" action="/services/remove">
+    <input type="hidden" name="key" value="{key}">
+    <button class="admin-action admin-danger" type="submit">{remove}</button>
+  </form>
+</div>"#,
+            name = escape(&service.name),
+            url = escape(&service.url),
+            name_label = t(lang, Key::NameCol),
+            url_label = t(lang, Key::AddressLabel),
+            save = t(lang, Key::SaveButton),
+            up = t(lang, Key::ServiceMoveUp),
+            down = t(lang, Key::ServiceMoveDown),
+            remove = t(lang, Key::Remove),
+        ));
+    }
+    rows.push_str(&format!(
+        r#"<div class="admin-invite">
+  <form method="post" action="/services/add">
+    <input class="auth-input" type="text" name="key" placeholder="in" aria-label="{key_label}" required="">
+    <input class="auth-input" type="text" name="name" placeholder="{name_label}" aria-label="{name_label}" required="">
+    <input class="auth-input" type="text" name="url" placeholder="https://in.dizey.sh" aria-label="{url_label}" required="">
+    <button class="admin-action" type="submit">{add}</button>
+  </form>
+</div>"#,
+        key_label = t(lang, Key::ServiceKeyLabel),
+        name_label = t(lang, Key::NameCol),
+        url_label = t(lang, Key::AddressLabel),
+        add = t(lang, Key::ServiceAdd),
+    ));
+    rows
 }
 
 /// "Forgot it?" — the self-serve reset ask. It answers the same whether the
