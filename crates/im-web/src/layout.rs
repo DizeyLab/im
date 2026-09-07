@@ -11,7 +11,7 @@ use crate::i18n::{Key, Lang, lang_of, t};
 use crate::server;
 
 /// `style/main.scss`, compiled by `build.rs` into `assets/main.css`.
-const STYLE: Asset = asset!("assets/main.css");
+pub(crate) const STYLE: Asset = asset!("assets/main.css");
 
 /// The mark, in the word as it is in the name: lower case, the Turkish
 /// tittle. Text-only here — the auth card is the whole chrome.

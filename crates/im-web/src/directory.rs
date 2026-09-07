@@ -6,8 +6,8 @@
 
 use topcoat::context::Cx;
 use topcoat::router::content::Json;
-use topcoat::router::{StatusCode, route};
 use topcoat::router::response::IntoResponse as _;
+use topcoat::router::{StatusCode, route};
 
 use crate::server;
 
@@ -28,7 +28,10 @@ struct DirectoryMember {
 #[route(GET "/directory")]
 async fn directory(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
     if !server::valid_app(cx).await {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "invalid_client" })))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "invalid_client" })),
+        )
             .into_response(cx);
     }
     let store = server::app(cx).store.clone();
@@ -54,7 +57,10 @@ async fn directory(cx: &Cx) -> topcoat::Result<topcoat::router::response::Respon
 #[route(GET "/family")]
 async fn family(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
     if !server::valid_app(cx).await {
-        return (StatusCode::UNAUTHORIZED, Json(serde_json::json!({ "error": "invalid_client" })))
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "invalid_client" })),
+        )
             .into_response(cx);
     }
     let store = server::app(cx).store.clone();
@@ -68,12 +74,14 @@ mod tests {
     use std::sync::Arc;
 
     use im_core::accounts::{create_invite, create_user_from_invite};
-    use im_core::oidc::create_client;
     use im_core::model::ClientId;
+    use im_core::oidc::create_client;
     use im_core::store::Store;
     use topcoat::asset::RouterBuilderAssetExt as _;
     use topcoat::cookie::RouterBuilderCookieExt as _;
-    use topcoat::router::{Body, Router, RouterBuilderDiscoverExt as _, StatusCode, header, to_bytes};
+    use topcoat::router::{
+        Body, Router, RouterBuilderDiscoverExt as _, StatusCode, header, to_bytes,
+    };
 
     use crate::config::Config;
     use crate::server::{self, SESSION_COOKIE};
@@ -87,9 +95,10 @@ mod tests {
 
     async fn setup() -> Setup {
         let store = Arc::new(Store::open(Path::new(":memory:")).await.unwrap());
-        let (client_id, secret) = create_client(&store, "tasks", vec!["http://app/callback".into()])
-            .await
-            .unwrap();
+        let (client_id, secret) =
+            create_client(&store, "tasks", vec!["http://app/callback".into()])
+                .await
+                .unwrap();
         let admin_invite = create_invite(&store, "ada@example.com", None, true)
             .await
             .unwrap();
@@ -149,13 +158,12 @@ mod tests {
             .discover()
             .cookies()
             // The pages shell renders its stylesheet link through the asset
-            // catalog, so the tests render pages against the real bundle —
-            // the same one `serve` loads beside the executable.
-            .assets(topcoat::asset::AssetBundle::load_dir(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../target/debug/assets"
-            ))
-            .unwrap())
+            // catalog, so the tests render pages against a real bundle: the
+            // one `serve` loads beside the executable where it exists, and
+            // otherwise a one-entry bundle folded from the stylesheet
+            // build.rs already compiled — a fresh checkout runs `cargo test`
+            // before any bundling step, and no test reads the bytes.
+            .assets(test_assets())
             .app_context(app)
             .build();
         Setup {
@@ -164,6 +172,49 @@ mod tests {
             secret: secret.expose().to_string(),
             store,
         }
+    }
+
+    /// The bundle the router renders against. A dev machine carries the
+    /// real one under `target/debug/assets`; on one that never ran the
+    /// bundler (CI), a minimal manifest is written beside a copy of the
+    /// stylesheet build.rs produced, so page GETs resolve their `<link>`
+    /// without any deploy-time step.
+    fn test_assets() -> topcoat::asset::AssetBundle {
+        // The layout's own declaration: `asset!` folds the declaring source
+        // file into the id, so a fresh one here would catalog a different
+        // id than any rendered page resolves.
+        let style = crate::layout::STYLE;
+        let dev = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/assets");
+        if std::path::Path::new(dev).join("manifest.toml").is_file() {
+            return topcoat::asset::AssetBundle::load_dir(dev).unwrap();
+        }
+        // One directory per call: tests run on shared threads, and two
+        // setups rewriting one manifest can interleave a half-written file
+        // under the other's load.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "im-web-test-assets-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(
+            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/main.css"),
+            dir.join("main.css"),
+        )
+        .unwrap();
+        topcoat::asset::Manifest {
+            version: topcoat::asset::MANIFEST_VERSION,
+            assets: vec![topcoat::asset::ManifestEntry {
+                id: style.id(),
+                file: "main.css".into(),
+                hash: "0".repeat(64),
+                content_type: "text/css".into(),
+            }],
+        }
+        .save(dir.join("manifest.toml"))
+        .unwrap();
+        topcoat::asset::AssetBundle::load_dir(&dir).unwrap()
     }
 
     fn basic(client_id: &str, secret: &str) -> String {
@@ -187,9 +238,7 @@ mod tests {
 
     /// The config's service list as the domain module's own shape — the one
     /// conversion the boot-time seed needs.
-    fn core_services(
-        config: &[crate::config::Service],
-    ) -> Vec<im_core::services::Service> {
+    fn core_services(config: &[crate::config::Service]) -> Vec<im_core::services::Service> {
         config
             .iter()
             .map(|service| im_core::services::Service {
@@ -228,7 +277,11 @@ mod tests {
     }
 
     /// A top-level GET (the RP-initiated logout's shape), same answer triple.
-    async fn get_location(router: &Router, uri: &str, cookie: &str) -> (StatusCode, Option<String>) {
+    async fn get_location(
+        router: &Router,
+        uri: &str,
+        cookie: &str,
+    ) -> (StatusCode, Option<String>) {
         let response = router
             .handle(
                 http::Request::builder()
@@ -305,9 +358,7 @@ mod tests {
     #[tokio::test]
     async fn the_directory_refuses_a_browser_and_an_unknown_client_alike() {
         let Setup {
-            router,
-            client_id,
-            ..
+            router, client_id, ..
         } = setup().await;
         let (status, _) = get(&router, None).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -487,16 +538,20 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["in", "im", "iz", "wiki"], "{body}");
         assert_eq!(family[3]["url"], "http://127.0.0.1:99");
-        assert!(get_page(&router, "/?section=profile", &cookie)
+        assert!(
+            get_page(&router, "/?section=profile", &cookie)
+                .await
+                .contains(r#"action="/services/add""#)
+        );
+        assert!(
+            !get_page(
+                &router,
+                "/?section=profile",
+                &format!("{SESSION_COOKIE}={}", ben_session.expose())
+            )
             .await
-            .contains(r#"action="/services/add""#));
-        assert!(!get_page(
-            &router,
-            "/?section=profile",
-            &format!("{SESSION_COOKIE}={}", ben_session.expose())
-        )
-        .await
-        .contains(r#"action="/services/add""#));
+            .contains(r#"action="/services/add""#)
+        );
 
         // Edit rewrites name and address; move up swaps with the neighbor.
         let (_status, location, _) = post_form(
@@ -507,13 +562,8 @@ mod tests {
         )
         .await;
         assert_eq!(location.as_deref(), Some("/?ok=services"));
-        let (_status, location, _) = post_form(
-            &router,
-            "/services/move",
-            "key=wiki&dir=up",
-            Some(&cookie),
-        )
-        .await;
+        let (_status, location, _) =
+            post_form(&router, "/services/move", "key=wiki&dir=up", Some(&cookie)).await;
         assert_eq!(location.as_deref(), Some("/?ok=services"));
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
@@ -541,13 +591,8 @@ mod tests {
         assert_eq!(location.as_deref(), Some("http://127.0.0.1:98/"));
 
         // And once the row is gone, the same origin is refused to the door.
-        let (_status, location, _) = post_form(
-            &router,
-            "/services/remove",
-            "key=wiki",
-            Some(&cookie),
-        )
-        .await;
+        let (_status, location, _) =
+            post_form(&router, "/services/remove", "key=wiki", Some(&cookie)).await;
         assert_eq!(location.as_deref(), Some("/?ok=services"));
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
