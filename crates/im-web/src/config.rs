@@ -25,6 +25,24 @@ pub struct Config {
     /// The OIDC issuer — the public base URL every endpoint address and every
     /// `iss` claim derives from.
     pub issuer: String,
+    pub services: Vec<Service>,
+}
+
+/// One sibling app in the switcher and on the landing's services home:
+/// the wordmark `key` ("in", "im", "iz" — im's own), a human `name`, and
+/// the absolute base `url` without a trailing slash.
+#[derive(Clone)]
+pub struct Service {
+    pub key: String,
+    pub name: String,
+    pub url: String,
+}
+
+#[derive(Deserialize)]
+struct RawService {
+    key: String,
+    name: String,
+    url: String,
 }
 
 #[derive(Deserialize)]
@@ -32,6 +50,8 @@ struct Raw {
     database: Option<String>,
     listen: Option<String>,
     issuer: Option<String>,
+    #[serde(default)]
+    services: Vec<RawService>,
 }
 
 impl Config {
@@ -52,6 +72,26 @@ impl Config {
         if !issuer.starts_with("http://") && !issuer.starts_with("https://") {
             return Err(format!("{PATH}: issuer {issuer:?} must be an http(s) URL"));
         }
+        let mut services = Vec::new();
+        for service in raw.services {
+            if !matches!(service.key.as_str(), "in" | "im" | "iz") {
+                return Err(format!(
+                    "{PATH}: services: key {:?} must be in, im, or iz",
+                    service.key
+                ));
+            }
+            if !service.url.starts_with("http://") && !service.url.starts_with("https://") {
+                return Err(format!(
+                    "{PATH}: services.{}.url {:?} must be an http(s) URL",
+                    service.key, service.url
+                ));
+            }
+            services.push(Service {
+                key: service.key,
+                name: service.name,
+                url: service.url.trim_end_matches('/').to_string(),
+            });
+        }
         Ok(Config {
             database: PathBuf::from(raw.database.unwrap_or_else(|| "im.db".to_string())),
             listen: raw
@@ -60,6 +100,7 @@ impl Config {
                 .parse()
                 .map_err(|e| format!("{PATH}: listen: {e}"))?,
             issuer: issuer.trim_end_matches('/').to_string(),
+            services,
         })
     }
 

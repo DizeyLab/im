@@ -319,9 +319,74 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   padding: 4px 0 10px;
 }
 
+.service-trio {
+  display: flex;
+  justify-content: center;
+  align-items: baseline;
+  gap: 10px;
+  padding: 0 0 2px;
+}
+
+.trio-mark {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  color: var(--muted);
+}
+.trio-mark:hover {
+  color: var(--ink);
+}
+.trio-mark-on {
+  color: var(--ink);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.trio-sep {
+  color: var(--muted-soft);
+}
+
 .landing-stage .auth-column {
   margin-top: max(24px, (100dvh - 640px) / 2);
   margin-bottom: 24px;
+}
+
+.service-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.service-card {
+  flex: 1 1 140px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: inherit;
+}
+.service-card:hover {
+  border-color: var(--accent);
+  color: inherit;
+}
+.service-card-on {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.service-mark {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 500;
+}
+
+.service-name {
+  font-size: 13px;
+  color: var(--muted);
 }
 
 .auth-card {

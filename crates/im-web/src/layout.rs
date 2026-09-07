@@ -8,6 +8,7 @@ use topcoat::context::Cx;
 use topcoat::view::view;
 
 use crate::i18n::{Key, Lang, lang_of, t};
+use crate::server;
 
 /// `style/main.scss`, compiled by `build.rs` into `assets/main.css`.
 const STYLE: Asset = asset!("assets/main.css");
@@ -20,6 +21,37 @@ pub async fn wordmark(cx: &Cx) -> Result {
         <span class="wordmark">
             <span class="wordmark-text">"im"</span>
         </span>
+    }
+}
+
+/// The signed-in chrome's app trio: every configured service's wordmark,
+/// middots between, the home one (`im`) inked and marked current, its
+/// siblings plain links. A deployment that names no services renders
+/// nothing — the single mark above stays the whole chrome.
+pub async fn service_trio(cx: &Cx) -> Result {
+    let services = &server::app(cx).config.services;
+    let marks = (!services.is_empty()).then(|| {
+        services
+            .iter()
+            .map(|service| {
+                let key = crate::pages::escape(&service.key);
+                if service.key == "im" {
+                    format!(
+                        r#"<span class="trio-mark trio-mark-on" aria-current="page">{key}</span>"#
+                    )
+                } else {
+                    let url = crate::pages::escape(&service.url);
+                    format!(r#"<a class="trio-mark" href="{url}">{key}</a>"#)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(r#"<span class="trio-sep">·</span>"#)
+    });
+    view! {
+        cx =>
+        if let Some(marks) = marks {
+            <nav class="service-trio">(topcoat::view::Unescaped::new_unchecked(marks))</nav>
+        }
     }
 }
 

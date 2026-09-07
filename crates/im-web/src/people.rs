@@ -14,7 +14,7 @@ use topcoat::view::view;
 use im_core::accounts;
 
 use crate::i18n::{Key, lang_of, t};
-use crate::layout::{avatar, shell, wordmark};
+use crate::layout::{avatar, service_trio, shell, wordmark};
 use crate::server;
 
 path_param!(user_id);
@@ -40,6 +40,7 @@ async fn people_page(cx: &Cx) -> Result {
         <main class="auth-stage">
             <div class="auth-column">
                 (wordmark(cx).await?)
+                (service_trio(cx).await?)
                 <div class="auth-card">
                     <div class="profile-head">
                         if person.has_photo {

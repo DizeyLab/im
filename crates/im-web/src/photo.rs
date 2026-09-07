@@ -326,6 +326,7 @@ mod tests {
                 database: ":memory:".into(),
                 listen: "127.0.0.1:7650".parse().unwrap(),
                 issuer: "http://127.0.0.1:7650".into(),
+                services: Vec::new(),
             },
             live,
         };

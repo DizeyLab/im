@@ -2,6 +2,24 @@ database = "im.db"
 listen = "127.0.0.1:7650"
 issuer = "http://127.0.0.1:7650"
 
+# The sibling apps of the switcher and the landing's services home, in
+# wordmark order. Prod uses https://<key>.dizey.sh — deploy-side config,
+# not committed here.
+[[services]]
+key = "in"
+name = "Files"
+url = "http://127.0.0.1:7655"
+
+[[services]]
+key = "im"
+name = "Account"
+url = "http://127.0.0.1:7650"
+
+[[services]]
+key = "iz"
+name = "Board"
+url = "http://127.0.0.1:7654"
+
 # Without an [smtp] table the server runs in dev mode: invite links are
 # printed to stdout instead of mailed.
 # [smtp]

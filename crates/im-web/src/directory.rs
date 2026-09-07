@@ -53,21 +53,23 @@ mod tests {
 
     use im_core::accounts::{create_invite, create_user_from_invite};
     use im_core::oidc::create_client;
+    use im_core::model::ClientId;
     use im_core::store::Store;
     use topcoat::cookie::RouterBuilderCookieExt as _;
     use topcoat::router::{Body, Router, RouterBuilderDiscoverExt as _, StatusCode, header, to_bytes};
 
     use crate::config::Config;
-    use crate::server;
+    use crate::server::{self, SESSION_COOKIE};
 
     struct Setup {
         router: Router,
         client_id: String,
         secret: String,
+        store: Arc<Store>,
     }
 
     async fn setup() -> Setup {
-        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let store = Arc::new(Store::open(Path::new(":memory:")).await.unwrap());
         let (client_id, secret) = create_client(&store, "tasks", vec!["http://app/callback".into()])
             .await
             .unwrap();
@@ -94,11 +96,28 @@ mod tests {
             .unwrap();
         let (live, _) = tokio::sync::broadcast::channel(64);
         let app = server::App {
-            store: Arc::new(store),
+            store: store.clone(),
             config: Config {
                 database: ":memory:".into(),
                 listen: "127.0.0.1:7650".parse().unwrap(),
                 issuer: "http://127.0.0.1:7650".into(),
+                services: vec![
+                    crate::config::Service {
+                        key: "in".into(),
+                        name: "Files".into(),
+                        url: "http://127.0.0.1:7655".into(),
+                    },
+                    crate::config::Service {
+                        key: "im".into(),
+                        name: "Account".into(),
+                        url: "http://127.0.0.1:7650".into(),
+                    },
+                    crate::config::Service {
+                        key: "iz".into(),
+                        name: "Board".into(),
+                        url: "http://127.0.0.1:7654".into(),
+                    },
+                ],
             },
             live,
         };
@@ -111,6 +130,7 @@ mod tests {
             router,
             client_id: client_id.to_string(),
             secret: secret.expose().to_string(),
+            store,
         }
     }
 
@@ -133,12 +153,60 @@ mod tests {
         (parts.status, String::from_utf8(bytes).unwrap())
     }
 
+    /// A form post through the router, answered as (status, Location, body).
+    async fn post_form(
+        router: &Router,
+        uri: &str,
+        body: &str,
+        cookie: Option<&str>,
+    ) -> (StatusCode, Option<String>, String) {
+        let mut builder = http::Request::builder()
+            .method(http::Method::POST)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let response = router
+            .handle(builder.body(Body::from(body.to_string())).unwrap())
+            .await;
+        let (parts, body) = response.into_parts();
+        let location = parts
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        (parts.status, location, String::from_utf8(bytes).unwrap())
+    }
+
+    /// A top-level GET (the RP-initiated logout's shape), same answer triple.
+    async fn get_location(router: &Router, uri: &str, cookie: &str) -> (StatusCode, Option<String>) {
+        let response = router
+            .handle(
+                http::Request::builder()
+                    .uri(uri)
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let (parts, _) = response.into_parts();
+        let location = parts
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        (parts.status, location)
+    }
+
     #[tokio::test]
     async fn the_directory_names_every_non_disabled_user_with_its_admin_flag() {
         let Setup {
             router,
             client_id,
             secret,
+            ..
         } = setup().await;
         let (status, body) = get(&router, Some(basic(&client_id, &secret))).await;
         assert_eq!(status, StatusCode::OK);
@@ -172,5 +240,88 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let (status, _) = get(&router, Some(basic("no-such-client", "wrong"))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_the_central_session_and_only_returns_known_origins() {
+        let Setup {
+            router,
+            client_id,
+            secret,
+            store,
+        } = setup().await;
+        let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+
+        // The RP-initiated exit: `back` naming a configured service's own
+        // origin is honored verbatim — the sibling gets its browser back.
+        let one = im_core::sessions::create_session(&store, &ada.id, &Default::default())
+            .await
+            .unwrap();
+        let (status, location) = get_location(
+            &router,
+            "/logout?back=http%3A%2F%2F127.0.0.1%3A7655%2F",
+            &format!("{SESSION_COOKIE}={}", one.expose()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("http://127.0.0.1:7655/"));
+
+        // A live app session bound to a second central session introspects
+        // active — until a logout with a foreign `back` lands. The refusal
+        // itself goes to the front door, and the revocation still lands:
+        // the very next introspection is inactive.
+        let two = im_core::sessions::create_session(&store, &ada.id, &Default::default())
+            .await
+            .unwrap();
+        let app_token = im_core::oidc::issue_app_session(
+            &store,
+            &ada.id,
+            &ClientId::from(client_id.clone()),
+            &im_core::accounts::hash_token(two.expose()),
+        )
+        .await
+        .unwrap();
+        let probe = format!(
+            "token={}&client_id={client_id}&client_secret={secret}",
+            app_token.expose()
+        );
+        let (status, _, body) = post_form(&router, "/introspect", &probe, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["active"],
+            true
+        );
+
+        let (status, location) = get_location(
+            &router,
+            "/logout?back=https%3A%2F%2Fevil.example%2F",
+            &format!("{SESSION_COOKIE}={}", two.expose()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
+        let (status, _, body) = post_form(&router, "/introspect", &probe, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["active"],
+            false
+        );
+
+        // im's own form logout is untouched: front door, no `back` at all.
+        let three = im_core::sessions::create_session(&store, &ada.id, &Default::default())
+            .await
+            .unwrap();
+        let (status, location, _) = post_form(
+            &router,
+            "/logout",
+            "",
+            Some(&format!("{SESSION_COOKIE}={}", three.expose())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
     }
 }

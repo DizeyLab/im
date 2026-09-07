@@ -43,6 +43,47 @@ fn safe_back(raw: &str) -> &str {
     }
 }
 
+/// Where a logout sends the browser. A local absolute path always
+/// qualifies — the login `back` rule. An absolute URL qualifies when its
+/// origin is exactly one of the configured services': the sibling app that
+/// sent the browser here gets it handed back. A foreign origin — and
+/// anything unparseable — is refused to the front door.
+fn logout_target(raw: Option<&str>, services: &[crate::config::Service]) -> String {
+    let Some(raw) = raw else {
+        return "/".to_string();
+    };
+    if raw.starts_with('/') && !raw.starts_with("//") {
+        return raw.to_string();
+    }
+    if let Some(origin) = url_origin(raw) {
+        if services
+            .iter()
+            .any(|s| url_origin(&s.url).is_some_and(|known| known == origin))
+        {
+            return raw.to_string();
+        }
+    }
+    "/".to_string()
+}
+
+/// The `scheme://authority` of an absolute http(s) URL, lowercased — the
+/// whole of what an origin match compares. `None` for anything else.
+fn url_origin(raw: &str) -> Option<String> {
+    let (scheme, rest) = raw.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}://{}",
+        scheme.to_ascii_lowercase(),
+        authority.to_ascii_lowercase()
+    ))
+}
+
 /// Creation-time facts for the session row: the address the browser came
 /// through and the agent it claims to be. The accept loop discards the peer
 /// address, so the proxy headers are the only source — the first
@@ -248,6 +289,14 @@ async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
 /// refresh token any app is still holding — see `sessions::revoke_session`.
 #[route(POST "/logout")]
 async fn logout(cx: &Cx) -> Redirect {
+    sign_out_everywhere(cx).await?;
+    see("/".to_string())
+}
+
+/// The shared half of both logouts: the central session dies — with it
+/// every refresh token and app session bound to it — and the cookie is
+/// tidied. Where the browser goes next is each route's own business.
+async fn sign_out_everywhere(cx: &Cx) -> Result<()> {
     if let Some(token) = server::presented_session(cx) {
         let email = im_core::sessions::resolve_session(&server::app(cx).store, &token)
             .await?
@@ -256,7 +305,25 @@ async fn logout(cx: &Cx) -> Redirect {
         server::log_event(cx, "logout", email.as_deref(), None).await;
     }
     server::clear_session_cookie(cx);
-    see("/".to_string())
+    Ok(())
+}
+
+/// The RP-initiated exit: a sibling app has cleared its own cookie and
+/// sent the browser here as a top-level navigation. `back` names the
+/// return address, judged by [`logout_target`] — and the central session
+/// dies whatever the answer is.
+#[route(GET "/logout")]
+async fn logout_return(cx: &Cx) -> Redirect {
+    let query = topcoat::router::request::uri(cx)
+        .query()
+        .unwrap_or("")
+        .to_string();
+    let back = crate::pages::query_value(&query, "back");
+    sign_out_everywhere(cx).await?;
+    see(logout_target(
+        back.as_deref(),
+        &server::app(cx).config.services,
+    ))
 }
 
 #[derive(Deserialize)]
