@@ -884,9 +884,6 @@ a.wordmark-home {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  // Logs/users tables are wider than a phone; the card scrolls sideways
-  // instead of pushing the whole page out.
-  overflow-x: auto;
 }
 
 // The logs filter row: five small fields in one wrapping line; a page turn's
@@ -922,8 +919,13 @@ body:has(.log-list) {
   .admin-card:has(.log-list) { min-height: 0; }
 }
 
-.log-list-wrap {
+// Every admin table rides a wrapper that scrolls it sideways itself, so the
+// card never does and a section's heading and filters stay put. min-height:
+// 0 is what lets the logs fit shrink the wrap below its content, so the
+// vertical scroll also stays inside it instead of reaching the page.
+.admin-table-wrap {
   min-height: 0;
+  overflow-x: auto;
   overflow-y: auto;
 }
 
@@ -996,16 +998,25 @@ body:has(.log-list) {
 
 .admin-invite {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: stretch;
-  // One control height for the whole row — email, role and Invite all stand
-  // on the same line, the way izlek's member-invite row does.
+  // One control height for the whole row — email, role and Invite stand on
+  // the same line while there is room, the way izlek's member-invite row
+  // does; on a phone the email drops to its own line instead.
   --control-h: 36px;
 
   .auth-input {
-    flex: 1;
     height: var(--control-h);
     box-sizing: border-box;
+  }
+
+  // The email field keeps a floor wide enough to read the placeholder in;
+  // when the row cannot fit that floor, it wraps. The role select shares
+  // the input skin but not the floor, so this stays input-scoped.
+  input.auth-input {
+    flex: 1;
+    min-width: 220px;
   }
 
   // The role picker: same field skin as the inputs, just narrower — izlek's
@@ -1158,7 +1169,6 @@ input[type="checkbox"] { accent-color: var(--accent); }
 
 @media (max-width: 720px) {
   .admin-shell { padding: 16px 12px 32px; }
-  .admin-invite { flex-wrap: wrap; }
 }
 
 // --- Themed dropdown (izlek's dropdown, on im's tokens) --------------------

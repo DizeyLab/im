@@ -867,7 +867,6 @@ a.wordmark-home {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  overflow-x: auto;
 }
 
 .logs-filters {
@@ -895,8 +894,9 @@ body:has(.log-list) .admin-card:has(.log-list) {
   min-height: 0;
 }
 
-.log-list-wrap {
+.admin-table-wrap {
   min-height: 0;
+  overflow-x: auto;
   overflow-y: auto;
 }
 
@@ -973,14 +973,18 @@ body:has(.log-list) .admin-card:has(.log-list) {
 
 .admin-invite {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: stretch;
   --control-h: 36px;
 }
 .admin-invite .auth-input {
-  flex: 1;
   height: var(--control-h);
   box-sizing: border-box;
+}
+.admin-invite input.auth-input {
+  flex: 1;
+  min-width: 220px;
 }
 .admin-invite select.admin-role {
   flex: 0 0 auto;
@@ -1119,9 +1123,6 @@ input[type=checkbox] {
 @media (max-width: 720px) {
   .admin-shell {
     padding: 16px 12px 32px;
-  }
-  .admin-invite {
-    flex-wrap: wrap;
   }
 }
 .dd-native {

@@ -249,9 +249,9 @@ fn sessions_row(
         }
         format!(
             concat!(
-                r#"<table class="admin-table"><thead><tr>"#,
+                r#"<div class="admin-table-wrap"><table class="admin-table"><thead><tr>"#,
                 r#"<th>{device}</th><th>{address}</th><th>{signed_in}</th><th>{last_seen}</th><th></th>"#,
-                r#"</tr></thead><tbody>{rows}</tbody></table>"#
+                r#"</tr></thead><tbody>{rows}</tbody></table></div>"#
             ),
             device = t(lang, Key::DeviceLabel),
             address = t(lang, Key::AddressLabel),
@@ -377,10 +377,12 @@ async fn users_section(
         r#"<div class="admin-card">
   <div class="auth-title">{title}</div>
   {invited_html}
+  <div class="admin-table-wrap">
   <table class="admin-table">
     <thead><tr><th>{email}</th><th>{name}</th><th></th><th></th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
+  </div>
   <form method="post" action="/admin/invite" class="admin-invite">
     <input class="auth-input auth-input-mono" type="email" name="email" placeholder="person@example.com" required>
     <select class="auth-input admin-role" name="role">
@@ -779,7 +781,7 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         format!(r#"<div class="muted">{}</div>"#, t(lang, Key::LogsEmpty))
     } else {
         format!(
-            r#"<div class="log-list-wrap"><table class="admin-table log-list" data-rows="{limit}" data-section="logs">
+            r#"<div class="admin-table-wrap"><table class="admin-table log-list" data-rows="{limit}" data-section="logs">
     <thead><tr><th>{when}</th><th>{what}</th><th>{who}</th><th>{detail}</th></tr></thead>
     <tbody>{rows}</tbody>
   </table></div>"#,
