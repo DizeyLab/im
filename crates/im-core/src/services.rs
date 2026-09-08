@@ -1,7 +1,7 @@
 //! The family: the services every topbar shows as wordmarks and the
 //! landing's services home. The list lives in the database and the admin
 //! panel owns it — seeded once from the config's `[[services]]` on first
-//! boot, edited from the landing (add, rename, reorder, remove), and served
+//! boot, edited from the admin panel (add, rename, reorder, remove), and served
 //! to the sibling apps over `GET /family`, which each mirrors into its own
 //! database.
 

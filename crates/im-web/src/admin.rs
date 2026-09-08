@@ -1,4 +1,4 @@
-//! The admin panel: users, mail, logs. One page, three sections, every
+//! The admin panel: users, services, mail, settings, logs. One page, every
 //! action a plain form post answering a 303 back to its section — the same
 //! idiom as izlek-web's settings.rs/logs.rs, minus the client script.
 
@@ -52,6 +52,7 @@ fn escape(raw: &str) -> String {
 /// and holds the button that actually does it. Works with no script at all;
 /// the live script adds outside-click closing.
 fn confirm_action(
+    field: &str,
     id: &str,
     action: &str,
     word: &str,
@@ -61,7 +62,7 @@ fn confirm_action(
     confirm: &str,
 ) -> String {
     format!(
-        r#"<details class="admin-confirm"><summary class="admin-action{extra_class}">{word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{title}</div><div class="muted">{cost}</div><form method="post" action="{action}"><input type="hidden" name="user" value="{id}"><button class="admin-action{extra_class}" type="submit">{confirm}</button></form></div></details>"#
+        r#"<details class="admin-confirm"><summary class="admin-action{extra_class}">{word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{title}</div><div class="muted">{cost}</div><form method="post" action="{action}"><input type="hidden" name="{field}" value="{id}"><button class="admin-action{extra_class}" type="submit">{confirm}</button></form></div></details>"#
     )
 }
 /// The panel's live wiring moved into the shell: `layout::live_script` runs
@@ -114,6 +115,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
     let nav = |current: &str| {
         [
             ("users", t(lang, Key::NavUsers)),
+            ("services", t(lang, Key::NavServices)),
             ("mail", t(lang, Key::NavMail)),
             ("message", t(lang, Key::NavMessage)),
             ("settings", t(lang, Key::NavSettings)),
@@ -134,6 +136,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         "message" => message_section(cx, lang).await?,
         "settings" => settings_section(cx, lang).await?,
         "logs" => logs_section(cx, lang).await?,
+        "services" => services_section(cx, lang).await?,
         "users" => users_section(cx, &me, invited.as_deref(), lang).await?,
         _ => users_section(cx, &me, invited.as_deref(), lang).await?,
     };
@@ -153,6 +156,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                 "uninvited" => t(lang, Key::OkUninvited),
                 "deleted" => t(lang, Key::OkDeleted),
                 "settings" => t(lang, Key::OkSettingsSaved),
+                "services" => t(lang, Key::OkServicesSaved),
                 _ => t(lang, Key::OkDone),
             }
         )),
@@ -297,6 +301,7 @@ async fn users_section(
             // script adds outside-click closing on top.
             let toggle = if user.disabled {
                 confirm_action(
+                    "user",
                     &id,
                     "/admin/enable",
                     t(lang, Key::EnableWord),
@@ -307,6 +312,7 @@ async fn users_section(
                 )
             } else {
                 confirm_action(
+                    "user",
                     &id,
                     "/admin/disable",
                     t(lang, Key::DisableWord),
@@ -317,6 +323,7 @@ async fn users_section(
                 )
             };
             let remove = confirm_action(
+                "user",
                 &id,
                 "/admin/delete",
                 t(lang, Key::DeleteWord),
@@ -399,6 +406,172 @@ async fn users_section(
         admin = t(lang, Key::RoleAdmin),
         invite = t(lang, Key::InviteButton),
     ))
+}
+
+/// The family registry: the wordmarks every topbar's trio and the landing's
+/// services home render, and `/family` serves. One table in the panel's own
+/// skins — edit and remove as the two-step disclosures, the up/down pair as
+/// plain row buttons — and the add line under it wearing the invite form's
+/// skin.
+async fn services_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
+    let services = im_core::services::list(&app(cx).store).await?;
+    let mut rows = String::new();
+    for service in &services {
+        let key = escape(&service.key);
+        let name = escape(&service.name);
+        let url = escape(&service.url);
+        // The edit disclosure: the opened pop carries the name-and-address
+        // form; the key travels hidden, like every row's write.
+        let edit = format!(
+            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/services_edit" class="admin-form"><input type="hidden" name="key" value="{key}"><label class="auth-field"><span class="auth-label">{name_label}</span><input class="auth-input auth-input-mono" type="text" name="name" value="{name}" required></label><label class="auth-field"><span class="auth-label">{url_label}</span><input class="auth-input auth-input-mono" type="text" name="url" value="{url}" required></label><button class="admin-action" type="submit">{save}</button></form></div></details>"#,
+            edit_word = t(lang, Key::EditWord),
+            edit_title = i18n::edit_service_title(lang, &name),
+            key = key,
+            name = name,
+            url = url,
+            name_label = t(lang, Key::NameCol),
+            url_label = t(lang, Key::AddressLabel),
+            save = t(lang, Key::SaveButton),
+        );
+        let up = format!(
+            r#"<form method="post" action="/admin/services_move"><input type="hidden" name="key" value="{key}"><input type="hidden" name="dir" value="up"><button class="admin-action" type="submit" aria-label="{up_label}">&#8593;</button></form>"#,
+            key = key,
+            up_label = t(lang, Key::ServiceMoveUp),
+        );
+        let down = format!(
+            r#"<form method="post" action="/admin/services_move"><input type="hidden" name="key" value="{key}"><input type="hidden" name="dir" value="down"><button class="admin-action" type="submit" aria-label="{down_label}">&#8595;</button></form>"#,
+            key = key,
+            down_label = t(lang, Key::ServiceMoveDown),
+        );
+        let remove = confirm_action(
+            "key",
+            &key,
+            "/admin/services_remove",
+            t(lang, Key::Remove),
+            " admin-danger",
+            &i18n::remove_service_title(lang, &name),
+            t(lang, Key::RemoveCost),
+            t(lang, Key::ConfirmRemove),
+        );
+        rows.push_str(&format!(
+            r#"<tr><td class="mono">{key}</td><td>{name}</td><td class="mono">{url}</td><td class="actions">{edit}{up}{down}{remove}</td></tr>"#,
+        ));
+    }
+    Ok(format!(
+        r#"<div class="admin-card">
+  <div class="auth-title">{title}</div>
+  <div class="admin-table-wrap">
+  <table class="admin-table">
+    <thead><tr><th>{key_label}</th><th>{name_label}</th><th>{url_label}</th><th></th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  </div>
+  <form method="post" action="/admin/services_add" class="admin-invite">
+    <input class="auth-input auth-input-mono" type="text" name="key" placeholder="in" aria-label="{key_label}" required>
+    <input class="auth-input" type="text" name="name" placeholder="{name_label}" aria-label="{name_label}" required>
+    <input class="auth-input auth-input-mono" type="text" name="url" placeholder="https://in.dizey.sh" aria-label="{url_label}" required>
+    <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{add}</span></button>
+  </form>
+</div>"#,
+        title = t(lang, Key::ServicesTitle),
+        key_label = t(lang, Key::ServiceKeyLabel),
+        name_label = t(lang, Key::NameCol),
+        url_label = t(lang, Key::AddressLabel),
+        add = t(lang, Key::ServiceAdd),
+    ))
+}
+
+/// One user of the services forms: key, name, address. The add form fills
+/// all three; the edit form carries the key in its hidden field.
+#[derive(Deserialize)]
+struct ServiceForm {
+    key: String,
+    name: String,
+    url: String,
+}
+
+#[route(POST "/admin/services_add")]
+async fn services_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let outcome = im_core::services::add(
+        &app(cx).store,
+        &im_core::services::Service {
+            key: input.key,
+            name: input.name,
+            url: input.url,
+        },
+    )
+    .await;
+    service_outcome(cx, &me, outcome).await
+}
+
+#[route(POST "/admin/services_edit")]
+async fn services_edit(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let outcome = im_core::services::edit(&app(cx).store, &input.key, &input.name, &input.url).await;
+    service_outcome(cx, &me, outcome).await
+}
+
+#[derive(Deserialize)]
+struct ServiceKeyForm {
+    key: String,
+}
+
+#[route(POST "/admin/services_remove")]
+async fn services_remove(cx: &Cx, Form(input): Form<ServiceKeyForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let outcome = im_core::services::remove(&app(cx).store, &input.key).await;
+    service_outcome(cx, &me, outcome).await
+}
+
+#[derive(Deserialize)]
+struct ServiceMoveForm {
+    key: String,
+    dir: String,
+}
+
+/// Up or down one slot; anything else in `dir` is the panel's refusal.
+#[route(POST "/admin/services_move")]
+async fn services_move(cx: &Cx, Form(input): Form<ServiceMoveForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let up = match input.dir.as_str() {
+        "up" => true,
+        "down" => false,
+        _ => return back(cx, "services", "&error=bad_service"),
+    };
+    let outcome = im_core::services::move_service(&app(cx).store, &input.key, up).await;
+    service_outcome(cx, &me, outcome).await
+}
+
+/// The panel's answer to a services write: back to the section with the
+/// good news, or with the section's one refusal when the store said the
+/// value is against the rules. Anything else is a real failure and travels
+/// as one.
+async fn service_outcome(
+    cx: &Cx,
+    me: &User,
+    outcome: im_core::store::Result<()>,
+) -> Result<Response> {
+    match outcome {
+        Ok(()) => {
+            server::log_event(cx, "services_updated", Some(&me.email), None).await;
+            back(cx, "services", "&ok=services")
+        }
+        Err(im_core::store::StoreError::Invalid(_)) => back(cx, "services", "&error=bad_service"),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// The knobs the code shipped with, now the panel's: invite and reset link

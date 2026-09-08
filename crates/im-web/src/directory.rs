@@ -506,7 +506,7 @@ mod tests {
             .unwrap();
         let (status, location, _) = post_form(
             &router,
-            "/services/add",
+            "/admin/services_add",
             "key=wiki&name=Wiki&url=http%3A%2F%2F127.0.0.1%3A99",
             Some(&format!("{SESSION_COOKIE}={}", ben_session.expose())),
         )
@@ -514,21 +514,21 @@ mod tests {
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert_eq!(location.as_deref(), Some("/"));
 
-        // The admin's add lands back on the card, and /family carries the
-        // new row at the end — trailing slash stored off, like every URL.
+        // The admin's add lands back on the section, and /family carries
+        // the new row at the end — trailing slash stored off, like every URL.
         let session = im_core::sessions::create_session(&store, &ada.id, &Default::default())
             .await
             .unwrap();
         let cookie = format!("{SESSION_COOKIE}={}", session.expose());
         let (status, location, _) = post_form(
             &router,
-            "/services/add",
+            "/admin/services_add",
             "key=wiki&name=Wiki&url=http%3A%2F%2F127.0.0.1%3A99%2F",
             Some(&cookie),
         )
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(location.as_deref(), Some("/?ok=services"));
+        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
         let family = family.as_array().unwrap();
@@ -538,33 +538,39 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["in", "im", "iz", "wiki"], "{body}");
         assert_eq!(family[3]["url"], "http://127.0.0.1:99");
+        // The forms live on the panel's Services section now.
+        let panel = get_page(&router, "/admin?section=services", &cookie).await;
+        assert!(panel.contains(r#"action="/admin/services_add""#));
+        assert!(panel.contains(r#"action="/admin/services_edit""#));
+        // The landing is the read-only directory, admins included.
         assert!(
-            get_page(&router, "/?section=profile", &cookie)
+            !get_page(&router, "/?section=profile", &cookie)
                 .await
-                .contains(r#"action="/services/add""#)
+                .contains(r#"action="/admin/services_add""#)
         );
-        assert!(
-            !get_page(
-                &router,
-                "/?section=profile",
-                &format!("{SESSION_COOKIE}={}", ben_session.expose())
-            )
-            .await
-            .contains(r#"action="/services/add""#)
-        );
+        // And a non-admin cannot open the section at all — the panel's
+        // front-door redirect, like every admin page.
+        let (status, location) = get_location(
+            &router,
+            "/admin?section=services",
+            &format!("{SESSION_COOKIE}={}", ben_session.expose()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
 
         // Edit rewrites name and address; move up swaps with the neighbor.
         let (_status, location, _) = post_form(
             &router,
-            "/services/edit",
+            "/admin/services_edit",
             "key=wiki&name=Docs&url=http%3A%2F%2F127.0.0.1%3A98",
             Some(&cookie),
         )
         .await;
-        assert_eq!(location.as_deref(), Some("/?ok=services"));
+        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
         let (_status, location, _) =
-            post_form(&router, "/services/move", "key=wiki&dir=up", Some(&cookie)).await;
-        assert_eq!(location.as_deref(), Some("/?ok=services"));
+            post_form(&router, "/admin/services_move", "key=wiki&dir=up", Some(&cookie)).await;
+        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
         let family = family.as_array().unwrap();
@@ -592,8 +598,8 @@ mod tests {
 
         // And once the row is gone, the same origin is refused to the door.
         let (_status, location, _) =
-            post_form(&router, "/services/remove", "key=wiki", Some(&cookie)).await;
-        assert_eq!(location.as_deref(), Some("/?ok=services"));
+            post_form(&router, "/admin/services_remove", "key=wiki", Some(&cookie)).await;
+        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
         let keys = family
@@ -614,18 +620,21 @@ mod tests {
         .await;
         assert_eq!(location.as_deref(), Some("/"));
 
-        // A value against the rules is the card's refusal, not a write.
+        // A value against the rules is the panel's refusal, not a write.
         let bad_session = im_core::sessions::create_session(&store, &ada.id, &Default::default())
             .await
             .unwrap();
         let (_status, location, _) = post_form(
             &router,
-            "/services/add",
+            "/admin/services_add",
             "key=Wiki!&name=Wiki&url=http%3A%2F%2F127.0.0.1%3A97",
             Some(&format!("{SESSION_COOKIE}={}", bad_session.expose())),
         )
         .await;
-        assert_eq!(location.as_deref(), Some("/?error=bad_service"));
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&error=bad_service")
+        );
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&body)

@@ -151,6 +151,7 @@ pub enum Key {
     NavSettings,
     NavLogs,
     NavMessage,
+    NavServices,
     OkInvited,
     OkRevoked,
     OkDisabled,
@@ -160,6 +161,7 @@ pub enum Key {
     OkUninvited,
     OkDeleted,
     OkSettingsSaved,
+    OkServicesSaved,
     OkMessageSent,
 
     // Admin mail section: the composed notice.
@@ -202,12 +204,15 @@ pub enum Key {
     EnableWord,
     DisableWord,
     DeleteWord,
+    EditWord,
     ConfirmEnable,
     ConfirmDisable,
     ConfirmDelete,
+    ConfirmRemove,
     EnableCost,
     DisableCost,
     DeleteCost,
+    RemoveCost,
     InvalidateButton,
     InviteLinkNote,
     PeopleTitle,
@@ -504,6 +509,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (NavLogs, Tr) => "Kayıtlar",
         (NavMessage, En) => "Message",
         (NavMessage, Tr) => "Mesaj",
+        (NavServices, En) => "Services",
+        (NavServices, Tr) => "Hizmetler",
         (OkInvited, En) => "Invite created.",
         (OkInvited, Tr) => "Davet oluşturuldu.",
         (OkRevoked, En) => "Sessions revoked — every device is signed out.",
@@ -522,6 +529,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (OkDeleted, Tr) => "Hesap silindi.",
         (OkSettingsSaved, En) => "Settings saved.",
         (OkSettingsSaved, Tr) => "Ayarlar kaydedildi.",
+        (OkServicesSaved, En) => "Services saved.",
+        (OkServicesSaved, Tr) => "Hizmetler kaydedildi.",
         (OkMessageSent, En) => "Message sent.",
         (OkMessageSent, Tr) => "Mesaj gönderildi.",
 
@@ -596,12 +605,16 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (DisableWord, Tr) => "Devre dışı bırak",
         (DeleteWord, En) => "Delete",
         (DeleteWord, Tr) => "Sil",
+        (EditWord, En) => "Edit",
+        (EditWord, Tr) => "Düzenle",
         (ConfirmEnable, En) => "Confirm enable",
         (ConfirmEnable, Tr) => "Etkinleştirmeyi onayla",
         (ConfirmDisable, En) => "Confirm disable",
         (ConfirmDisable, Tr) => "Devre dışı bırakmayı onayla",
         (ConfirmDelete, En) => "Confirm delete",
         (ConfirmDelete, Tr) => "Silmeyi onayla",
+        (ConfirmRemove, En) => "Confirm remove",
+        (ConfirmRemove, Tr) => "Kaldırmayı onayla",
         (EnableCost, En) => "They can sign in again.",
         (EnableCost, Tr) => "Tekrar giriş yapabilir.",
         (DisableCost, En) => "They cannot sign in, and every live session ends.",
@@ -611,6 +624,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         }
         (DeleteCost, Tr) => {
             "Hesap, oturumları ve tüm uygulama jetonlarıyla birlikte silinir. Adres, yeni biri olarak tekrar davet edilebilir."
+        }
+        (RemoveCost, En) => {
+            "The row leaves the family list, and every sibling drops it at its next /family read."
+        }
+        (RemoveCost, Tr) => {
+            "Satır aile listesinden çıkar; her kardeş uygulama bir sonraki /family okumasında düşürür."
         }
         (InvalidateButton, En) => "Invalidate",
         (InvalidateButton, Tr) => "Geçersiz kıl",
@@ -854,6 +873,22 @@ pub fn delete_title(lang: Lang, email_html: &str) -> String {
     match lang {
         Lang::En => format!("Delete {email_html}?"),
         Lang::Tr => format!("{email_html} silinsin mi?"),
+    }
+}
+
+/// See [`enable_title`].
+pub fn edit_service_title(lang: Lang, name_html: &str) -> String {
+    match lang {
+        Lang::En => format!("Edit {name_html}?"),
+        Lang::Tr => format!("{name_html} düzenlensin mi?"),
+    }
+}
+
+/// See [`enable_title`].
+pub fn remove_service_title(lang: Lang, name_html: &str) -> String {
+    match lang {
+        Lang::En => format!("Remove {name_html}?"),
+        Lang::Tr => format!("{name_html} kaldırılsın mı?"),
     }
 }
 
