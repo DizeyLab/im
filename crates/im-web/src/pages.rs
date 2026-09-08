@@ -602,29 +602,9 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
         )
     })
     .collect::<String>();
-    // The services home: one card per family member — wordmark and name,
-    // the whole card the link. im's own card reads current. Above the
-    // profile sections: im is the account center, and its landing is the
-    // door to the rest. The list is the stored one — the rows `/family`
-    // serves — read-only here; the admin edits it from the panel.
-    let services = im_core::services::list(&server::app(cx).store).await?;
-    let services_html = services
-        .iter()
-        .map(|service| {
-            let current = service.key == "im";
-            let open = if current {
-                r#"<span class="service-card service-card-on" aria-current="page">"#.to_string()
-            } else {
-                format!(r#"<a class="service-card" href="{}">"#, escape(&service.url))
-            };
-            format!(
-                r#"{open}<span class="service-mark">{}</span><span class="service-name">{}</span></{}>"#,
-                escape(&service.key),
-                escape(&service.name),
-                if current { "span" } else { "a" },
-            )
-        })
-        .collect::<String>();
+    // The family lives in the chrome — the wordmark trio under the
+    // wordmark — and its editing in the admin panel; the landing is the
+    // account's own page and carries no directory of its own.
     let stage = view! {
         cx =>
         <main class="auth-stage landing-stage">
@@ -632,12 +612,6 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 (wordmark(cx).await?)
                 (service_trio(cx).await?)
                 <nav class="admin-tabs landing-nav">(topcoat::view::Unescaped::new_unchecked(nav))</nav>
-                if !services_html.is_empty() {
-                    <div class="auth-card">
-                        <div class="auth-title">(t(lang, Key::ServicesTitle))</div>
-                        <div class="service-grid">(topcoat::view::Unescaped::new_unchecked(services_html))</div>
-                    </div>
-                }
                 if let Some(code) = ok {
                     <div class="auth-ok">(ok_text(&code, lang))</div>
                 }

@@ -352,43 +352,6 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   margin-bottom: 24px;
 }
 
-.service-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.service-card {
-  flex: 1 1 140px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  text-decoration: none;
-  color: inherit;
-}
-.service-card:hover {
-  border-color: var(--accent);
-  color: inherit;
-}
-.service-card-on {
-  border-color: var(--accent);
-  background: var(--accent-tint);
-}
-
-.service-mark {
-  font-family: var(--font-mono);
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.service-name {
-  font-size: 13px;
-  color: var(--muted);
-}
-
 .auth-card {
   background: var(--surface);
   border: 1px solid var(--border);
