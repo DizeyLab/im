@@ -379,7 +379,7 @@ mod tests {
     fn a_frame_split_across_reads_still_parses() {
         let whole = frame("two", 7);
         let mut parser = SseParser::default();
-        let mut events = Vec::new();
+        let mut events;
         // Cut at every byte boundary in turn; no split may lose the event.
         for cut in 1..whole.len() {
             events = parser.feed(&whole.as_bytes()[..cut]);

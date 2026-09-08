@@ -225,6 +225,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
+    use futures_util::StreamExt as _;
     use im_core::accounts::{create_invite, create_user_from_invite};
     use im_core::model::UserId;
     use im_core::oidc::create_client;
@@ -232,7 +233,9 @@ mod tests {
     use im_core::sessions::{SessionMeta, create_session};
     use im_core::store::Store;
     use topcoat::cookie::RouterBuilderCookieExt as _;
-    use topcoat::router::{Body, HeaderMap, Router, RouterBuilderDiscoverExt as _, StatusCode};
+    use topcoat::router::{
+        Body, BodyDataStream, HeaderMap, Router, RouterBuilderDiscoverExt as _, StatusCode,
+    };
     use topcoat::router::{header, to_bytes};
 
     use crate::config::Config;
@@ -611,5 +614,149 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::NOT_MODIFIED);
         assert!(bytes.is_empty());
+    }
+
+    /// POSTs a photo the way the avatar script's autosubmit does — a
+    /// multipart form with one named file — through the router, with the
+    /// session cookie carrying who it is for.
+    async fn post_upload(
+        router: &Router,
+        cookie: &str,
+        bytes: &[u8],
+    ) -> (StatusCode, Option<String>) {
+        const BOUNDARY: &str = "imwebtestboundary";
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{BOUNDARY}\r\n\
+                 Content-Disposition: form-data; name=\"file\"; filename=\"face.png\"\r\n\
+                 Content-Type: image/png\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
+        let response = router
+            .handle(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/api/profile_photo")
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={BOUNDARY}"),
+                    )
+                    .header(header::COOKIE, cookie)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await;
+        let (parts, body) = response.into_parts();
+        let location = parts
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let _ = to_bytes(body, usize::MAX).await.unwrap();
+        (parts.status, location)
+    }
+
+    /// Opens `/directory/live` as an app would and pins the body's data
+    /// stream. A single SSE frame may straddle two body frames, so
+    /// callers accumulate text and match on substrings, never on chunk
+    /// boundaries.
+    async fn open_live_stream(
+        router: &Router,
+        authorization: &str,
+    ) -> std::pin::Pin<Box<BodyDataStream>> {
+        let response = router
+            .handle(
+                http::Request::builder()
+                    .uri("/directory/live")
+                    .header(header::AUTHORIZATION, authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let (parts, body) = response.into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        Box::pin(body.into_data_stream())
+    }
+
+    /// The next body frame off the stream, as text.
+    async fn next_wire_chunk(stream: &mut std::pin::Pin<Box<BodyDataStream>>) -> String {
+        let chunk = stream
+            .as_mut()
+            .next()
+            .await
+            .expect("stream stays open")
+            .expect("frames succeed");
+        String::from_utf8_lossy(&chunk).into_owned()
+    }
+
+    /// The whole emit path, end to end: a signed-in upload through the
+    /// router, the committed row's new version on the live bus, and an
+    /// `event: profile` frame off `/directory/live` carrying it.
+    #[tokio::test]
+    async fn a_photo_upload_through_the_router_emits_a_profile_frame() {
+        let setup = setup().await;
+        // Open the app stream first, the way a sibling sits on it, and
+        // read through the opening reconnection hint.
+        let mut stream =
+            open_live_stream(&setup.router, &basic(&setup.client_id, &setup.secret)).await;
+        let mut wire = String::new();
+        while !wire.contains("retry: 5000") {
+            wire.push_str(&next_wire_chunk(&mut stream).await);
+        }
+
+        // Setup's upload was version 1; this one must announce 2.
+        let (status, location) = post_upload(&setup.router, &setup.session_cookie, PHOTO).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "upload answers a 303");
+        assert_eq!(location.as_deref(), Some("/?ok=photo_saved"));
+
+        wire.clear();
+        while !wire.contains("event: profile") {
+            wire.push_str(&next_wire_chunk(&mut stream).await);
+        }
+        assert!(wire.contains(&format!("\"sub\":\"{}\"", setup.user_id)));
+        assert!(
+            wire.contains("\"photo_version\":2"),
+            "the frame carries the bumped version: {wire}"
+        );
+    }
+
+    /// Same path, the removal half: a delete announces too, and its frame
+    /// moves the version forward even though the mime is gone.
+    #[tokio::test]
+    async fn a_photo_delete_through_the_router_emits_a_profile_frame() {
+        let setup = setup().await;
+        let mut stream =
+            open_live_stream(&setup.router, &basic(&setup.client_id, &setup.secret)).await;
+        let mut wire = String::new();
+        while !wire.contains("retry: 5000") {
+            wire.push_str(&next_wire_chunk(&mut stream).await);
+        }
+
+        let response = setup
+            .router
+            .handle(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/api/delete_profile_photo")
+                    .header(header::COOKIE, &setup.session_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let (parts, _) = response.into_parts();
+        assert_eq!(parts.status, StatusCode::SEE_OTHER);
+
+        wire.clear();
+        while !wire.contains("event: profile") {
+            wire.push_str(&next_wire_chunk(&mut stream).await);
+        }
+        assert!(
+            wire.contains("\"photo_version\":2"),
+            "the removal bumps and announces the version: {wire}"
+        );
     }
 }
