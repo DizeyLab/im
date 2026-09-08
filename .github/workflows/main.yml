@@ -93,6 +93,7 @@ jobs:
           topcoat asset bundle --package im-web --profile "$PROFILE" --out stage/assets
           cargo build --package im-migrate --profile "$PROFILE"
           cp "target/$TARGET/$PROFILE/im-web" stage/im-web
+          cp deploy/im.service stage/im.service
           cp "target/$TARGET/$PROFILE/im-migrate" stage/im-migrate
           strip stage/im-web stage/im-migrate
           ls -l stage stage/assets
@@ -160,6 +161,13 @@ jobs:
             mv -- "$deploy_path/current" "$deploy_path/current.previous"
           fi
           mv -- "$deploy_path/current.new" "$deploy_path/current"
+          # The unit ships with the release: a freshly provisioned box has
+          # no unit until the first deploy writes it, and a changed unit
+          # lands with the code that needs it. Enabling is idempotent.
+          mkdir -p -- "$HOME/.config/systemd/user"
+          install -m 644 -- "$deploy_path/current/im.service" "$HOME/.config/systemd/user/$service.service"
+          systemctl --user daemon-reload
+          systemctl --user enable -- "$service"
           systemctl --user restart "$service"
           # The unit is Type=simple, so a restart returns before the process
           # has bound its port. Wait for the health route rather than a clock.
