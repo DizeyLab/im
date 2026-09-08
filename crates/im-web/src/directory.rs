@@ -1,5 +1,5 @@
 //! The family phonebook: every non-disabled user, answered to registered
-//! apps only. A sibling (İz, İn) mirrors this into its own member rows, so
+//! apps only. A sibling (iz, in) mirrors this into its own member rows, so
 //! a person can be assigned or mailed before their first visit. Browsers
 //! never see it — the only credential is a client's Basic pair, the same
 //! one the photo route takes.
