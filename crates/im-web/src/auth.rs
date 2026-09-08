@@ -389,6 +389,117 @@ async fn reset(cx: &Cx, Form(input): Form<ResetForm>) -> Redirect {
 }
 
 #[derive(Deserialize)]
+struct EmailChangeForm {
+    email: String,
+}
+
+/// The landing's address change: one ask, two mails — the old address must
+/// agree to let the account go and the new one to take it on. Without a
+/// sender configured the two links come back on the redirect once — the
+/// crate's unmailed idiom, and the requester is the only person who needs
+/// them.
+#[route(POST "/email_change")]
+async fn email_change(cx: &Cx, Form(input): Form<EmailChangeForm>) -> Redirect {
+    let Some(me) = server::current_user(cx).await else {
+        return see("/".to_string());
+    };
+    let store = &server::app(cx).store;
+    let (old_token, new_token) =
+        match accounts::request_email_change(store, &me.id, &input.email).await {
+            Ok(pair) => pair,
+            Err(AccountError::InvalidEmail) => {
+                return see("/?section=profile&error=bad_email".to_string());
+            }
+            Err(AccountError::SameEmail) => {
+                return see("/?section=profile&error=same_email".to_string());
+            }
+            Err(AccountError::EmailTaken) => {
+                return see("/?section=profile&error=email_taken".to_string());
+            }
+            Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
+        };
+    let issuer = server::app(cx).config.issuer.clone();
+    // Both mails follow the account's own language.
+    let lang = crate::i18n::Lang::from_code(&me.language);
+    let old_mailed = crate::mailer::send_email_change(
+        store,
+        &issuer,
+        &me.email,
+        old_token.expose(),
+        lang,
+        false,
+    )
+    .await
+    .is_ok();
+    let new_mailed = crate::mailer::send_email_change(
+        store,
+        &issuer,
+        input.email.trim(),
+        new_token.expose(),
+        lang,
+        true,
+    )
+    .await
+    .is_ok();
+    server::log_event(
+        cx,
+        "email_change_asked",
+        Some(&me.email),
+        Some(input.email.trim().to_lowercase()).as_deref(),
+    )
+    .await;
+    if old_mailed && new_mailed {
+        see("/?section=profile&ok=email_change_asked".to_string())
+    } else {
+        let links = format!(
+            "{issuer}/email/{} {issuer}/email/{}",
+            old_token.expose(),
+            new_token.expose()
+        );
+        see(format!(
+            "/?section=profile&ok=email_change_asked&links={}",
+            crate::oidc::urlencode(&links)
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+struct EmailConfirmForm {
+    token: String,
+}
+
+/// A confirmation link's POST — the click that counts. The first mailbox
+/// to agree only marks its side; the second applies the change. Signed-out
+/// viewers may confirm, because holding the mailbox is the proof; each
+/// lands where their state says, a session on the landing and everyone
+/// else at the front door.
+#[route(POST "/email")]
+async fn email_confirm(cx: &Cx, Form(input): Form<EmailConfirmForm>) -> Redirect {
+    let store = &server::app(cx).store;
+    match accounts::confirm_email_change(store, &input.token).await {
+        Ok(accounts::EmailChangeConfirmed::Applied(user)) => {
+            server::log_event(cx, "email_changed", Some(&user.email), None).await;
+            if server::current_user(cx).await.is_some() {
+                see("/?section=profile&ok=email_changed".to_string())
+            } else {
+                see("/login?ok=email_changed".to_string())
+            }
+        }
+        Ok(accounts::EmailChangeConfirmed::AwaitOther) => {
+            if server::current_user(cx).await.is_some() {
+                see("/?section=profile&ok=email_half_confirmed".to_string())
+            } else {
+                see("/login?ok=email_half_confirmed".to_string())
+            }
+        }
+        Err(AccountError::EmailTaken) => see("/login?error=email_taken".to_string()),
+        Err(AccountError::EmailChangeInvalid) => {
+            see("/login?error=email_change_invalid".to_string())
+        }
+        Err(e) => Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
+    }
+}
+#[derive(Deserialize)]
 struct SessionRevokeForm {
     session: String,
 }

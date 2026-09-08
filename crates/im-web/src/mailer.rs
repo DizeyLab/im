@@ -99,6 +99,25 @@ pub async fn send_reset(
     Ok(link)
 }
 
+/// The address-change confirmation mail: the link is the whole payload, in
+/// the account's language. Two travel per request — `gaining` marks the
+/// one bound for the address being gained; its twin goes to the address
+/// being left, and each says which door it opens.
+pub async fn send_email_change(
+    store: &Store,
+    issuer: &str,
+    email: &str,
+    token: &str,
+    lang: Lang,
+    gaining: bool,
+) -> Result<String> {
+    let link = format!("{issuer}/email/{token}");
+    let minutes = settings::reset_minutes(store).await?;
+    let (subject, body) = i18n::email_change_mail(lang, &link, minutes, gaining);
+    send(store, email, &subject, body).await?;
+    Ok(link)
+}
+
 /// Dials the mail server without sending anything: connect, TLS, hello,
 /// authenticate, NOOP, hang up. A pass proves the host, the port, the
 /// encryption and the password; it says nothing about whether the

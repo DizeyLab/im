@@ -50,6 +50,9 @@ pub enum Key {
     ErrInviteExpired,
     ErrInviteSpent,
     ErrEmailTaken,
+    ErrInvalidEmail,
+    ErrSameEmail,
+    ErrEmailChangeInvalid,
     ErrPasswordTooShort,
     ErrPasswordPersonal,
     ErrPasswordsDiffer,
@@ -75,6 +78,15 @@ pub enum Key {
     OkPhotoRemoved,
     OkSessionRevoked,
     OkDone,
+    OkEmailChanged,
+    OkEmailChangeAsked,
+    OkEmailHalfConfirmed,
+    EmailCardTitle,
+    NewEmailLabel,
+    EmailChangeButton,
+    EmailChangeNote,
+    EmailConfirmTitle,
+    ConfirmEmailButton,
 
     // Sign-in card and auth pages.
     SignInTitle,
@@ -315,6 +327,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ErrInviteSpent, Tr) => "Bu davet zaten kullanıldı.",
         (ErrEmailTaken, En) => "An account with this address already exists.",
         (ErrEmailTaken, Tr) => "Bu adresle zaten bir hesap var.",
+        (ErrInvalidEmail, En) => "That doesn't look like an email address.",
+        (ErrInvalidEmail, Tr) => "Bu bir e-posta adresine benzemiyor.",
+        (ErrSameEmail, En) => "That's already your address.",
+        (ErrSameEmail, Tr) => "Bu adres zaten senin adresin.",
+        (ErrEmailChangeInvalid, En) => "This email-change link is not valid.",
+        (ErrEmailChangeInvalid, Tr) => "Bu e-posta değişikliği bağlantısı geçerli değil.",
         (ErrPasswordTooShort, En) => "The password needs at least 10 characters.",
         (ErrPasswordTooShort, Tr) => "Parola en az 10 karakter olmalı.",
         (ErrPasswordPersonal, En) => "The password can't contain your address or your name.",
@@ -529,6 +547,24 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (NavServices, Tr) => "Hizmetler",
         (OkInvited, En) => "Invite created.",
         (OkInvited, Tr) => "Davet oluşturuldu.",
+        (OkEmailChanged, En) => "Email changed.",
+        (OkEmailChanged, Tr) => "E-posta değişti.",
+        (OkEmailChangeAsked, En) => "Confirmation mails sent — check both inboxes.",
+        (OkEmailChangeAsked, Tr) => "Onay postaları gönderildi — iki kutuyu da kontrol et.",
+        (OkEmailHalfConfirmed, En) => "One address confirmed — the change waits on the other.",
+        (OkEmailHalfConfirmed, Tr) => "Bir adres onaylandı — değişiklik diğer adresi bekliyor.",
+        (EmailCardTitle, En) => "Email address",
+        (EmailCardTitle, Tr) => "E-posta adresi",
+        (NewEmailLabel, En) => "New address",
+        (NewEmailLabel, Tr) => "Yeni adres",
+        (EmailChangeButton, En) => "Change address",
+        (EmailChangeButton, Tr) => "Adresi değiştir",
+        (EmailChangeNote, En) => "Both addresses confirm: one mail to the old one, one to the new.",
+        (EmailChangeNote, Tr) => "İki adres de onaylar: eskiye bir, yeniye bir posta.",
+        (EmailConfirmTitle, En) => "Confirm email change",
+        (EmailConfirmTitle, Tr) => "E-posta değişikliğini onayla",
+        (ConfirmEmailButton, En) => "Confirm",
+        (ConfirmEmailButton, Tr) => "Onayla",
         (OkRevoked, En) => "Sessions revoked — every device is signed out.",
         (OkRevoked, Tr) => "Oturumlar kapatıldı — her cihazın oturumu kapatıldı.",
         (OkDisabled, En) => "Account disabled.",
@@ -941,6 +977,62 @@ pub fn reset_mail(lang: Lang, link: &str, minutes: i64) -> (String, String) {
             "im parolanı sıfırla".to_string(),
             format!(
                 "Bu adres için bir im parola sıfırlaması istendi. Bağlantı {minutes} dakika boyunca senin:\n\n{link}\n\nBu sen değilsen, bu posta hiçbir şeyi değiştirmez.\n"
+            ),
+        ),
+    }
+}
+
+/// The email-change card's sentence: what approval does to the address.
+pub fn email_confirm_sub(lang: Lang, new_email_html: &str) -> String {
+    match lang {
+        Lang::En => format!("Confirm to make {new_email_html} this account's address."),
+        Lang::Tr => format!("Onaylayınca hesabın adresi {new_email_html} olacak."),
+    }
+}
+
+/// The landing's pending line: the change asked for but not yet doubly
+/// confirmed.
+pub fn email_pending_line(lang: Lang, new_email_html: &str) -> String {
+    match lang {
+        Lang::En => format!("A change to {new_email_html} awaits confirmation."),
+        Lang::Tr => format!("{new_email_html} değişikliği onay bekliyor."),
+    }
+}
+
+/// The admin row's edit-disclosure title.
+pub fn email_edit_title(lang: Lang, email_html: &str) -> String {
+    match lang {
+        Lang::En => format!("Change {email_html}'s address."),
+        Lang::Tr => format!("{email_html} adresini değiştir."),
+    }
+}
+/// The address-change confirmation mail. Two travel per request — to the
+/// address being left and the one being gained — and each says which kind
+/// it is, so the holder knows which door they're opening.
+pub fn email_change_mail(lang: Lang, link: &str, minutes: i64, gaining: bool) -> (String, String) {
+    match (lang, gaining) {
+        (Lang::En, true) => (
+            "Confirm your new im address".to_string(),
+            format!(
+                "A change of this im account's address was asked for. Confirm to make it this account's address. The link is yours for {minutes} minutes:\n\n{link}\n\nIf that wasn't you, this mail changes nothing.\n"
+            ),
+        ),
+        (Lang::En, false) => (
+            "Your im address is being changed".to_string(),
+            format!(
+                "A change of this im account's address was asked for. Confirm to let the account go. The link is yours for {minutes} minutes:\n\n{link}\n\nIf that wasn't you, this mail changes nothing.\n"
+            ),
+        ),
+        (Lang::Tr, true) => (
+            "Yeni im adresini onayla".to_string(),
+            format!(
+                "Bu im hesabı için bir adres değişikliği istendi. Onaylayınca adres hesabın olacak. Bağlantı {minutes} dakika boyunca senin:\n\n{link}\n\nBu sen değilsen, bu posta hiçbir şeyi değiştirmez.\n"
+            ),
+        ),
+        (Lang::Tr, false) => (
+            "im adresin değiştiriliyor".to_string(),
+            format!(
+                "Bu im hesabının adres değişikliği istendi. Onaylayınca hesabı bırakmış olacaksın. Bağlantı {minutes} dakika boyunca senin:\n\n{link}\n\nBu sen değilsen, bu posta hiçbir şeyi değiştirmez.\n"
             ),
         ),
     }

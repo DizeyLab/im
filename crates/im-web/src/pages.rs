@@ -27,6 +27,9 @@ pub fn error_text(code: &str, lang: Lang) -> &'static str {
         "invite_expired" => t(lang, Key::ErrInviteExpired),
         "invite_spent" => t(lang, Key::ErrInviteSpent),
         "email_taken" => t(lang, Key::ErrEmailTaken),
+        "bad_email" => t(lang, Key::ErrInvalidEmail),
+        "same_email" => t(lang, Key::ErrSameEmail),
+        "email_change_invalid" => t(lang, Key::ErrEmailChangeInvalid),
         "password_too_short" => t(lang, Key::ErrPasswordTooShort),
         "password_personal" => t(lang, Key::ErrPasswordPersonal),
         "passwords_differ" => t(lang, Key::ErrPasswordsDiffer),
@@ -59,6 +62,9 @@ pub fn ok_text(code: &str, lang: Lang) -> &'static str {
         "photo_saved" => t(lang, Key::OkPhotoSaved),
         "photo_removed" => t(lang, Key::OkPhotoRemoved),
         "session_revoked" => t(lang, Key::OkSessionRevoked),
+        "email_changed" => t(lang, Key::OkEmailChanged),
+        "email_change_asked" => t(lang, Key::OkEmailChangeAsked),
+        "email_half_confirmed" => t(lang, Key::OkEmailHalfConfirmed),
         "preferences" => t(lang, Key::Saved),
         "password" => t(lang, Key::PasswordSaved),
         _ => t(lang, Key::OkDone),
@@ -621,6 +627,8 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let stats = im_core::stats::profile_stats(&server::app(cx).store, &user.id).await?;
     let joined = user.created_at.date().to_string();
     let sessions = im_core::sessions::list_sessions(&server::app(cx).store, &user.id).await?;
+    let pending_email =
+        im_core::accounts::pending_email_change(&server::app(cx).store, &user.id).await?;
     let current = server::presented_session(cx).map(|token| im_core::accounts::hash_token(&token));
     let sessions_html = sessions_html(&sessions, current.as_deref(), lang);
     let apps = im_core::oidc::list_connected_apps(&server::app(cx).store, &user.id).await?;
@@ -861,6 +869,34 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             </div>
                         </dl>
                     </div>
+                    <div class="auth-card">
+                        <div class="auth-title">(t(lang, Key::EmailCardTitle))</div>
+                        if let Some(pending) = pending_email.as_deref() {
+                            <div class="auth-sub">
+                                (crate::i18n::email_pending_line(lang, &escape(pending)))
+                            </div>
+                        }
+                        if let Some(links) = query_value(&query, "links") {
+                            <div class="auth-note">(links)</div>
+                        }
+                        <form method="post" action="/email_change">
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::NewEmailLabel))</span>
+                                <input
+                                    class="auth-input auth-input-mono"
+                                    type="email"
+                                    name="email"
+                                    autocomplete="email"
+                                    value=(user.email.clone())
+                                    required=""
+                                >
+                            </label>
+                            <button class="auth-submit" type="submit">
+                                <span class="auth-submit-text">(t(lang, Key::EmailChangeButton))</span>
+                            </button>
+                        </form>
+                        <div class="auth-sub">(t(lang, Key::EmailChangeNote))</div>
+                    </div>
                 }
                 <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
@@ -976,6 +1012,45 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
         </main>
     };
     shell(cx, t(lang, Key::TitleReset), None, stage)
+        .await?
+        .into_response(cx)
+}
+
+/// The address-change link's destination: a card naming the address being
+/// gained, and the one button that agrees to it. A GET never mutates —
+/// mail scanners prefetch links — so agreeing is this card's one POST.
+#[route(GET "/email/{token}")]
+async fn email_change_page(cx: &Cx) -> Result<Response> {
+    let lang = Lang::En;
+    let token: &str = path_param::<Token>(cx);
+    let Some(new_email) = im_core::accounts::email_change_link(&server::app(cx).store, token).await?
+    else {
+        return see_other("/login?error=email_change_invalid").into_response(cx);
+    };
+    let stage = view! {
+        cx =>
+        <main class="auth-stage">
+            <div class="auth-column">
+                (wordmark(cx).await?)
+                <div class="auth-card">
+                    <div class="auth-head">
+                        <div class="auth-title">(t(lang, Key::EmailConfirmTitle))</div>
+                        <div class="auth-sub">
+                            (crate::i18n::email_confirm_sub(lang, &escape(&new_email)))
+                        </div>
+                    </div>
+                    <form method="post" action="/email" data-hard="">
+                        <input type="hidden" name="token" value=(token.to_string())>
+                        <button class="auth-submit" type="submit">
+                            <span class="auth-submit-text">(t(lang, Key::ConfirmEmailButton))</span>
+                        </button>
+                    </form>
+                </div>
+                <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
+            </div>
+        </main>
+    };
+    shell(cx, t(lang, Key::EmailConfirmTitle), None, stage)
         .await?
         .into_response(cx)
 }

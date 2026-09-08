@@ -115,6 +115,18 @@ CREATE TABLE IF NOT EXISTS reset_links (
   expires_at TEXT NOT NULL,
   used_at TEXT
 );
+CREATE TABLE IF NOT EXISTS email_changes (
+  old_token_hash TEXT PRIMARY KEY,
+  new_token_hash TEXT NOT NULL UNIQUE,
+  user_id TEXT NOT NULL REFERENCES users(id),
+  old_email TEXT NOT NULL,
+  new_email TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  confirmed_old_at TEXT,
+  confirmed_new_at TEXT,
+  used_at TEXT
+);
 CREATE TABLE IF NOT EXISTS login_attempts (
   key TEXT NOT NULL,
   at TEXT NOT NULL

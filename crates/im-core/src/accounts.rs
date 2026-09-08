@@ -77,6 +77,12 @@ pub enum AccountError {
     InviteExpired,
     #[error("an account with this address already exists")]
     EmailTaken,
+    #[error("that address doesn't look valid")]
+    InvalidEmail,
+    #[error("that's already your address")]
+    SameEmail,
+    #[error("this email-change link is not valid")]
+    EmailChangeInvalid,
     #[error("password: {0}")]
     Password(#[from] PasswordProblem),
     #[error("password hashing failed: {0}")]
@@ -864,6 +870,251 @@ pub async fn set_preferences(
     Ok(())
 }
 
+/// Normalizes an address the way the login path reads it — trimmed and
+/// lowercased — and refuses what no mail could ever reach.
+fn normalize_email(email: &str) -> std::result::Result<String, AccountError> {
+    let email = email.trim().to_lowercase();
+    let Some((local, domain)) = email.split_once('@') else {
+        return Err(AccountError::InvalidEmail);
+    };
+    if local.is_empty() || domain.is_empty() || !domain.contains('.') {
+        return Err(AccountError::InvalidEmail);
+    }
+    Ok(email)
+}
+
+/// Rewrites a user's address in place — the admin panel's direct rescue
+/// for a typo'd or unreachable mailbox. Email is contact metadata, not a
+/// key: the id stays, and sessions, app tokens and OIDC claims read the
+/// new address live. The address is normalized the way the login path
+/// reads it, an address another account owns is refused, and setting the
+/// address the account already carries quietly succeeds.
+pub async fn set_email(store: &Store, user: &UserId, email: &str) -> std::result::Result<(), AccountError> {
+    let email = normalize_email(email)?;
+    if let Some(other) = user_by_email(store, &email).await? {
+        if other.id != *user {
+            return Err(AccountError::EmailTaken);
+        }
+    }
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "UPDATE users SET email = ?1 WHERE id = ?2",
+        turso::params![email, user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
+    Ok(())
+}
+
+/// What a confirmed pair of mailboxes means: one side agreed and the
+/// change waits, or both agreed and the address is rewritten.
+#[derive(Debug)]
+pub enum EmailChangeConfirmed {
+    /// One mailbox confirmed; the other address still owes its click.
+    AwaitOther,
+    /// Both confirmed; the carried `User` reads the new address.
+    Applied(User),
+}
+
+/// Asks for an address change on one's own account: one pending row
+/// carrying two independent tokens, one mailed to the address being left
+/// and one to the address being gained. The change applies only when both
+/// mailboxes confirm, in either order. Asking again retires the previous
+/// pair — the newest mails are the only doors — and an address another
+/// account owns is refused at the ask.
+pub async fn request_email_change(
+    store: &Store,
+    user: &UserId,
+    new_email: &str,
+) -> std::result::Result<(Token, Token), AccountError> {
+    let me = user_by_id(store, user)
+        .await?
+        .ok_or_else(|| AccountError::Backend("email change: user vanished".into()))?;
+    let old_email = normalize_email(&me.email)?;
+    let new_email = normalize_email(new_email)?;
+    if new_email == old_email {
+        return Err(AccountError::SameEmail);
+    }
+    if let Some(other) = user_by_email(store, &new_email).await? {
+        if other.id != *user {
+            return Err(AccountError::EmailTaken);
+        }
+    }
+    let old_token = Token::mint();
+    let new_token = Token::mint();
+    let now = store::now();
+    // The reset link's clock: the same policy knob, the same urgency.
+    let expires = now + time::Duration::minutes(crate::settings::reset_minutes(store).await?);
+    let conn = store.conn.lock().await;
+    conn.execute(
+        "DELETE FROM email_changes WHERE user_id = ?1 AND used_at IS NULL",
+        turso::params![user.to_string()],
+    )
+    .await
+    .map_err(backend)?;
+    conn.execute(
+        "INSERT INTO email_changes (old_token_hash, new_token_hash, user_id, old_email, \
+             new_email, created_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        turso::params![
+            old_token.hash(),
+            new_token.hash(),
+            user.to_string(),
+            old_email,
+            new_email,
+            store::stamp(now)?,
+            store::stamp(expires)?,
+        ],
+    )
+    .await
+    .map_err(backend)?;
+    Ok((old_token, new_token))
+}
+
+/// Confirms one end of a pending address change. The first mailbox to
+/// agree only marks its side; the second completes the pair, and the
+/// gained address is re-checked at that moment — someone may have
+/// registered it while the mails travelled. That refusal leaves the old
+/// address in place and tears the dead pair down. Every link is
+/// single-use and dies at expiry.
+pub async fn confirm_email_change(
+    store: &Store,
+    token: &str,
+) -> std::result::Result<EmailChangeConfirmed, AccountError> {
+    let hash = hash_token(token);
+    // Short-held read first: the row says which side clicked and whether
+    // the pair may still complete.
+    let row = {
+        let conn = store.conn.lock().await;
+        let mut rows = conn
+            .query(
+                "SELECT old_token_hash, new_token_hash, user_id, old_email, new_email, \
+                     expires_at, used_at, confirmed_old_at, confirmed_new_at \
+                     FROM email_changes WHERE old_token_hash = ?1 OR new_token_hash = ?1",
+                turso::params![hash.clone()],
+            )
+            .await
+            .map_err(backend)?;
+        let Some(row) = rows.next().await.map_err(backend)? else {
+            return Err(AccountError::EmailChangeInvalid);
+        };
+        (
+            store::text(&row, 0)?,
+            store::text(&row, 1)?,
+            UserId::from(store::text(&row, 2)?),
+            store::text(&row, 3)?,
+            store::text(&row, 4)?,
+            store::parse_stamp(&store::text(&row, 5)?)?,
+            store::opt_text(&row, 6)?.is_some(),
+            store::opt_text(&row, 7)?.is_some(),
+            store::opt_text(&row, 8)?.is_some(),
+        )
+    };
+    let (old_hash, _new_hash, user_id, _old_email, new_email, expires_at, used, old_done, new_done) =
+        row;
+    if used || expires_at < store::now() {
+        return Err(AccountError::EmailChangeInvalid);
+    }
+    let clicked_old = old_hash == hash;
+    if (clicked_old && old_done) || (!clicked_old && new_done) {
+        // This mailbox already agreed; a second click adds nothing but
+        // still says what the pair waits on.
+        return Ok(EmailChangeConfirmed::AwaitOther);
+    }
+    let completes = (clicked_old && new_done) || (!clicked_old && old_done);
+    if completes {
+        if let Some(other) = user_by_email(store, &new_email).await? {
+            if other.id != user_id {
+                let conn = store.conn.lock().await;
+                conn.execute(
+                    "DELETE FROM email_changes WHERE old_token_hash = ?1 OR new_token_hash = ?1",
+                    turso::params![hash],
+                )
+                .await
+                .map_err(backend)?;
+                return Err(AccountError::EmailTaken);
+            }
+        }
+        set_email(store, &user_id, &new_email).await?;
+        let stamp = store::stamp(store::now())?;
+        let conn = store.conn.lock().await;
+        conn.execute(
+            "UPDATE email_changes SET confirmed_old_at = COALESCE(confirmed_old_at, ?1), \
+                 confirmed_new_at = COALESCE(confirmed_new_at, ?1), used_at = ?1 \
+                 WHERE old_token_hash = ?2 OR new_token_hash = ?2",
+            turso::params![stamp, hash],
+        )
+        .await
+        .map_err(backend)?;
+        drop(conn);
+        let user = user_by_id(store, &user_id)
+            .await?
+            .ok_or_else(|| AccountError::Backend("email change: user vanished".into()))?;
+        return Ok(EmailChangeConfirmed::Applied(user));
+    }
+    let sql = if clicked_old {
+        "UPDATE email_changes SET confirmed_old_at = ?1 \
+             WHERE old_token_hash = ?2 OR new_token_hash = ?2"
+    } else {
+        "UPDATE email_changes SET confirmed_new_at = ?1 \
+             WHERE old_token_hash = ?2 OR new_token_hash = ?2"
+    };
+    let stamp = store::stamp(store::now())?;
+    let conn = store.conn.lock().await;
+    conn.execute(sql, turso::params![stamp, hash])
+        .await
+        .map_err(backend)?;
+    Ok(EmailChangeConfirmed::AwaitOther)
+}
+
+/// The change a confirmation link still offers — the address being gained
+/// when the pair is live and unspent, `None` for a dead one. The confirm
+/// card reads this to name what approval means.
+pub async fn email_change_link(
+    store: &Store,
+    token: &str,
+) -> std::result::Result<Option<String>, AccountError> {
+    let hash = hash_token(token);
+    let conn = store.conn.lock().await;
+    let mut rows = conn
+        .query(
+            "SELECT new_email, expires_at, used_at FROM email_changes \
+                 WHERE old_token_hash = ?1 OR new_token_hash = ?1",
+            turso::params![hash],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    let new_email = store::text(&row, 0)?;
+    let expires_at = store::parse_stamp(&store::text(&row, 1)?)?;
+    let spent = store::opt_text(&row, 2)?.is_some();
+    Ok((!spent && expires_at >= store::now()).then_some(new_email))
+}
+
+/// The address a user's pending change is waiting on, for the landing's
+/// one-line state. `None` when nothing is asked for or the ask expired.
+pub async fn pending_email_change(
+    store: &Store,
+    user: &UserId,
+) -> std::result::Result<Option<String>, AccountError> {
+    let conn = store.conn.lock().await;
+    let mut rows = conn
+        .query(
+            "SELECT new_email, expires_at FROM email_changes \
+                 WHERE user_id = ?1 AND used_at IS NULL",
+            turso::params![user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    let new_email = store::text(&row, 0)?;
+    let expires_at = store::parse_stamp(&store::text(&row, 1)?)?;
+    Ok((expires_at >= store::now()).then_some(new_email))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1174,5 +1425,212 @@ mod tests {
             .await
             .unwrap();
         assert!(!login_blocked(&store, "ann@example.com").await.unwrap());
+    }
+    async fn seeded_user(store: &Store, email: &str, name: &str) -> User {
+        let invite = create_invite(store, email, None, false).await.unwrap();
+        create_user_from_invite(store, invite.expose(), name, "tDLr9!mZQ2xv")
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn set_email_rewrites_the_address_and_refuses_another_accounts() {
+        let store = fixture().await;
+        let ann = seeded_user(&store, "ann@example.com", "Ann").await;
+        let bob = seeded_user(&store, "bob@example.com", "Bob").await;
+
+        // The rewrite is normalized the way the login path reads it, and
+        // every reader of the address follows.
+        set_email(&store, &ann.id, "  Ann.New@Example.COM ")
+            .await
+            .unwrap();
+        let found = user_by_email(&store, "ann.new@example.com")
+            .await
+            .unwrap()
+            .expect("the new address must resolve");
+        assert_eq!(found.id, ann.id);
+        assert_eq!(found.email, "ann.new@example.com");
+        assert!(
+            user_by_email(&store, "ann@example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // An address another account owns is refused, the account untouched.
+        assert!(matches!(
+            set_email(&store, &ann.id, "bob@example.com").await,
+            Err(AccountError::EmailTaken)
+        ));
+        assert_eq!(
+            user_by_id(&store, &ann.id).await.unwrap().unwrap().email,
+            "ann.new@example.com"
+        );
+
+        // The address the account already carries: quiet success.
+        set_email(&store, &bob.id, "BOB@example.com").await.unwrap();
+
+        // And what no mail could reach is named at the door.
+        assert!(matches!(
+            set_email(&store, &ann.id, "not-an-address").await,
+            Err(AccountError::InvalidEmail)
+        ));
+    }
+
+    #[tokio::test]
+    async fn email_change_applies_only_after_both_addresses_confirm() {
+        let store = fixture().await;
+        let ann = seeded_user(&store, "ann@example.com", "Ann").await;
+
+        let (old_token, new_token) =
+            request_email_change(&store, &ann.id, "ann2@example.com")
+                .await
+                .unwrap();
+        assert_eq!(
+            pending_email_change(&store, &ann.id).await.unwrap().as_deref(),
+            Some("ann2@example.com")
+        );
+
+        // The new mailbox agrees first: a mark, not the change.
+        assert!(matches!(
+            confirm_email_change(&store, new_token.expose()).await,
+            Ok(EmailChangeConfirmed::AwaitOther)
+        ));
+        assert_eq!(
+            user_by_email(&store, "ann@example.com")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            ann.id,
+            "one click must not move the address"
+        );
+
+        // Clicking the same link again adds nothing and spends nothing.
+        assert!(matches!(
+            confirm_email_change(&store, new_token.expose()).await,
+            Ok(EmailChangeConfirmed::AwaitOther)
+        ));
+
+        // The old mailbox's agreement completes the pair: the address moves.
+        let user = match confirm_email_change(&store, old_token.expose()).await {
+            Ok(EmailChangeConfirmed::Applied(user)) => user,
+            outcome => panic!("expected Applied, got {outcome:?}"),
+        };
+        assert_eq!(user.id, ann.id);
+        assert_eq!(user.email, "ann2@example.com");
+        assert!(
+            user_by_email(&store, "ann2@example.com")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            user_by_email(&store, "ann@example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(pending_email_change(&store, &ann.id).await.unwrap(), None);
+
+        // The pair is spent whole: either link answers dead from now on.
+        assert!(matches!(
+            confirm_email_change(&store, old_token.expose()).await,
+            Err(AccountError::EmailChangeInvalid)
+        ));
+        assert!(matches!(
+            confirm_email_change(&store, new_token.expose()).await,
+            Err(AccountError::EmailChangeInvalid)
+        ));
+    }
+
+    #[tokio::test]
+    async fn email_change_refuses_a_taken_address_at_ask_and_at_apply() {
+        let store = fixture().await;
+        let ann = seeded_user(&store, "ann@example.com", "Ann").await;
+        let _bob = seeded_user(&store, "bob@example.com", "Bob").await;
+
+        // An owned address is refused at the ask.
+        assert!(matches!(
+            request_email_change(&store, &ann.id, "bob@example.com").await,
+            Err(AccountError::EmailTaken)
+        ));
+        // And so is the address the account already carries.
+        assert!(matches!(
+            request_email_change(&store, &ann.id, "ann@example.com").await,
+            Err(AccountError::SameEmail)
+        ));
+
+        // The race: the gained address is asked for, then taken by someone
+        // else before both clicks land. The apply-time refusal keeps the
+        // old address and tears the dead pair down.
+        let (old_token, new_token) =
+            request_email_change(&store, &ann.id, "free@example.com")
+                .await
+                .unwrap();
+        let carol = seeded_user(&store, "free@example.com", "Carol").await;
+        assert!(matches!(
+            confirm_email_change(&store, new_token.expose()).await,
+            Ok(EmailChangeConfirmed::AwaitOther)
+        ));
+        assert!(matches!(
+            confirm_email_change(&store, old_token.expose()).await,
+            Err(AccountError::EmailTaken)
+        ));
+        assert_eq!(
+            user_by_email(&store, "ann@example.com")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            ann.id,
+            "the refusal must leave the old address in place"
+        );
+        assert_eq!(carol.email, "free@example.com");
+        assert_eq!(pending_email_change(&store, &ann.id).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn email_change_links_die_at_expiry_and_a_new_ask_supersedes() {
+        let store = fixture().await;
+        let ann = seeded_user(&store, "ann@example.com", "Ann").await;
+
+        let (first_old, first_new) =
+            request_email_change(&store, &ann.id, "ann2@example.com")
+                .await
+                .unwrap();
+
+        // Asking again is the reset idiom: the newest pair is the only door.
+        request_email_change(&store, &ann.id, "ann3@example.com")
+            .await
+            .unwrap();
+        assert!(matches!(
+            confirm_email_change(&store, first_old.expose()).await,
+            Err(AccountError::EmailChangeInvalid)
+        ));
+        assert!(matches!(
+            confirm_email_change(&store, first_new.expose()).await,
+            Err(AccountError::EmailChangeInvalid)
+        ));
+
+        // And the clock kills a pair on its own: past expiry, dead.
+        let (expired_old, _expired_new) =
+            request_email_change(&store, &ann.id, "ann4@example.com")
+                .await
+                .unwrap();
+        {
+            let conn = store.conn.lock().await;
+            conn.execute(
+                "UPDATE email_changes SET expires_at = ?1",
+                turso::params![store::stamp(store::now() - time::Duration::seconds(1)).unwrap()],
+            )
+            .await
+            .unwrap();
+        }
+        assert!(matches!(
+            confirm_email_change(&store, expired_old.expose()).await,
+            Err(AccountError::EmailChangeInvalid)
+        ));
+        assert_eq!(pending_email_change(&store, &ann.id).await.unwrap(), None);
     }
 }

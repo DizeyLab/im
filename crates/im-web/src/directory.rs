@@ -993,4 +993,222 @@ mod tests {
         );
     }
 
+    /// Percent-decodes a query value back into text — the tests read the
+    /// once-shown confirmation links out of the redirect's Location.
+    fn pct_decode(raw: &str) -> String {
+        let bytes = raw.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'%' {
+                out.push(
+                    u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap(), 16)
+                        .unwrap(),
+                );
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        String::from_utf8(out).unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_email_edit_applies_directly_and_refuses_taken_address() {
+        let Setup {
+            router, store, ..
+        } = setup().await;
+        let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let ben = im_core::accounts::user_by_email(&store, "ben@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let session = im_core::sessions::create_session(&store, &ada.id, &Default::default())
+            .await
+            .unwrap();
+        let cookie = format!("{SESSION_COOKIE}={}", session.expose());
+
+        // A non-admin's edit is sent to the front door and writes nothing.
+        let ben_session = im_core::sessions::create_session(&store, &ben.id, &Default::default())
+            .await
+            .unwrap();
+        let (status, location, _) = post_form(
+            &router,
+            "/admin/user_email",
+            &format!("user={}&email=changed%40example.com", ben.id),
+            Some(&format!("{SESSION_COOKIE}={}", ben_session.expose())),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
+        assert!(
+            im_core::accounts::user_by_email(&store, "changed@example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // The admin's edit lands back on the section with its ok code, the
+        // address normalized the way the login path reads it.
+        let (status, location, _) = post_form(
+            &router,
+            "/admin/user_email",
+            &format!("user={}&email=%20Ben.New%40Example.COM%20", ben.id),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=users&ok=email_changed")
+        );
+        let moved = im_core::accounts::user_by_email(&store, "ben.new@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.id, ben.id);
+        assert_eq!(moved.email, "ben.new@example.com");
+        assert!(
+            im_core::accounts::user_by_email(&store, "ben@example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let panel = get_page(&router, "/admin?section=users", &cookie).await;
+        assert!(panel.contains("ben.new@example.com"), "{panel}");
+
+        // Another account's address is refused by name; the account's
+        // address stays.
+        let (status, location, _) = post_form(
+            &router,
+            "/admin/user_email",
+            &format!("user={}&email=ada%40example.com", ben.id),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=users&error=email_taken")
+        );
+        assert_eq!(
+            im_core::accounts::user_by_email(&store, "ben.new@example.com")
+                .await
+                .unwrap()
+                .unwrap()
+                .id,
+            ben.id
+        );
+    }
+
+    #[tokio::test]
+    async fn self_served_email_change_applies_after_both_addresses_confirm() {
+        let Setup {
+            router, store, ..
+        } = setup().await;
+        let ben = im_core::accounts::user_by_email(&store, "ben@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let session = im_core::sessions::create_session(&store, &ben.id, &Default::default())
+            .await
+            .unwrap();
+        let cookie = format!("{SESSION_COOKIE}={}", session.expose());
+
+        // The ask: with no sender configured, the two confirmation links
+        // come back on the redirect once — the crate's unmailed idiom.
+        let (status, location, _) = post_form(
+            &router,
+            "/email_change",
+            "email=ben2%40example.com",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let location = location.expect("a redirect carrying the once-shown links");
+        assert!(location.contains("ok=email_change_asked"), "{location}");
+        let encoded = location
+            .split("links=")
+            .nth(1)
+            .expect("the unmailed pair shows once");
+        let tokens: Vec<String> = pct_decode(encoded)
+            .split(' ')
+            .map(|link| {
+                link.rsplit('/')
+                    .next()
+                    .expect("each link ends in its token")
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(tokens.len(), 2);
+
+        // The card names the address being gained, and the POST under it is
+        // the only door.
+        let card = get_page(&router, &format!("/email/{}", tokens[1]), "").await;
+        assert!(card.contains("ben2@example.com"), "{card}");
+        assert!(card.contains(r#"action="/email""#), "{card}");
+
+        // The first click marks its side; the address does not move.
+        let (status, location, _) = post_form(
+            &router,
+            "/email",
+            &format!("token={}", tokens[1]),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/?section=profile&ok=email_half_confirmed")
+        );
+        assert!(
+            im_core::accounts::user_by_email(&store, "ben@example.com")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // The second mailbox's agreement applies the change.
+        let (status, location, _) = post_form(
+            &router,
+            "/email",
+            &format!("token={}", tokens[0]),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/?section=profile&ok=email_changed")
+        );
+        let moved = im_core::accounts::user_by_email(&store, "ben2@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(moved.id, ben.id);
+        assert!(
+            im_core::accounts::user_by_email(&store, "ben@example.com")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Spent whole: either link answers dead now.
+        let (status, location, _) = post_form(
+            &router,
+            "/email",
+            &format!("token={}", tokens[0]),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/login?error=email_change_invalid")
+        );
+    }
 }

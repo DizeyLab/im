@@ -157,6 +157,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                 "deleted" => t(lang, Key::OkDeleted),
                 "settings" => t(lang, Key::OkSettingsSaved),
                 "services" => t(lang, Key::OkServicesSaved),
+                "email_changed" => t(lang, Key::OkEmailChanged),
                 _ => t(lang, Key::OkDone),
             }
         )),
@@ -289,12 +290,28 @@ async fn users_section(
         .flatten()
         .collect::<Vec<_>>()
         .join(" · ");
+        let id = escape(&user.id.to_string());
+        let email = escape(&user.email);
+        // The address edit sits on every row — the admin's own included:
+        // the rescue exists precisely for a mailbox the mail cannot reach.
+        // Same two-step disclosure as the row's other actions.
+        let email_edit = format!(
+            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/user_email" class="admin-form"><input type="hidden" name="user" value="{id}"><label class="auth-field"><span class="auth-label">{email_label}</span><input class="auth-input auth-input-mono" type="email" name="email" value="{email}" required></label><button class="admin-action" type="submit">{save}</button></form></div></details>"#,
+            edit_word = t(lang, Key::EditWord),
+            edit_title = i18n::email_edit_title(lang, &email),
+            id = id,
+            email_label = t(lang, Key::EmailCol),
+            email = email,
+            save = t(lang, Key::SaveButton),
+        );
         let actions = if user.id == me.id {
-            // Never let the only admin lock themselves out by reflex.
-            format!(r#"<span class="muted">{}</span>"#, t(lang, Key::YouWord))
+            // Never let the only admin lock themselves out by reflex. The
+            // address edit stays: fixing one's own address is the point.
+            format!(
+                r#"<span class="muted">{}</span>{email_edit}"#,
+                t(lang, Key::YouWord)
+            )
         } else {
-            let id = escape(&user.id.to_string());
-            let email = escape(&user.email);
             // Every row action is a two-step disclosure — iz's
             // confirm-details idiom: the summary is the word, the panel holds
             // the button that actually does it. No script required; the live
@@ -333,7 +350,7 @@ async fn users_section(
                 t(lang, Key::ConfirmDelete),
             );
             format!(
-                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">{sign_out}</button></form>{remove}"#,
+                r#"{email_edit}{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">{sign_out}</button></form>{remove}"#,
                 sign_out = t(lang, Key::SignOutEverywhere),
             )
         };
@@ -1204,6 +1221,34 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Result<Response> {
             &format!("&ok=invited&invited={}", crate::oidc::urlencode(&link)),
         )
     }
+}
+
+#[derive(Deserialize)]
+struct UserEmailForm {
+    user: String,
+    email: String,
+}
+
+/// The users section's direct address edit — the admin's rescue for a
+/// typo'd or unreachable mailbox, applied outright: email is contact
+/// metadata, not a key, so the id stays and every reader of the address
+/// follows on its next read.
+#[route(POST "/admin/user_email")]
+async fn user_email(cx: &Cx, Form(input): Form<UserEmailForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let store = &app(cx).store;
+    match accounts::set_email(store, &UserId::from(input.user), &input.email).await {
+        Ok(()) => {}
+        Err(accounts::AccountError::EmailTaken) => return back(cx, "users", "&error=email_taken"),
+        Err(accounts::AccountError::InvalidEmail) => return back(cx, "users", "&error=bad_email"),
+        Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
+    }
+    let email = input.email.trim().to_lowercase();
+    server::log_event(cx, "email_changed", Some(&me.email), Some(&email)).await;
+    back(cx, "users", "&ok=email_changed")
 }
 
 #[derive(Deserialize)]
