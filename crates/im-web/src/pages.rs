@@ -12,7 +12,7 @@ use topcoat::router::{page, path_param, route};
 use topcoat::view::view;
 
 use crate::i18n::{Key, Lang, lang_of, t};
-use crate::layout::{avatar, service_trio, shell, wordmark};
+use crate::layout::{avatar, family_wordmark, shell, wordmark};
 use crate::server::{self, PendingPurpose};
 
 path_param!(token);
@@ -602,15 +602,14 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
         )
     })
     .collect::<String>();
-    // The family lives in the chrome — the wordmark trio under the
+    // The family lives in the chrome — the siblings' flyout under the
     // wordmark — and its editing in the admin panel; the landing is the
     // account's own page and carries no directory of its own.
     let stage = view! {
         cx =>
         <main class="auth-stage landing-stage">
             <div class="auth-column">
-                (wordmark(cx).await?)
-                (service_trio(cx).await?)
+                (family_wordmark(cx).await?)
                 <nav class="admin-tabs landing-nav">(topcoat::view::Unescaped::new_unchecked(nav))</nav>
                 if let Some(code) = ok {
                     <div class="auth-ok">(ok_text(&code, lang))</div>

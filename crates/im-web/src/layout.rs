@@ -24,35 +24,36 @@ pub async fn wordmark(cx: &Cx) -> Result {
     }
 }
 
-/// The signed-in chrome's app trio: every family service's wordmark,
-/// middots between, the home one (`im`) inked and marked current, its
-/// siblings plain links. A family with no members renders nothing — the
-/// single mark above stays the whole chrome. The list is the stored one,
-/// the same rows `/family` serves.
-pub async fn service_trio(cx: &Cx) -> Result {
+/// The signed-in chrome's wordmark with the family behind it: the `im`
+/// mark as above, and the sibling services' wordmarks in a flyout that
+/// opens under it on hover and on keyboard focus (the mark is focusable
+/// for that), middots between, each a plain link. No script: the flyout
+/// is CSS on `:hover` / `:focus-within`. A family with no siblings renders
+/// the bare mark — nothing to reveal. The list is the stored one, the same
+/// rows `/family` serves, minus im's own row.
+pub async fn family_wordmark(cx: &Cx) -> Result {
     let services = im_core::services::list(&server::app(cx).store).await?;
-    let marks = (!services.is_empty()).then(|| {
-        services
-            .iter()
-            .map(|service| {
-                let key = crate::pages::escape(&service.key);
-                if service.key == "im" {
-                    format!(
-                        r#"<span class="trio-mark trio-mark-on" aria-current="page">{key}</span>"#
-                    )
-                } else {
-                    let url = crate::pages::escape(&service.url);
-                    format!(r#"<a class="trio-mark" href="{url}">{key}</a>"#)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(r#"<span class="trio-sep">·</span>"#)
-    });
+    let siblings = services
+        .iter()
+        .filter(|service| service.key != "im")
+        .map(|service| {
+            let key = crate::pages::escape(&service.key);
+            let url = crate::pages::escape(&service.url);
+            format!(r#"<a class="trio-mark" href="{url}">{key}</a>"#)
+        })
+        .collect::<Vec<_>>();
+    if siblings.is_empty() {
+        return wordmark(cx).await;
+    }
+    let marks = siblings.join(r#"<span class="trio-sep">·</span>"#);
     view! {
         cx =>
-        if let Some(marks) = marks {
+        <div class="wordmark-family">
+            <span class="wordmark" tabindex="0">
+                <span class="wordmark-text">"im"</span>
+            </span>
             <nav class="service-trio">(topcoat::view::Unescaped::new_unchecked(marks))</nav>
-        }
+        </div>
     }
 }
 
