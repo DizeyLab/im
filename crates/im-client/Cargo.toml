@@ -4,7 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Drop-in OIDC client for topcoat apps authenticating against im"
+description = "im app-side SDK: the directory mirror (always) and the drop-in OIDC client (feature-gated)"
+
+[features]
+default = ["oidc"]
+# The drop-in OIDC client half (`mount`/`current_user` + the /auth routes).
+# Its routes register through the grammar's inventory, so a binary that
+# speaks OIDC through its own client crate builds this crate with
+# `default-features = false` and takes only the directory SDK.
+oidc = []
 
 [dependencies]
 topcoat = { version = "0.6.2", default-features = false, features = [
@@ -30,6 +38,12 @@ reqwest = { version = "0.13.4", default-features = false, features = [
   "json",
   "form",
 ] }
+
+[[example]]
+name = "demo"
+# The example mounts the OIDC half; it is not part of the directory-only
+# build.
+required-features = ["oidc"]
 
 [dev-dependencies]
 topcoat = { version = "0.6.2", default-features = false, features = [
