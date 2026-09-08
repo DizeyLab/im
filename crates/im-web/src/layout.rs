@@ -58,15 +58,12 @@ pub async fn family_wordmark(cx: &Cx) -> Result {
 }
 
 /// The profile card's face: the photo when the account has one, the name's
-/// first letter on a quiet tile when it does not. The URL's stamp comes from
-/// `photo::PhotoStamps`, so a changed photo is a changed URL.
+/// first letter on a quiet tile when it does not. The URL's `?v=` is the
+/// row's `photo_version` — the same number `/directory` answers with — so
+/// a changed photo is a changed URL, in this process and in every sibling.
 pub async fn avatar(cx: &Cx, user: &im_core::model::User) -> Result {
     if user.has_photo {
-        let src = format!(
-            "/photo/{}?v={}",
-            user.id,
-            crate::photo::photo_stamp(cx, &user.id.to_string())
-        );
+        let src = format!("/photo/{}?v={}", user.id, user.photo_version);
         view! {
             cx =>
             <img class="profile-avatar" src=(src) alt=(user.name.clone())>

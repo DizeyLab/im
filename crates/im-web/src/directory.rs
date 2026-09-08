@@ -4,23 +4,45 @@
 //! never see it — the only credential is a client's Basic pair, the same
 //! one the photo route takes.
 
+use std::time::{Duration, Instant};
+
+use futures_util::StreamExt;
+use tokio::sync::broadcast::error::RecvError;
 use topcoat::context::Cx;
 use topcoat::router::content::Json;
+use topcoat::router::content::sse::{Event, KeepAlive, Sse};
 use topcoat::router::response::IntoResponse as _;
 use topcoat::router::{StatusCode, route};
 
 use crate::server;
 
 /// One directory entry: exactly what an app needs to provision a member —
-/// the stable subject, the address, the display name, and whether im calls
+/// the stable subject, the address, the display name, whether im calls
 /// them an admin (apps derive their own admin authorization from it, as
-/// with `/introspect`).
-#[derive(serde::Serialize)]
-struct DirectoryMember {
-    sub: String,
-    email: String,
-    name: String,
-    admin: bool,
+/// with `/introspect`), and how many times the photo has changed — the
+/// `?v=` that lets `/photo/{sub}` stay cacheable and still go fresh. One
+/// shape, three readers: `/directory` JSON, the `/directory/live` stream,
+/// and the in-process live bus all serialize it the same way.
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DirectoryMember {
+    pub sub: String,
+    pub email: String,
+    pub name: String,
+    pub admin: bool,
+    pub photo_version: u64,
+}
+
+impl DirectoryMember {
+    /// The member this user row answers as right now.
+    pub fn of(user: &im_core::model::User) -> Self {
+        Self {
+            sub: user.id.to_string(),
+            email: user.email.clone(),
+            name: user.name.clone(),
+            admin: user.admin,
+            photo_version: user.photo_version,
+        }
+    }
 }
 
 /// `GET /directory`: the non-disabled roster as JSON. A wrong or missing
@@ -39,14 +61,97 @@ async fn directory(cx: &Cx) -> topcoat::Result<topcoat::router::response::Respon
     let members: Vec<DirectoryMember> = users
         .into_iter()
         .filter(|user| !user.disabled)
-        .map(|user| DirectoryMember {
-            sub: user.id.to_string(),
-            email: user.email,
-            name: user.name,
-            admin: user.admin,
-        })
+        .map(|user| DirectoryMember::of(&user))
         .collect();
     Json(serde_json::to_value(members).unwrap()).into_response(cx)
+}
+/// `GET /directory/live`: the roster's change feed, as server-sent events.
+/// The same Basic pair `/directory` takes is the only credential. The
+/// stream opens with the reconnection hint, then carries one `profile`
+/// event per changed member, serialized exactly as `/directory` would
+/// answer that member; keep-alive comments hold quiet stretches and
+/// proxies open. Every change announces itself after its commit, so a
+/// frame's row never runs ahead of `/directory` itself. A lagged reader
+/// gets no frame — which rows dropped is unknowable — and heals the gap
+/// the way any disconnect does: wait out the retry hint, re-list the
+/// whole roster, resume.
+#[route(GET "/directory/live")]
+async fn directory_live(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
+    if server::app_client(cx).await.is_none() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "invalid_client" })),
+        )
+            .into_response(cx);
+    }
+    let rx = server::app(cx).live.subscribe();
+    let stopping =
+        topcoat::context::try_app_context::<crate::live::Shutdown>(cx).map(|s| s.0.clone());
+    let deadline = Instant::now() + crate::live::WINDOW;
+
+    let events = futures_util::stream::unfold(
+        (rx, deadline, stopping, true),
+        |(mut rx, deadline, mut stopping, mut first)| async move {
+            // The one frame every client sees first: how long to wait
+            // before dialing back in after the stream drops.
+            if first {
+                first = false;
+                return Some((
+                    Ok::<_, std::convert::Infallible>(
+                        Event::new()
+                            .comment("directory live")
+                            .retry(Duration::from_millis(5000)),
+                    ),
+                    (rx, deadline, stopping, first),
+                ));
+            }
+            loop {
+                // Already going down: end, so this connection is not one
+                // the shutdown has to sit and wait out.
+                if stopping.as_ref().is_some_and(|watch| *watch.borrow()) {
+                    return None;
+                }
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return None;
+                }
+                let heard = tokio::time::timeout(left, async {
+                    match stopping.as_mut() {
+                        Some(watch) => tokio::select! {
+                            _ = watch.changed() => None,
+                            got = rx.recv() => Some(got),
+                        },
+                        None => Some(rx.recv().await),
+                    }
+                })
+                .await;
+                let member = match heard {
+                    // The window closed, the server is stopping, or the
+                    // broadcaster is gone — the process with it. Ending is
+                    // the point: the client reconnects on its own.
+                    Err(_) | Ok(None) => return None,
+                    Ok(Some(Err(RecvError::Closed))) => return None,
+                    // A tick moves im's own pages, not the roster; a lagged
+                    // reader cannot know which rows it lost. Both are silence
+                    // here — a full re-list after any reconnect heals both.
+                    Ok(Some(Err(RecvError::Lagged(_)))) | Ok(Some(Ok(server::LiveEvent::Tick))) => {
+                        continue;
+                    }
+                    Ok(Some(Ok(server::LiveEvent::Profile(member)))) => member,
+                };
+                return Some((
+                    Ok(Event::new()
+                        .event("profile")
+                        .data(serde_json::to_string(&member).expect("member JSON"))),
+                    (rx, deadline, stopping, first),
+                ));
+            }
+        },
+    );
+
+    Sse::new(events.boxed())
+        .keep_alive(KeepAlive::new())
+        .into_response(cx)
 }
 
 /// `GET /family`: the app switcher's list — every service with its wordmark,

@@ -3,15 +3,11 @@
 //! answer is im's, though: a plain 303 whose query names the code, which the
 //! landing reads back on render.
 
-use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
-
 use im_core::photos;
-use parking_lot::Mutex;
-use time::OffsetDateTime;
-use topcoat::context::{Cx, try_app_context};
+use topcoat::context::Cx;
 use topcoat::router::content::multipart::Multipart;
 use topcoat::router::request::headers as request_headers;
+use topcoat::router::request::uri;
 use topcoat::router::{HeaderMap, HeaderValue, StatusCode, header, path_param, route};
 
 use crate::auth::{Redirect, see};
@@ -76,11 +72,10 @@ async fn upload(cx: &Cx, mut multipart: Multipart) -> Redirect {
         };
         return match photos::set_photo(&store, &user.id, &collected, mime).await {
             Ok(()) => {
-                // The bytes changed, so the URL the avatar renders has to
-                // change with them — bump before the answer goes out.
-                if let Some(stamps) = try_app_context::<PhotoStamps>(cx) {
-                    stamps.bump(&user.id.to_string());
-                }
+                // The row is committed with its bumped version: announce the
+                // changed face to every open tab and every app on the
+                // directory stream before the answer goes out.
+                server::notify_profile(cx, &user.id).await;
                 server::log_event(cx, "photo_saved", Some(&user.email), None).await;
                 see("/?ok=photo_saved".to_string())
             }
@@ -98,6 +93,8 @@ async fn delete(cx: &Cx) -> Redirect {
     let store = server::app(cx).store.clone();
     match photos::clear_photo(&store, &user.id).await {
         Ok(()) => {
+            // Committed: the face is gone, the version moved on either way.
+            server::notify_profile(cx, &user.id).await;
             server::log_event(cx, "photo_removed", Some(&user.email), None).await;
             see("/?ok=photo_removed".to_string())
         }
@@ -105,77 +102,21 @@ async fn delete(cx: &Cx) -> Redirect {
     }
 }
 
-/// Photo URL version stamps, in process memory. The `user` row carries no
-/// photo-updated moment and a schema column for cache-busting is out of
-/// proportion, so the stamp lives here: `upload` bumps it when the bytes
-/// change, and the avatar render reads it back. A photo whose bytes this
-/// process never saw change stamps at the process start, which is still a
-/// URL no browser has fetched, so it is re-downloaded exactly once per
-/// restart and cached from then on.
-#[derive(Clone, Default)]
-pub struct PhotoStamps(Arc<Mutex<HashMap<String, i64>>>);
-
-/// Unix microseconds at first use: the stamp for every photo whose bytes
-/// this process never saw change. Stable for the process's lifetime, and
-/// later than any stamp an earlier process emitted, so no pre-restart URL
-/// survives a restart.
-static PROCESS_START: LazyLock<i64> =
-    LazyLock::new(|| (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000) as i64);
-
-impl PhotoStamps {
-    fn stamp(&self, user_id: &str) -> i64 {
-        self.0
-            .lock()
-            .get(user_id)
-            .copied()
-            .unwrap_or(*PROCESS_START)
-    }
-
-    fn bump(&self, user_id: &str) {
-        let now = (OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000) as i64;
-        let mut stamps = self.0.lock();
-        // A write always moves the URL: never emit a stamp this user has
-        // already rendered with, even when two writes land inside the same
-        // microsecond.
-        let stamp = stamps.get(user_id).copied().unwrap_or(*PROCESS_START);
-        stamps.insert(user_id.to_string(), now.max(stamp + 1));
-    }
-}
-
-/// The stamp an avatar's photo URL carries. A router built without
-/// `PhotoStamps` falls back to the process start, which is still a URL no
-/// browser has fetched before.
-pub fn photo_stamp(cx: &Cx, user_id: &str) -> i64 {
-    match try_app_context::<PhotoStamps>(cx) {
-        Some(stamps) => stamps.stamp(user_id),
-        None => *PROCESS_START,
-    }
-}
-
-/// A cheap, non-cryptographic hash — good enough for an `ETag` on bytes only
-/// this server ever writes.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for &b in bytes {
-        hash ^= b as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
 fn not_found() -> (StatusCode, HeaderMap, Vec<u8>) {
     (StatusCode::NOT_FOUND, HeaderMap::new(), Vec::new())
 }
 
-/// The response for served bytes: the ETag and cache policy, the 304 when
-/// the caller's copy is already this one.
+/// The response for served bytes: the version ETag — strong, one per photo
+/// generation — the caller's cache policy, and the 304 when the caller's
+/// copy is already this one.
 fn bytes_response(
     cx: &Cx,
     bytes: Vec<u8>,
     content_type: &str,
     cache: &'static str,
+    version: u64,
 ) -> (StatusCode, HeaderMap, Vec<u8>) {
-    let etag = format!("\"{:x}\"", fnv1a(&bytes));
+    let etag = format!("\"p{version}\"");
     let mut headers = HeaderMap::new();
     headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
@@ -215,6 +156,16 @@ fn default_avatar(initial: &str) -> Vec<u8> {
     .into_bytes()
 }
 
+/// The `v` pair of this request's query string, if it carried one. Matched
+/// verbatim against the row's `photo_version`; a version needs no escaping,
+/// so a plain split is the whole parse.
+fn requested_version(cx: &Cx) -> Option<&str> {
+    uri(cx)
+        .query()?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("v="))
+}
+
 /// Serves one person's photo. Signed-in only — either through the session
 /// cookie or as a registered OIDC app presenting HTTP Basic over
 /// `client_id:client_secret`.
@@ -224,10 +175,15 @@ fn default_avatar(initial: &str) -> Vec<u8> {
 /// `<img>` shows a person, never a broken-image glyph. An unknown id gets
 /// the same tile with a `?`, so an authenticated fetch still cannot tell a
 /// missing person from a missing photo; only the missing credential reads
-/// as the not-found. The tile answers `no-cache` (revalidating on its
-/// ETag) where the photo answers `immutable`: apps fetch this URL without
-/// the stamp im's own pages add, so a photo uploaded later must replace
-/// the tile, and a year of `immutable` would pin the letter forever.
+/// as the not-found.
+///
+/// Caching hangs off the row's `photo_version`, the same number the
+/// directory answers with: a URL whose `?v=` names the current version
+/// may cache for a year — a changed photo is a changed URL — while every
+/// other spelling of the route, the bare `/photo/{sub}` an app fetches or
+/// the photoless tile, answers `no-cache` and revalidates on the ETag.
+/// The version comes from the store, not from process memory, so a
+/// restart forgets nothing and every reader sees the same one.
 #[route(GET "/photo/{user_id}")]
 async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     if server::current_user(cx).await.is_none() && !server::valid_app(cx).await {
@@ -235,33 +191,32 @@ async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     }
     let target = im_core::model::UserId::from(path_param::<UserId>(cx).to_string());
     let store = server::app(cx).store.clone();
+    let user = im_core::accounts::user_by_id(&store, &target)
+        .await
+        .ok()
+        .flatten();
+    let version = user.as_ref().map_or(0, |user| user.photo_version);
     if let Ok(Some((bytes, mime))) = photos::photo(&store, &target).await {
-        // The stamp in the URL is the other half of this caching: `upload`
-        // bumps it whenever the bytes change, so a year of `immutable`
-        // never shows an old photo — a changed photo is a changed URL.
         // `private` because the route is session-gated.
-        return Ok(bytes_response(
-            cx,
-            bytes,
-            &mime,
-            "private, max-age=31536000, immutable",
-        ));
+        let cache = if requested_version(cx) == Some(version.to_string().as_str()) {
+            "private, max-age=31536000, immutable"
+        } else {
+            "private, no-cache"
+        };
+        return Ok(bytes_response(cx, bytes, &mime, cache, version));
     }
-    let initial = match im_core::accounts::user_by_id(&store, &target).await {
-        Ok(Some(user)) => user
-            .name
-            .chars()
-            .next()
-            .unwrap_or('?')
-            .to_uppercase()
-            .to_string(),
-        _ => "?".to_string(),
-    };
+    let initial = user
+        .as_ref()
+        .and_then(|user| user.name.chars().next())
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
     Ok(bytes_response(
         cx,
         default_avatar(&initial),
         "image/svg+xml",
         "private, no-cache",
+        version,
     ))
 }
 
@@ -270,7 +225,6 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
-    use super::PhotoStamps;
     use im_core::accounts::{create_invite, create_user_from_invite};
     use im_core::model::UserId;
     use im_core::oidc::create_client;
@@ -288,6 +242,7 @@ mod tests {
 
     struct Setup {
         router: Router,
+        store: Arc<Store>,
         user_id: UserId,
         plain_id: UserId,
         client_id: String,
@@ -320,8 +275,9 @@ mod tests {
             .await
             .unwrap();
         let (live, _) = tokio::sync::broadcast::channel(64);
+        let store = Arc::new(store);
         let app = server::App {
-            store: Arc::new(store),
+            store: store.clone(),
             config: Config {
                 database: ":memory:".into(),
                 listen: "127.0.0.1:7650".parse().unwrap(),
@@ -334,10 +290,10 @@ mod tests {
             .discover()
             .cookies()
             .app_context(app)
-            .app_context(PhotoStamps::default())
             .build();
         Setup {
             router,
+            store,
             user_id: user.id,
             plain_id: plain.id,
             client_id: client_id.to_string(),
@@ -354,18 +310,35 @@ mod tests {
         )
     }
 
+    /// GETs `/photo/{id}` — the plain helper most tests use.
     async fn get(
         router: &Router,
         user_id: &str,
         auth: Option<String>,
         cookie: Option<&str>,
     ) -> (StatusCode, HeaderMap, Vec<u8>) {
-        let mut builder = http::Request::builder().uri(format!("/photo/{user_id}"));
+        get_uri(router, &format!("/photo/{user_id}"), auth, cookie, None).await
+    }
+
+    /// GETs a photo URI — with or without the `?v=` pair — optionally
+    /// carrying an app's Basic pair, a session cookie, and an
+    /// `If-None-Match` for the revalidation dance.
+    async fn get_uri(
+        router: &Router,
+        uri: &str,
+        auth: Option<String>,
+        cookie: Option<&str>,
+        if_none_match: Option<&str>,
+    ) -> (StatusCode, HeaderMap, Vec<u8>) {
+        let mut builder = http::Request::builder().uri(uri);
         if let Some(auth) = auth {
             builder = builder.header(header::AUTHORIZATION, auth);
         }
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
+        }
+        if let Some(etag) = if_none_match {
+            builder = builder.header(header::IF_NONE_MATCH, etag);
         }
         let response = router.handle(builder.body(Body::empty()).unwrap()).await;
         let (parts, body) = response.into_parts();
@@ -504,5 +477,139 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(bytes, PHOTO);
+    }
+
+    #[tokio::test]
+    async fn versioned_url_caches_immutably_on_the_version_etag() {
+        let setup = setup().await;
+        // Setup uploads once, so Ann's row sits at version 1.
+        let uri = format!("/photo/{}?v=1", setup.user_id);
+        let (status, headers, _) =
+            get_uri(&setup.router, &uri, Some(basic(&setup.client_id, &setup.secret)), None, None)
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get(header::ETAG).unwrap(), "\"p1\"");
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "private, max-age=31536000, immutable"
+        );
+    }
+
+    #[tokio::test]
+    async fn unversioned_url_must_revalidate() {
+        let setup = setup().await;
+        let (status, headers, _) = get(
+            &setup.router,
+            setup.user_id.as_str(),
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get(header::ETAG).unwrap(), "\"p1\"");
+        // The bare URL an app fetches cannot promise freshness: a year of
+        // `immutable` would pin yesterday's face until the next restart
+        // minted a new stamp.
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "private, no-cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stale_version_asks_for_a_revalidation_too() {
+        let setup = setup().await;
+        let uri = format!("/photo/{}?v=0", setup.user_id);
+        let (_, headers, _) =
+            get_uri(&setup.router, &uri, Some(basic(&setup.client_id, &setup.secret)), None, None)
+                .await;
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "private, no-cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn matching_if_none_match_answers_not_modified() {
+        let setup = setup().await;
+        let uri = format!("/photo/{}?v=1", setup.user_id);
+        let (status, headers, bytes) = get_uri(
+            &setup.router,
+            &uri,
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+            Some("\"p1\""),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert_eq!(headers.get(header::ETAG).unwrap(), "\"p1\"");
+        assert!(bytes.is_empty());
+        // A stale copy revalidates to the full answer, never a 304.
+        let (status, _, _) = get_uri(
+            &setup.router,
+            &uri,
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+            Some("\"p0\""),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn a_new_upload_moves_the_version_and_the_etag() {
+        let setup = setup().await;
+        set_photo(
+            &setup.store,
+            &setup.user_id,
+            b"\x89PNG\r\n\x1a\nother-bytes",
+            "image/png",
+        )
+        .await
+        .unwrap();
+        // The old cached copy is stale on both spellings of the URL.
+        let uri = format!("/photo/{}?v=1", setup.user_id);
+        let (_, headers, _) =
+            get_uri(&setup.router, &uri, Some(basic(&setup.client_id, &setup.secret)), None, None)
+                .await;
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "private, no-cache"
+        );
+        let uri = format!("/photo/{}?v=2", setup.user_id);
+        let (status, headers, bytes) =
+            get_uri(&setup.router, &uri, Some(basic(&setup.client_id, &setup.secret)), None, None)
+                .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get(header::ETAG).unwrap(), "\"p2\"");
+        assert_eq!(
+            headers.get(header::CACHE_CONTROL).unwrap(),
+            "private, max-age=31536000, immutable"
+        );
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\nother-bytes");
+    }
+
+    #[tokio::test]
+    async fn the_photoless_tile_validates_on_the_version_etag() {
+        let setup = setup().await;
+        let (status, headers, _) = get(
+            &setup.router,
+            setup.plain_id.as_str(),
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers.get(header::ETAG).unwrap(), "\"p0\"");
+        let (status, _, bytes) = get_uri(
+            &setup.router,
+            &format!("/photo/{}", setup.plain_id),
+            Some(basic(&setup.client_id, &setup.secret)),
+            None,
+            Some("\"p0\""),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert!(bytes.is_empty());
     }
 }

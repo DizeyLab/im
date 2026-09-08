@@ -512,6 +512,7 @@ pub async fn introspect_app_session(
         "email": user.email,
         "name": user.name,
         "admin": user.admin,
+        "photo_version": user.photo_version,
         "exp": expires.unix_timestamp(),
     })))
 }

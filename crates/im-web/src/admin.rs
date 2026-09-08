@@ -1236,8 +1236,9 @@ async fn user_email(cx: &Cx, Form(input): Form<UserEmailForm>) -> Result<Respons
         Err(redirect) => return Ok(redirect),
     };
     let store = &app(cx).store;
-    match accounts::set_email(store, &UserId::from(input.user), &input.email).await {
-        Ok(()) => {}
+    let user_id = UserId::from(input.user);
+    match accounts::set_email(store, &user_id, &input.email).await {
+        Ok(()) => server::notify_profile(cx, &user_id).await,
         Err(accounts::AccountError::EmailTaken) => return back(cx, "users", "&error=email_taken"),
         Err(accounts::AccountError::InvalidEmail) => return back(cx, "users", "&error=bad_email"),
         Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
@@ -1352,11 +1353,13 @@ async fn set_disabled(cx: &Cx, input: UserAction, disabled: bool) -> Result<Resp
     };
     let store = &app(cx).store;
     let user_id = UserId::from(input.user);
-    accounts::set_disabled(store, &user_id, disabled).await?;
     if disabled {
         // A disabled account keeps no sessions either.
         im_core::sessions::revoke_user_sessions(store, &user_id).await?;
     }
+    // Announced whether the flag moved either way: the disable drops the
+    // member from the next roster read, the enable restores it.
+    server::notify_profile(cx, &user_id).await;
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
@@ -1541,7 +1544,7 @@ fn store_of(cx: &Cx) -> std::sync::Arc<im_core::store::Store> {
 /// itself wait on a mail server.
 async fn probe(
     store: std::sync::Arc<im_core::store::Store>,
-    live: tokio::sync::broadcast::Sender<()>,
+    live: tokio::sync::broadcast::Sender<server::LiveEvent>,
 ) {
     let check = match mailer::check(&store).await {
         Ok(took_ms) => settings::SenderCheck {
@@ -1559,5 +1562,5 @@ async fn probe(
         eprintln!("im: failed to record the sender check: {problem}");
     }
     // The chip changed; watching tabs re-read it on the next tick.
-    let _ = live.send(());
+    let _ = live.send(server::LiveEvent::Tick);
 }

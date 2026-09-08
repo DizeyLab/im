@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS users (
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   photo_mime TEXT,
+  photo_version INTEGER NOT NULL DEFAULT 0,
   theme TEXT NOT NULL DEFAULT 'light',
   language TEXT NOT NULL DEFAULT 'en',
   ui TEXT NOT NULL DEFAULT 'instrument'
@@ -219,6 +220,19 @@ impl Store {
                 conn.execute("ALTER TABLE users ADD COLUMN photo_mime TEXT", ())
                     .await
                     .map_err(backend)?;
+            }
+            // How many times the profile photo has changed: the URL cache
+            // buster (`/photo/{id}?v=`), kept in the row so every process
+            // and every sibling app reads the same one. Databases born
+            // before photos carried versions grow it here; every existing
+            // row reads 0, and the first upload after the move bumps it.
+            if !has_column(&conn, "users", "photo_version").await? {
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN photo_version INTEGER NOT NULL DEFAULT 0",
+                    (),
+                )
+                .await
+                .map_err(backend)?;
             }
             // Per-user display preferences (theme/language/ui): databases
             // born before these columns grow them here — TEXT NOT NULL with

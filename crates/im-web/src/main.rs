@@ -291,7 +291,6 @@ async fn serve(config: Config) {
         .cookies()
         .assets(bundle)
         .app_context(app)
-        .app_context(photo::PhotoStamps::default())
         .app_context(live::Shutdown(stopping))
         .build();
 

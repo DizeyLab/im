@@ -23,6 +23,8 @@ use topcoat::cookie::{Cookie, Cookies, cookie, cookies};
 use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{HeaderValue, RouterBuilder, StatusCode, header, route};
 
+pub mod directory;
+
 // ---------------------------------------------------------------------------
 // Configuration and state
 // ---------------------------------------------------------------------------
@@ -137,6 +139,7 @@ async fn introspect(state: &ImClient, token: &str) -> Option<(User, i64)> {
             email: answer["email"].as_str()?.to_string(),
             name: answer["name"].as_str()?.to_string(),
             admin: answer["admin"].as_bool().unwrap_or(false),
+            photo_version: answer["photo_version"].as_u64().unwrap_or(0),
         },
         answer["exp"].as_i64()?,
     ))
@@ -150,6 +153,10 @@ pub struct User {
     pub name: String,
     #[serde(default)]
     pub admin: bool,
+    /// How many times the person's photo has changed: the `/photo/{sub}?v=`
+    /// cache buster. Absent on an older im — reads 0 there.
+    #[serde(default)]
+    pub photo_version: u64,
 }
 
 // ---------------------------------------------------------------------------

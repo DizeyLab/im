@@ -385,6 +385,7 @@ pub async fn create_user_from_invite(
         name: name.to_string(),
         totp_confirmed: false,
         has_photo: false,
+        photo_version: 0,
         admin: invite.admin,
         disabled: false,
         created_at: store::now(),
@@ -655,7 +656,7 @@ pub async fn verify_login(
     let mut rows = conn
         .query(
             "SELECT id, email, name, password_hash, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL, theme, language, ui FROM users WHERE email = ?1 COLLATE NOCASE",
+             photo_mime IS NOT NULL, photo_version, theme, language, ui FROM users WHERE email = ?1 COLLATE NOCASE",
             turso::params![email],
         )
         .await
@@ -670,12 +671,13 @@ pub async fn verify_login(
         name: store::text(&row, 2)?,
         totp_confirmed: store::int(&row, 4)? != 0,
         has_photo: store::int(&row, 8)? != 0,
+        photo_version: store::int(&row, 9)? as u64,
         admin: store::int(&row, 5)? != 0,
         disabled: store::int(&row, 6)? != 0,
         created_at: store::parse_stamp(&store::text(&row, 7)?)?,
-        theme: store::text(&row, 9)?,
-        language: store::text(&row, 10)?,
-        ui: store::text(&row, 11)?,
+        theme: store::text(&row, 10)?,
+        language: store::text(&row, 11)?,
+        ui: store::text(&row, 12)?,
     };
     let phc = store::text(&row, 3)?;
     if !verify_password(password, &phc) || user.disabled {
@@ -748,7 +750,7 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
     let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL, theme, language, ui FROM users WHERE id = ?1",
+             photo_mime IS NOT NULL, photo_version, theme, language, ui FROM users WHERE id = ?1",
             turso::params![id.to_string()],
         )
         .await
@@ -762,12 +764,13 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
         name: store::text(&row, 2)?,
         totp_confirmed: store::int(&row, 3)? != 0,
         has_photo: store::int(&row, 7)? != 0,
+        photo_version: store::int(&row, 8)? as u64,
         admin: store::int(&row, 4)? != 0,
         disabled: store::int(&row, 5)? != 0,
         created_at: store::parse_stamp(&store::text(&row, 6)?)?,
-        theme: store::text(&row, 8)?,
-        language: store::text(&row, 9)?,
-        ui: store::text(&row, 10)?,
+        theme: store::text(&row, 9)?,
+        language: store::text(&row, 10)?,
+        ui: store::text(&row, 11)?,
     }))
 }
 
@@ -798,7 +801,7 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
     let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL, theme, language, ui FROM users ORDER BY created_at",
+             photo_mime IS NOT NULL, photo_version, theme, language, ui FROM users ORDER BY created_at",
             (),
         )
         .await
@@ -811,12 +814,13 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
             name: store::text(&row, 2)?,
             totp_confirmed: store::int(&row, 3)? != 0,
             has_photo: store::int(&row, 7)? != 0,
+            photo_version: store::int(&row, 8)? as u64,
             admin: store::int(&row, 4)? != 0,
             disabled: store::int(&row, 5)? != 0,
             created_at: store::parse_stamp(&store::text(&row, 6)?)?,
-            theme: store::text(&row, 8)?,
-            language: store::text(&row, 9)?,
-            ui: store::text(&row, 10)?,
+            theme: store::text(&row, 9)?,
+            language: store::text(&row, 10)?,
+            ui: store::text(&row, 11)?,
         });
     }
     Ok(users)

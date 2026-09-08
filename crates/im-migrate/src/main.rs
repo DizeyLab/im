@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS users (
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   photo_mime TEXT,
+  photo_version INTEGER NOT NULL DEFAULT 0,
   theme TEXT NOT NULL DEFAULT 'light',
   language TEXT NOT NULL DEFAULT 'en',
   ui TEXT NOT NULL DEFAULT 'instrument'

@@ -54,6 +54,10 @@ pub struct User {
     /// Whether this person has a profile photo: the row keeps the mime
     /// type, the bytes live as a file under the storage tree (`photos.rs`).
     pub has_photo: bool,
+    /// How many times the photo has changed: the `/photo/{id}?v=` cache
+    /// buster. Lives in the row, so every process — and every sibling app
+    /// reading `/directory` — sees the same one, restart-proof.
+    pub photo_version: u64,
     /// im's own admin flag — crosses only via /introspect to registered apps,
     /// never in id_token/userinfo; apps may derive their own admin
     /// authorization from it.

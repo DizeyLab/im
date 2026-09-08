@@ -47,7 +47,7 @@ pub async fn set_photo(store: &Store, user: &UserId, bytes: &[u8], mime: &str) -
     let written = {
         let conn = store.conn.lock().await;
         conn.execute(
-            "UPDATE users SET photo_mime = ?1 WHERE id = ?2",
+            "UPDATE users SET photo_mime = ?1, photo_version = photo_version + 1 WHERE id = ?2",
             turso::params![mime, id.clone()],
         )
         .await
@@ -69,7 +69,7 @@ pub async fn clear_photo(store: &Store, user: &UserId) -> Result<()> {
     {
         let conn = store.conn.lock().await;
         conn.execute(
-            "UPDATE users SET photo_mime = NULL WHERE id = ?1",
+            "UPDATE users SET photo_mime = NULL, photo_version = photo_version + 1 WHERE id = ?1",
             turso::params![id.clone()],
         )
         .await

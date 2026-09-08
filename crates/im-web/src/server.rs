@@ -27,16 +27,40 @@ pub const PENDING_MINUTES: i64 = 10;
 pub struct App {
     pub store: Arc<Store>,
     pub config: Config,
-    /// The live channel's ticker: any mutation announces itself here, and
-    /// every open admin tab re-reads what it is showing. Carries no data —
-    /// a tick says "re-fetch", nothing more.
-    pub live: tokio::sync::broadcast::Sender<()>,
+    /// The live channel: any mutation announces itself here, and every open
+    /// tab re-reads what it is showing. A `Tick` says "re-fetch", nothing
+    /// more — never a row, never a name. A `Profile` carries the full
+    /// directory row of the one member whose row changed, for the app-facing
+    /// `/directory/live` stream.
+    pub live: tokio::sync::broadcast::Sender<LiveEvent>,
+}
+
+/// What travels the live channel. `Tick` is the panel's "something moved —
+/// re-read"; `Profile` is the directory's own news: this member's row, as it
+/// now stands, serialized exactly as `/directory` would have answered it.
+#[derive(Clone, Debug)]
+pub enum LiveEvent {
+    Tick,
+    Profile(crate::directory::DirectoryMember),
 }
 
 /// Announce that the panel's data moved. Sends are lossy on purpose: nobody
 /// listening is not an error, and a lagging tab gets a resync tick.
 pub fn note(cx: &Cx) {
-    let _ = app(cx).live.send(());
+    let _ = app(cx).live.send(LiveEvent::Tick);
+}
+
+/// Announce that one member's row changed. Re-reads the row — the callers
+/// hold the pre-write copy — and broadcasts it as the member `/directory`
+/// would answer. A row that no longer resolves (deleted) has no member to
+/// announce; the next full pass is where a removal surfaces.
+pub async fn notify_profile(cx: &Cx, user_id: &im_core::model::UserId) {
+    let Ok(Some(user)) = im_core::accounts::user_by_id(&app(cx).store, user_id).await else {
+        return;
+    };
+    let _ = app(cx).live.send(LiveEvent::Profile(
+        crate::directory::DirectoryMember::of(&user),
+    ));
 }
 
 /// Log the event, then tick the live channel — the two travel together so

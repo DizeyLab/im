@@ -22,7 +22,7 @@ use crate::server;
 /// opens another. The session is resolved once, at connect, and never again
 /// for the life of the stream — the reconnect is what re-authenticates, so a
 /// session revoked mid-stream goes quiet within one window rather than never.
-const WINDOW: Duration = Duration::from_secs(50 * 60);
+pub(crate) const WINDOW: Duration = Duration::from_secs(50 * 60);
 
 /// Tells a live stream that the process is going down.
 ///
@@ -84,7 +84,20 @@ async fn live(cx: &Cx) -> topcoat::Result<Response> {
                     // Which ones is unknowable, so the tick says "re-read
                     // everything" — the client refetches the whole page, so
                     // a lagged tick and a plain tick are the same frame.
-                    Ok(Some(Err(RecvError::Lagged(_)))) | Ok(Some(Ok(()))) => {}
+                    Ok(Some(Err(RecvError::Lagged(_)))) | Ok(Some(Ok(server::LiveEvent::Tick))) => {}
+                    // One member's row changed. The frame names which one —
+                    // im's own client still just re-fetches the page it is
+                    // on, so the payload is forward-compatibility for a
+                    // future page that can react to its own subject alone.
+                    Ok(Some(Ok(server::LiveEvent::Profile(member)))) => {
+                        return Some((
+                            Ok::<_, std::convert::Infallible>(Event::new().data(
+                                serde_json::json!({ "kind": "profile", "sub": member.sub })
+                                    .to_string(),
+                            )),
+                            (rx, deadline, stopping),
+                        ));
+                    }
                 }
                 return Some((
                     Ok::<_, std::convert::Infallible>(Event::new().data("{}")),

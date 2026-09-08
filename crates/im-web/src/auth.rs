@@ -258,6 +258,9 @@ async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Redirect {
     };
     let token = im_core::sessions::create_session(store, &user.id, &session_meta(cx)).await?;
     server::log_event(cx, "invite_accepted", Some(&user.email), None).await;
+    // A member exists from this moment on: the roster — and every app
+    // mirroring it — learns the new row now, not on their next full list.
+    server::notify_profile(cx, &user.id).await;
     server::set_session_cookie(cx, token.expose());
     see("/".to_string())
 }
@@ -479,6 +482,9 @@ async fn email_confirm(cx: &Cx, Form(input): Form<EmailConfirmForm>) -> Redirect
     match accounts::confirm_email_change(store, &input.token).await {
         Ok(accounts::EmailChangeConfirmed::Applied(user)) => {
             server::log_event(cx, "email_changed", Some(&user.email), None).await;
+            // Both mailboxes agreed and the address is rewritten: the
+            // roster's row moved with it.
+            server::notify_profile(cx, &user.id).await;
             if server::current_user(cx).await.is_some() {
                 see("/?section=profile&ok=email_changed".to_string())
             } else {
