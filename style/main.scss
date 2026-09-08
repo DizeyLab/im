@@ -1201,9 +1201,16 @@ body:has(.log-list) {
 
 .admin-confirm-title { font-weight: 600; color: var(--ink); }
 
-// One person's live sessions, folded under their row: the summary is the
-// count, the opened panel holds the small table — or the muted line.
+// Under each person's row two folds share one strip — the live sessions and
+// the address edit. Each details sits inline so the summaries read as a row
+// of links, and the opened panels stay in normal flow: a wide table with
+// overflow:auto clips absolutely-positioned children, so nothing pops here.
 .admin-sessions {
+  display: inline-block;
+  vertical-align: top;
+
+  & + & { margin-left: 16px; }
+
   summary {
     cursor: pointer;
     font-size: 12px;
@@ -1217,6 +1224,21 @@ body:has(.log-list) {
   .admin-table td:first-child {
     overflow-wrap: anywhere;
     max-width: 280px;
+  }
+
+  // The address-edit panel: the popover's visual box, but static — normal
+  // flow inside the fold, so nothing is ever clipped.
+  .admin-fold-form {
+    width: 260px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    margin: 8px 24px 8px 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12px;
   }
 }
 

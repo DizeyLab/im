@@ -408,13 +408,13 @@ async fn email_change(cx: &Cx, Form(input): Form<EmailChangeForm>) -> Redirect {
         match accounts::request_email_change(store, &me.id, &input.email).await {
             Ok(pair) => pair,
             Err(AccountError::InvalidEmail) => {
-                return see("/?section=profile&error=bad_email".to_string());
+                return see("/?section=password&error=bad_email".to_string());
             }
             Err(AccountError::SameEmail) => {
-                return see("/?section=profile&error=same_email".to_string());
+                return see("/?section=password&error=same_email".to_string());
             }
             Err(AccountError::EmailTaken) => {
-                return see("/?section=profile&error=email_taken".to_string());
+                return see("/?section=password&error=email_taken".to_string());
             }
             Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
         };
@@ -449,7 +449,7 @@ async fn email_change(cx: &Cx, Form(input): Form<EmailChangeForm>) -> Redirect {
     )
     .await;
     if old_mailed && new_mailed {
-        see("/?section=profile&ok=email_change_asked".to_string())
+        see("/?section=password&ok=email_change_asked".to_string())
     } else {
         let links = format!(
             "{issuer}/email/{} {issuer}/email/{}",
@@ -457,7 +457,7 @@ async fn email_change(cx: &Cx, Form(input): Form<EmailChangeForm>) -> Redirect {
             new_token.expose()
         );
         see(format!(
-            "/?section=profile&ok=email_change_asked&links={}",
+            "/?section=password&ok=email_change_asked&links={}",
             crate::oidc::urlencode(&links)
         ))
     }

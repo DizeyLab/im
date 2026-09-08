@@ -1130,7 +1130,23 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
         let location = location.expect("a redirect carrying the once-shown links");
-        assert!(location.contains("ok=email_change_asked"), "{location}");
+        assert!(
+            location.contains("/?section=password&ok=email_change_asked"),
+            "{location}"
+        );
+
+        // The address card answers on the password section only; the profile
+        // carries no address-mutation form anymore.
+        let profile_page = get_page(&router, "/?section=profile", &cookie).await;
+        assert!(
+            !profile_page.contains(r#"action="/email_change""#),
+            "{profile_page}"
+        );
+        let password_page = get_page(&router, "/?section=password", &cookie).await;
+        assert!(
+            password_page.contains(r#"action="/email_change""#),
+            "{password_page}"
+        );
         let encoded = location
             .split("links=")
             .nth(1)

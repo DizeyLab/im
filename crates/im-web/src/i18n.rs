@@ -839,6 +839,14 @@ pub fn sessions_summary(lang: Lang, n: usize) -> String {
     }
 }
 
+/// The admin row's "Edit address" disclosure summary, in the viewer's language.
+pub fn email_fold_summary(lang: Lang) -> String {
+    match lang {
+        Lang::En => "Edit address".to_string(),
+        Lang::Tr => "Adresi düzenle".to_string(),
+    }
+}
+
 /// A log row's kind as a word, izlek's `activity_kind_word`: the stored
 /// string is the stable identifier, the words are presentation. A kind this
 /// build does not know shows as itself.
@@ -999,13 +1007,6 @@ pub fn email_pending_line(lang: Lang, new_email_html: &str) -> String {
     }
 }
 
-/// The admin row's edit-disclosure title.
-pub fn email_edit_title(lang: Lang, email_html: &str) -> String {
-    match lang {
-        Lang::En => format!("Change {email_html}'s address."),
-        Lang::Tr => format!("{email_html} adresini değiştir."),
-    }
-}
 /// The address-change confirmation mail. Two travel per request — to the
 /// address being left and the one being gained — and each says which kind
 /// it is, so the holder knows which door they're opening.

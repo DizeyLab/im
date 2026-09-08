@@ -761,6 +761,34 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                         </form>
                         <div class="auth-sub">(t(lang, Key::AccountPasswordNote))</div>
                     </div>
+                    <div class="auth-card">
+                        <div class="auth-title">(t(lang, Key::EmailCardTitle))</div>
+                        if let Some(pending) = pending_email.as_deref() {
+                            <div class="auth-sub">
+                                (crate::i18n::email_pending_line(lang, &escape(pending)))
+                            </div>
+                        }
+                        if let Some(links) = query_value(&query, "links") {
+                            <div class="auth-note">(links)</div>
+                        }
+                        <form method="post" action="/email_change">
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::NewEmailLabel))</span>
+                                <input
+                                    class="auth-input auth-input-mono"
+                                    type="email"
+                                    name="email"
+                                    autocomplete="email"
+                                    value=(user.email.clone())
+                                    required=""
+                                >
+                            </label>
+                            <button class="auth-submit" type="submit">
+                                <span class="auth-submit-text">(t(lang, Key::EmailChangeButton))</span>
+                            </button>
+                        </form>
+                        <div class="auth-sub">(t(lang, Key::EmailChangeNote))</div>
+                    </div>
                 }
                 if section != "sessions" && section != "preferences" && section != "password" && section != "apps" {
                     <div class="auth-card">
@@ -868,34 +896,6 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                 <dt class="auth-label">(t(lang, Key::StatConnectedApps))</dt>
                             </div>
                         </dl>
-                    </div>
-                    <div class="auth-card">
-                        <div class="auth-title">(t(lang, Key::EmailCardTitle))</div>
-                        if let Some(pending) = pending_email.as_deref() {
-                            <div class="auth-sub">
-                                (crate::i18n::email_pending_line(lang, &escape(pending)))
-                            </div>
-                        }
-                        if let Some(links) = query_value(&query, "links") {
-                            <div class="auth-note">(links)</div>
-                        }
-                        <form method="post" action="/email_change">
-                            <label class="auth-field">
-                                <span class="auth-label">(t(lang, Key::NewEmailLabel))</span>
-                                <input
-                                    class="auth-input auth-input-mono"
-                                    type="email"
-                                    name="email"
-                                    autocomplete="email"
-                                    value=(user.email.clone())
-                                    required=""
-                                >
-                            </label>
-                            <button class="auth-submit" type="submit">
-                                <span class="auth-submit-text">(t(lang, Key::EmailChangeButton))</span>
-                            </button>
-                        </form>
-                        <div class="auth-sub">(t(lang, Key::EmailChangeNote))</div>
                     </div>
                 }
                 <div class="auth-footer">(t(lang, Key::BrandFooter))</div>

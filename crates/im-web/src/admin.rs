@@ -195,9 +195,10 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         .into_response(cx)
 }
 
-/// One person's live sessions as the disclosure under their row: a small
-/// table with a per-session revoke, or the muted line when nothing is live.
-/// The admin's own row gets one too — "you" still signs in from somewhere.
+/// One person's folded strip under their row: the live sessions — a small
+/// table with a per-session revoke, or the muted line when nothing is live —
+/// and, beside it, the address edit. The admin's own row gets both: "you"
+/// still signs in from somewhere, and the rescue reaches their own address.
 fn sessions_row(
     user: &User,
     sessions: &[im_core::sessions::SessionInfo],
@@ -266,8 +267,20 @@ fn sessions_row(
         )
     };
     format!(
-        r#"<tr><td colspan="4"><details class="admin-sessions"><summary class="muted">{}</summary>{body}</details></td></tr>"#,
-        i18n::sessions_summary(lang, sessions.len())
+        concat!(
+            r#"<tr><td colspan="4">"#,
+            r#"<details class="admin-sessions"><summary class="muted">{sessions_summary}</summary>{body}</details>"#,
+            r#"<details class="admin-sessions"><summary class="muted">{email_summary}</summary>"#,
+            r#"<div class="admin-fold-form"><form method="post" action="/admin/user_email" class="admin-form"><input type="hidden" name="user" value="{id}"><label class="auth-field"><span class="auth-label">{email_label}</span><input class="auth-input auth-input-mono" type="email" name="email" value="{email}" required></label><button class="admin-action" type="submit">{save}</button></form></div>"#,
+            r#"</details></td></tr>"#
+        ),
+        body = body,
+        sessions_summary = i18n::sessions_summary(lang, sessions.len()),
+        email_summary = i18n::email_fold_summary(lang),
+        id = id,
+        email_label = t(lang, Key::EmailCol),
+        email = escape(&user.email),
+        save = t(lang, Key::SaveButton),
     )
 }
 
@@ -292,25 +305,8 @@ async fn users_section(
         .join(" · ");
         let id = escape(&user.id.to_string());
         let email = escape(&user.email);
-        // The address edit sits on every row — the admin's own included:
-        // the rescue exists precisely for a mailbox the mail cannot reach.
-        // Same two-step disclosure as the row's other actions.
-        let email_edit = format!(
-            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/user_email" class="admin-form"><input type="hidden" name="user" value="{id}"><label class="auth-field"><span class="auth-label">{email_label}</span><input class="auth-input auth-input-mono" type="email" name="email" value="{email}" required></label><button class="admin-action" type="submit">{save}</button></form></div></details>"#,
-            edit_word = t(lang, Key::EditWord),
-            edit_title = i18n::email_edit_title(lang, &email),
-            id = id,
-            email_label = t(lang, Key::EmailCol),
-            email = email,
-            save = t(lang, Key::SaveButton),
-        );
         let actions = if user.id == me.id {
-            // Never let the only admin lock themselves out by reflex. The
-            // address edit stays: fixing one's own address is the point.
-            format!(
-                r#"<span class="muted">{}</span>{email_edit}"#,
-                t(lang, Key::YouWord)
-            )
+            format!(r#"<span class="muted">{}</span>"#, t(lang, Key::YouWord))
         } else {
             // Every row action is a two-step disclosure — iz's
             // confirm-details idiom: the summary is the word, the panel holds
@@ -350,7 +346,7 @@ async fn users_section(
                 t(lang, Key::ConfirmDelete),
             );
             format!(
-                r#"{email_edit}{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">{sign_out}</button></form>{remove}"#,
+                r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">{sign_out}</button></form>{remove}"#,
                 sign_out = t(lang, Key::SignOutEverywhere),
             )
         };

@@ -1153,6 +1153,13 @@ body:has(.log-list) .admin-card:has(.log-list) {
   color: var(--ink);
 }
 
+.admin-sessions {
+  display: inline-block;
+  vertical-align: top;
+}
+.admin-sessions + .admin-sessions {
+  margin-left: 16px;
+}
 .admin-sessions summary {
   cursor: pointer;
   font-size: 12px;
@@ -1164,6 +1171,18 @@ body:has(.log-list) .admin-card:has(.log-list) {
 .admin-sessions .admin-table td:first-child {
   overflow-wrap: anywhere;
   max-width: 280px;
+}
+.admin-sessions .admin-fold-form {
+  width: 260px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  margin: 8px 24px 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
 }
 
 input[type=checkbox] {
