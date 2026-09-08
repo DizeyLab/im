@@ -21,6 +21,10 @@ pub enum StoreError {
     /// caller turns it into the page's refusal, never a database problem.
     #[error("{0}")]
     Invalid(String),
+    /// The write is well-formed but the row belongs to someone else — the
+    /// web layer answers 409, not 400.
+    #[error("{0}")]
+    Conflict(String),
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
@@ -135,7 +139,8 @@ CREATE TABLE IF NOT EXISTS services (
   key TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   url TEXT NOT NULL,
-  position INTEGER NOT NULL
+  position INTEGER NOT NULL,
+  owner TEXT
 );
 ";
 
@@ -207,9 +212,12 @@ impl Store {
             // born before these columns grow them here — TEXT NOT NULL with
             // a DEFAULT so every existing row reads the default.
             if !has_column(&conn, "users", "theme").await? {
-                conn.execute("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'", ())
-                    .await
-                    .map_err(backend)?;
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'",
+                    (),
+                )
+                .await
+                .map_err(backend)?;
             }
             if !has_column(&conn, "users", "language").await? {
                 conn.execute(
@@ -229,6 +237,14 @@ impl Store {
             }
             // What a session remembers about its browser: the listing shows
             // these, so old databases grow them the same guarded way.
+            // The app that keeps a service row: `im` for this app's own
+            // entry, a client id for a sibling that registers itself, NULL
+            // for the config seed's and the panel's own rows.
+            if !has_column(&conn, "services", "owner").await? {
+                conn.execute("ALTER TABLE services ADD COLUMN owner TEXT", ())
+                    .await
+                    .map_err(backend)?;
+            }
             if !has_column(&conn, "sessions", "ip").await? {
                 conn.execute("ALTER TABLE sessions ADD COLUMN ip TEXT", ())
                     .await

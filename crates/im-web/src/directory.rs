@@ -53,7 +53,9 @@ async fn directory(cx: &Cx) -> topcoat::Result<topcoat::router::response::Respon
 /// name, and base URL, in the stored order, as a bare JSON array. Registered
 /// apps only, exactly like `/directory`: a sibling copies this into its own
 /// database and renders its switcher from that copy, so the family list has
-/// one home (the admin panel here) and every other surface a cached mirror.
+/// one home (this table) and every other surface a cached mirror. The rows
+/// come from the panel and from the apps themselves — see
+/// `POST /family/register`.
 #[route(GET "/family")]
 async fn family(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
     if !server::valid_app(cx).await {
@@ -66,6 +68,49 @@ async fn family(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response>
     let store = server::app(cx).store.clone();
     let services = im_core::services::list(&store).await?;
     Json(serde_json::to_value(services).unwrap()).into_response(cx)
+}
+
+/// The body a sibling posts to keep its own row: its wordmark key, the
+/// name a fresh row is born with, and the address it answers on now.
+#[derive(serde::Deserialize)]
+struct Registration {
+    key: String,
+    name: String,
+    url: String,
+}
+
+/// `POST /family/register`: an app writes its own row of the family. Same
+/// Basic pair as `/family`, and the authenticated client id is the owner —
+/// so a row an app keeps is refreshed on its every boot, never taken over
+/// by another app (409) and no longer the panel's to remove or re-point.
+#[route(POST "/family/register")]
+async fn family_register(
+    cx: &Cx,
+    Json(input): Json<Registration>,
+) -> topcoat::Result<topcoat::router::response::Response> {
+    let Some(client_id) = server::app_client(cx).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "invalid_client" })),
+        )
+            .into_response(cx);
+    };
+    let store = server::app(cx).store.clone();
+    match im_core::services::register(&store, &input.key, &input.name, &input.url, &client_id).await
+    {
+        Ok(service) => Json(serde_json::to_value(service).unwrap()).into_response(cx),
+        Err(im_core::store::StoreError::Conflict(_)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "owned" })),
+        )
+            .into_response(cx),
+        Err(im_core::store::StoreError::Invalid(reason)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "invalid", "reason": reason })),
+        )
+            .into_response(cx),
+        Err(e) => Err(e.into()),
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +290,7 @@ mod tests {
                 key: service.key.clone(),
                 name: service.name.clone(),
                 url: service.url.clone(),
+                owner: None,
             })
             .collect()
     }
@@ -310,6 +356,29 @@ mod tests {
         let (parts, body) = response.into_parts();
         let bytes = to_bytes(body, usize::MAX).await.unwrap().to_vec();
         (parts.status, String::from_utf8(bytes).unwrap())
+    }
+
+    /// `POST /family/register` with a JSON body and (maybe) an app's pair.
+    async fn post_register(
+        router: &Router,
+        authorization: Option<String>,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = http::Request::builder()
+            .method(http::Method::POST)
+            .uri("/family/register")
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(value) = authorization {
+            builder = builder.header(header::AUTHORIZATION, value);
+        }
+        let response = router
+            .handle(builder.body(Body::from(body.to_string())).unwrap())
+            .await;
+        let (parts, body) = response.into_parts();
+        let bytes = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        let text = String::from_utf8(bytes).unwrap();
+        let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text));
+        (parts.status, json)
     }
 
     /// A page GET as a signed-in browser: the whole document back.
@@ -528,7 +597,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&ok=services")
+        );
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
         let family = family.as_array().unwrap();
@@ -567,10 +639,21 @@ mod tests {
             Some(&cookie),
         )
         .await;
-        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
-        let (_status, location, _) =
-            post_form(&router, "/admin/services_move", "key=wiki&dir=up", Some(&cookie)).await;
-        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&ok=services")
+        );
+        let (_status, location, _) = post_form(
+            &router,
+            "/admin/services_move",
+            "key=wiki&dir=up",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&ok=services")
+        );
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
         let family = family.as_array().unwrap();
@@ -599,7 +682,10 @@ mod tests {
         // And once the row is gone, the same origin is refused to the door.
         let (_status, location, _) =
             post_form(&router, "/admin/services_remove", "key=wiki", Some(&cookie)).await;
-        assert_eq!(location.as_deref(), Some("/admin?section=services&ok=services"));
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&ok=services")
+        );
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
         let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
         let keys = family
@@ -661,6 +747,7 @@ mod tests {
             key: "in".into(),
             name: "Files".into(),
             url: "http://127.0.0.1:7655".into(),
+            owner: None,
         }];
         assert!(!im_core::services::seed_from(&store, &reseed).await.unwrap());
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
@@ -673,5 +760,160 @@ mod tests {
             3,
             "{body}"
         );
+    }
+
+    #[tokio::test]
+    async fn an_app_registers_its_own_row_and_only_its_own() {
+        let Setup {
+            router,
+            client_id,
+            secret,
+            store,
+        } = setup().await;
+
+        // No pair, no write.
+        let (status, body) = post_register(
+            &router,
+            None,
+            serde_json::json!({"key": "wiki", "name": "Wiki", "url": "http://wiki.example"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], "invalid_client");
+
+        // A fresh key is appended, and /family carries it right away.
+        let (status, body) = post_register(
+            &router,
+            Some(basic(&client_id, &secret)),
+            serde_json::json!({"key": "wiki", "name": "Wiki", "url": "http://wiki.example/"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["url"], "http://wiki.example");
+        assert!(
+            body.get("owner").is_none(),
+            "the owner never leaves: {body}"
+        );
+        let (_, listed) = get_family(&router, Some(basic(&client_id, &secret))).await;
+        let listed = serde_json::from_str::<serde_json::Value>(&listed).unwrap();
+        let keys = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["key"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["in", "im", "iz", "wiki"]);
+
+        // A second app cannot take the key over.
+        let (other_id, other_secret) =
+            create_client(&store, "other", vec!["http://other/callback".into()])
+                .await
+                .unwrap();
+        let (status, body) = post_register(
+            &router,
+            Some(basic(&other_id.to_string(), other_secret.expose())),
+            serde_json::json!({"key": "wiki", "name": "Mine", "url": "http://evil.example"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"], "owned");
+
+        // The keeper's next boot moves the address; the name is the panel's.
+        im_core::services::edit(&store, "wiki", "Vikipedi", "http://wiki.example")
+            .await
+            .unwrap();
+        let (status, body) = post_register(
+            &router,
+            Some(basic(&client_id, &secret)),
+            serde_json::json!({"key": "wiki", "name": "Wiki", "url": "http://wiki.dizey.sh"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["name"], "Vikipedi");
+        assert_eq!(body["url"], "http://wiki.dizey.sh");
+
+        // A value against the rules is a 400 with the store's own reason.
+        let (status, body) = post_register(
+            &router,
+            Some(basic(&client_id, &secret)),
+            serde_json::json!({"key": "wiki", "name": "Wiki", "url": "ftp://wiki.example"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"], "invalid");
+        assert!(body["reason"].as_str().unwrap().contains("http"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_panel_cannot_remove_a_row_its_app_keeps() {
+        let Setup {
+            router,
+            client_id,
+            secret,
+            store,
+        } = setup().await;
+        let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let session = im_core::sessions::create_session(&store, &ada.id, &Default::default())
+            .await
+            .unwrap();
+        let cookie = format!("{SESSION_COOKIE}={}", session.expose());
+
+        // The app claims the seeded `in` row.
+        let (status, _) = post_register(
+            &router,
+            Some(basic(&client_id, &secret)),
+            serde_json::json!({"key": "in", "name": "Files", "url": "https://in.dizey.sh"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The panel's remove is refused and the row stays.
+        let (_status, location, _) =
+            post_form(&router, "/admin/services_remove", "key=in", Some(&cookie)).await;
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&error=bad_service")
+        );
+        // So is a re-point; a rename still lands.
+        let (_status, location, _) = post_form(
+            &router,
+            "/admin/services_edit",
+            "key=in&name=Dosyalar&url=http%3A%2F%2Felsewhere.example",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&error=bad_service")
+        );
+        let (_status, location, _) = post_form(
+            &router,
+            "/admin/services_edit",
+            "key=in&name=Dosyalar&url=https%3A%2F%2Fin.dizey.sh",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&ok=services")
+        );
+        let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
+        let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        assert_eq!(family[0]["key"], "in");
+        assert_eq!(family[0]["name"], "Dosyalar");
+        assert_eq!(family[0]["url"], "https://in.dizey.sh");
+
+        // And the panel offers no remove form for it — the marker instead.
+        let panel = get_page(&router, "/admin?section=services", &cookie).await;
+        assert!(panel.contains("kept by the app"), "the marker is missing");
+        assert!(
+            !panel.contains(r#"value="in"><button class="admin-action admin-danger"#),
+            "an owned row must carry no remove form"
+        );
+        // The unowned rows still do.
+        assert!(panel.contains(r#"action="/admin/services_remove""#));
     }
 }

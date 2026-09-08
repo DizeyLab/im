@@ -5,6 +5,13 @@ issuer = "http://127.0.0.1:7650"
 # The sibling apps of the switcher and the landing's services home, in
 # wordmark order. Prod uses https://<key>.dizey.sh — deploy-side config,
 # not committed here.
+#
+# This list is a FIRST-BOOT seed only: once the services table has rows, the
+# file's lines are dead letters and the admin panel owns names and order.
+# The addresses maintain themselves — im rewrites its own row from `issuer`
+# on every boot, and a sibling registers itself over POST /family/register
+# with its client pair. A row an app keeps can be renamed and reordered in
+# the panel, but not re-pointed or removed there.
 [[services]]
 key = "in"
 name = "Files"

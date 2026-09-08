@@ -175,27 +175,27 @@ pub fn opened_pending(cx: &Cx) -> Option<Pending> {
 /// registry. Anything unparseable, unknown, or wrong is simply false — the
 /// caller answers its one refusal and never says which.
 pub async fn valid_app(cx: &Cx) -> bool {
+    app_client(cx).await.is_some()
+}
+
+/// The same check, answering *which* app it is: the routes that write on a
+/// caller's behalf (`/family/register`) need the client id the pair
+/// authenticated, and the ones that only read do not.
+pub async fn app_client(cx: &Cx) -> Option<String> {
     use base64::Engine as _;
     use topcoat::router::{header, request::headers as request_headers};
-    let Some(encoded) = request_headers(cx)
+    let encoded = request_headers(cx)
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Basic "))
-    else {
-        return false;
-    };
-    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) else {
-        return false;
-    };
-    let Ok(pair) = std::str::from_utf8(&decoded) else {
-        return false;
-    };
-    let Some((client_id, secret)) = pair.split_once(':') else {
-        return false;
-    };
+        .and_then(|value| value.strip_prefix("Basic "))?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let pair = std::str::from_utf8(&decoded).ok()?;
+    let (client_id, secret) = pair.split_once(':')?;
     let store = app(cx).store.clone();
-    let Ok(Some(client)) = im_core::oidc::client_by_id(&store, client_id).await else {
-        return false;
-    };
-    im_core::oidc::verify_client_secret(&client, secret)
+    let client = im_core::oidc::client_by_id(&store, client_id)
+        .await
+        .ok()??;
+    im_core::oidc::verify_client_secret(&client, secret).then(|| client_id.to_string())
 }

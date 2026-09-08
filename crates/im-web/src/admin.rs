@@ -420,17 +420,35 @@ async fn services_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::
         let key = escape(&service.key);
         let name = escape(&service.name);
         let url = escape(&service.url);
-        // The edit disclosure: the opened pop carries the name-and-address
-        // form; the key travels hidden, like every row's write.
+        // A row its app keeps: the address is written on that app's every
+        // boot, so the panel neither edits it nor takes the row away — the
+        // name and the order stay the admin's.
+        let kept = service.owner.is_some();
+        // The edit disclosure: the opened pop carries the name (and, on an
+        // unkept row, the address); the key travels hidden, like every
+        // row's write.
+        // A kept row posts the stored address back in a hidden field: the
+        // form's name change is accepted, and the store refuses only a
+        // *changed* address.
+        let address_field = if kept {
+            format!(
+                r#"<input type="hidden" name="url" value="{url}">"#,
+                url = url
+            )
+        } else {
+            format!(
+                r#"<label class="auth-field"><span class="auth-label">{url_label}</span><input class="auth-input auth-input-mono" type="text" name="url" value="{url}" required></label>"#,
+                url_label = t(lang, Key::AddressLabel),
+                url = url,
+            )
+        };
         let edit = format!(
-            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/services_edit" class="admin-form"><input type="hidden" name="key" value="{key}"><label class="auth-field"><span class="auth-label">{name_label}</span><input class="auth-input auth-input-mono" type="text" name="name" value="{name}" required></label><label class="auth-field"><span class="auth-label">{url_label}</span><input class="auth-input auth-input-mono" type="text" name="url" value="{url}" required></label><button class="admin-action" type="submit">{save}</button></form></div></details>"#,
+            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/services_edit" class="admin-form"><input type="hidden" name="key" value="{key}"><label class="auth-field"><span class="auth-label">{name_label}</span><input class="auth-input auth-input-mono" type="text" name="name" value="{name}" required></label>{address_field}<button class="admin-action" type="submit">{save}</button></form></div></details>"#,
             edit_word = t(lang, Key::EditWord),
             edit_title = i18n::edit_service_title(lang, &name),
             key = key,
             name = name,
-            url = url,
             name_label = t(lang, Key::NameCol),
-            url_label = t(lang, Key::AddressLabel),
             save = t(lang, Key::SaveButton),
         );
         let up = format!(
@@ -443,16 +461,23 @@ async fn services_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::
             key = key,
             down_label = t(lang, Key::ServiceMoveDown),
         );
-        let remove = confirm_action(
-            "key",
-            &key,
-            "/admin/services_remove",
-            t(lang, Key::Remove),
-            " admin-danger",
-            &i18n::remove_service_title(lang, &name),
-            t(lang, Key::RemoveCost),
-            t(lang, Key::ConfirmRemove),
-        );
+        let remove = if kept {
+            format!(
+                r#"<span class="muted">{kept_word}</span>"#,
+                kept_word = t(lang, Key::ServiceKept),
+            )
+        } else {
+            confirm_action(
+                "key",
+                &key,
+                "/admin/services_remove",
+                t(lang, Key::Remove),
+                " admin-danger",
+                &i18n::remove_service_title(lang, &name),
+                t(lang, Key::RemoveCost),
+                t(lang, Key::ConfirmRemove),
+            )
+        };
         rows.push_str(&format!(
             r#"<tr><td class="mono">{key}</td><td>{name}</td><td class="mono">{url}</td><td class="actions">{edit}{up}{down}{remove}</td></tr>"#,
         ));
@@ -502,6 +527,7 @@ async fn services_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Respons
             key: input.key,
             name: input.name,
             url: input.url,
+            owner: None,
         },
     )
     .await;
@@ -514,7 +540,8 @@ async fn services_edit(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Respon
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
     };
-    let outcome = im_core::services::edit(&app(cx).store, &input.key, &input.name, &input.url).await;
+    let outcome =
+        im_core::services::edit(&app(cx).store, &input.key, &input.name, &input.url).await;
     service_outcome(cx, &me, outcome).await
 }
 
@@ -569,7 +596,9 @@ async fn service_outcome(
             server::log_event(cx, "services_updated", Some(&me.email), None).await;
             back(cx, "services", "&ok=services")
         }
-        Err(im_core::store::StoreError::Invalid(_)) => back(cx, "services", "&error=bad_service"),
+        Err(im_core::store::StoreError::Invalid(_) | im_core::store::StoreError::Conflict(_)) => {
+            back(cx, "services", "&error=bad_service")
+        }
         Err(e) => Err(e.into()),
     }
 }

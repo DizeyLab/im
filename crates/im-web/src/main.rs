@@ -12,8 +12,8 @@ use topcoat::router::{BodyLimit, Router, RouterBuilderDiscoverExt, route};
 
 mod admin;
 mod auth;
-mod directory;
 mod config;
+mod directory;
 mod dropdown;
 mod i18n;
 mod layout;
@@ -158,6 +158,7 @@ async fn seed_services(store: &Store, config: &Config) {
             key: service.key.clone(),
             name: service.name.clone(),
             url: service.url.clone(),
+            owner: None,
         })
         .collect();
     match im_core::services::seed_from(store, &seed).await {
@@ -167,6 +168,27 @@ async fn seed_services(store: &Store, config: &Config) {
         ),
         Ok(false) => {}
         Err(e) => eprintln!("im: seeding services from config failed: {e}"),
+    }
+}
+
+/// im's own row of the family, written on every boot from `issuer`: the
+/// address is the running app's, not a config line someone edits once and
+/// forgets. A seeded `im` row is claimed here (its name stays the admin's);
+/// afterwards the panel can rename and reorder it, but not re-point or
+/// remove it. Never a reason to refuse boot — the family is a convenience,
+/// the sign-in is not.
+async fn register_self(store: &Store, config: &Config) {
+    match im_core::services::register(
+        store,
+        im_core::services::SELF_OWNER,
+        "Account",
+        &config.issuer,
+        im_core::services::SELF_OWNER,
+    )
+    .await
+    {
+        Ok(service) => println!("im      registered itself in the family at {}", service.url),
+        Err(e) => eprintln!("im: registering itself in the family failed: {e}"),
     }
 }
 
@@ -243,6 +265,7 @@ async fn serve(config: Config) {
     }
     let store = open_store(&config).await;
     seed_services(&store, &config).await;
+    register_self(&store, &config).await;
     let (live, _) = tokio::sync::broadcast::channel(64);
     // Told when the process is stopping, so the live streams end instead of
     // being waited out — see `live::Shutdown`.
