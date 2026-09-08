@@ -36,10 +36,17 @@ pub struct SessionInfo {
 /// Creates a session for `user`, returning the raw cookie token. The row
 /// holds only its digest, plus what `meta` says about the browser — and the
 /// first sighting is creation itself, so `seen_at` starts at `created_at`.
+///
+/// The panel's `max_sessions` policy caps how many live sessions one
+/// person may hold: past the cap the oldest of their sessions is revoked
+/// in the same write, and the cascade takes every app session and refresh
+/// token born under it down too. The session being created is the newest
+/// by construction, so a fresh login never evicts itself.
 pub async fn create_session(store: &Store, user: &UserId, meta: &SessionMeta) -> Result<Token> {
     let token = Token::mint();
     let now = store::now();
-    let days = crate::settings::policy(store).await?.session_days;
+    // One policy read serves both the lifetime and the per-user cap.
+    let policy = crate::settings::policy(store).await?;
     let conn = store.conn.lock().await;
     conn.execute(
         "INSERT INTO sessions (token_hash, user_id, created_at, expires_at, ip, agent, seen_at) \
@@ -48,13 +55,45 @@ pub async fn create_session(store: &Store, user: &UserId, meta: &SessionMeta) ->
             token.hash(),
             user.to_string(),
             store::stamp(now)?,
-            store::stamp(now + time::Duration::days(days))?,
+            store::stamp(now + time::Duration::days(policy.session_days))?,
             meta.ip.clone(),
             meta.agent.clone(),
         ],
     )
     .await
     .map_err(backend)?;
+    // The cap, enforced beside the insert: keep the newest `max_sessions`
+    // live sessions of this user and revoke the rest, under the same lock
+    // so the store never shows more than the cap allows. Newest-first with
+    // a rowid tiebreak keeps the cut deterministic when stamps collide, and
+    // an expired row is no session anymore — it neither holds a slot nor
+    // needs a revoke.
+    let mut rows = conn
+        .query(
+            "SELECT token_hash, expires_at FROM sessions \
+                 WHERE user_id = ?1 AND revoked_at IS NULL \
+                 ORDER BY created_at DESC, rowid DESC",
+            turso::params![user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+    let mut kept = 0i64;
+    let mut overflow = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        // Expiry is a stamp comparison beside `resolve_session`, where a
+        // corrupt stamp surfaces as an error.
+        if store::parse_stamp(&store::text(&row, 1)?)? < now {
+            continue;
+        }
+        if kept < policy.max_sessions {
+            kept += 1;
+        } else {
+            overflow.push(store::text(&row, 0)?);
+        }
+    }
+    for hash in &overflow {
+        revoke_session_hash_conn(&conn, hash).await?;
+    }
     Ok(token)
 }
 
@@ -120,6 +159,13 @@ pub async fn revoke_session(store: &Store, token: &str) -> Result<()> {
 /// revoke-everything below.
 pub(crate) async fn revoke_session_hash(store: &Store, hash: &str) -> Result<()> {
     let conn = store.conn.lock().await;
+    revoke_session_hash_conn(&conn, hash).await
+}
+
+/// The UPDATE half of [`revoke_session_hash`], runnable under a lock the
+/// caller already holds — session creation revokes its overflow with it
+/// inside the same critical section that inserts the fresh row.
+async fn revoke_session_hash_conn(conn: &turso::Connection, hash: &str) -> Result<()> {
     let now = store::stamp(store::now())?;
     conn.execute(
         "UPDATE sessions SET revoked_at = ?1 WHERE token_hash = ?2 AND revoked_at IS NULL",
@@ -504,5 +550,121 @@ mod tests {
         );
         let again = list_sessions(&store, &user_id).await.unwrap();
         assert_eq!(again[0].seen_at, Some(fresh));
+    }
+
+    #[tokio::test]
+    async fn cap_evicts_the_oldest_session_and_its_app_tokens() {
+        let (store, user_id) = fixture().await;
+        let mut tokens = Vec::new();
+        for _ in 0..5 {
+            tokens.push(
+                create_session(&store, &user_id, &SessionMeta::default())
+                    .await
+                    .unwrap(),
+            );
+        }
+        // An app session and a refresh token ride on the oldest central
+        // session, so the eviction's cascade has something to kill.
+        let (client_id, _secret) =
+            crate::oidc::create_client(&store, "evictee", vec!["http://app/callback".into()])
+                .await
+                .unwrap();
+        let oldest = &tokens[0];
+        let app_token =
+            crate::oidc::issue_app_session(&store, &user_id, &client_id, &oldest.hash())
+                .await
+                .unwrap();
+        let refresh =
+            crate::oidc::issue_refresh(&store, &user_id, &client_id, &oldest.hash())
+                .await
+                .unwrap();
+
+        // The sixth login pushes the first one out.
+        let fresh = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+        assert!(
+            resolve_session(&store, oldest.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        for token in &tokens[1..] {
+            assert!(
+                resolve_session(&store, token.expose())
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert!(
+            resolve_session(&store, fresh.expose())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(list_sessions(&store, &user_id).await.unwrap().len(), 5);
+
+        // The cascade: the evicted session's app session and refresh token
+        // stop resolving too.
+        assert!(
+            crate::oidc::introspect_app_session(
+                &store,
+                app_token.expose(),
+                client_id.as_str()
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            crate::oidc::rotate_refresh(&store, refresh.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cap_follows_the_policy() {
+        let (store, user_id) = fixture().await;
+        crate::settings::set_policy(
+            &store,
+            &crate::settings::Policy {
+                max_sessions: 2,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+
+        let first = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let second = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+        // The third login evicts the first: the cap is two now.
+        let third = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+        assert!(
+            resolve_session(&store, first.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            resolve_session(&store, second.expose())
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            resolve_session(&store, third.expose())
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

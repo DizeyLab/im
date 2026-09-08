@@ -516,6 +516,51 @@ pub async fn introspect_app_session(
     })))
 }
 
+/// One app a person is signed into, as the connected-apps list shows it:
+/// the client, its display name, how many of its app sessions are live,
+/// and when the person first and last connected to it.
+#[derive(Debug, Clone)]
+pub struct ConnectedApp {
+    pub client_id: String,
+    pub name: String,
+    pub count: i64,
+    pub first_at: time::OffsetDateTime,
+    pub last_at: time::OffsetDateTime,
+}
+
+/// The OIDC clients holding at least one live app session for `user`,
+/// most recently connected first. Revocation and expiry filter in SQL
+/// beside the introspection answer and `stats`' counts; the display name
+/// falls back to the raw `client_id` when no registered client row stands
+/// behind it.
+pub async fn list_connected_apps(store: &Store, user: &UserId) -> Result<Vec<ConnectedApp>> {
+    let conn = store.conn.lock().await;
+    let mut rows = conn
+        .query(
+            "SELECT a.client_id, COALESCE(c.name, a.client_id), COUNT(*), \
+                 MIN(a.created_at), MAX(a.created_at) \
+                 FROM app_sessions a \
+                 LEFT JOIN oidc_clients c ON c.client_id = a.client_id \
+                 WHERE a.user_id = ?1 AND a.revoked_at IS NULL AND a.expires_at > ?2 \
+                 GROUP BY a.client_id \
+                 ORDER BY MAX(a.created_at) DESC, a.client_id",
+            turso::params![user.to_string(), store::stamp(store::now())?],
+        )
+        .await
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        out.push(ConnectedApp {
+            client_id: store::text(&row, 0)?,
+            name: store::text(&row, 1)?,
+            count: store::int(&row, 2)?,
+            first_at: store::parse_stamp(&store::text(&row, 3)?)?,
+            last_at: store::parse_stamp(&store::text(&row, 4)?)?,
+        });
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,5 +767,146 @@ mod tests {
                 .redirect_uris
                 .contains(&"http://app/callback".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn connected_apps_list_live_grants_newest_first() {
+        let (store, client_id, user_id) = fixture().await;
+        let (other_id, _secret) =
+            create_client(&store, "other", vec!["http://other/callback".into()])
+                .await
+                .unwrap();
+        let session = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+
+        // Two grants on the first client, one on the second; the second
+        // client connected last and leads.
+        issue_app_session(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+        issue_app_session(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+        issue_app_session(&store, &user_id, &other_id, &session.hash())
+            .await
+            .unwrap();
+        let apps = list_connected_apps(&store, &user_id).await.unwrap();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].client_id, other_id.as_str());
+        assert_eq!(apps[0].name, "other");
+        assert_eq!(apps[0].count, 1);
+        // The first client aggregates its two grants under its registered
+        // display name.
+        assert_eq!(apps[1].client_id, client_id.as_str());
+        assert_eq!(apps[1].name, "demo");
+        assert_eq!(apps[1].count, 2);
+        assert!(apps[1].first_at <= apps[1].last_at);
+
+        // Backdate the second client's grant an hour: it connected last no
+        // more, and the order follows the stamps, not the inserts.
+        let conn = store.conn.lock().await;
+        conn.execute(
+            "UPDATE app_sessions SET created_at = ?1 WHERE client_id = ?2",
+            turso::params![
+                store::stamp(store::now() - time::Duration::hours(1)).unwrap(),
+                other_id.as_str(),
+            ],
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let apps = list_connected_apps(&store, &user_id).await.unwrap();
+        assert_eq!(apps[0].client_id, client_id.as_str());
+        assert_eq!(apps[1].client_id, other_id.as_str());
+        assert_eq!(apps[1].first_at, apps[1].last_at);
+
+        // Another person's grants never show up in someone else's list.
+        let invite = create_invite(&store, "bob@example.com", None, false)
+            .await
+            .unwrap();
+        let bob = create_user_from_invite(&store, invite.expose(), "Bob", "tDLr9!mZQ2xvQ")
+            .await
+            .unwrap();
+        let bobs_session = create_session(&store, &bob.id, &SessionMeta::default())
+            .await
+            .unwrap();
+        issue_app_session(&store, &bob.id, &other_id, &bobs_session.hash())
+            .await
+            .unwrap();
+        let bobs_apps = list_connected_apps(&store, &bob.id).await.unwrap();
+        assert_eq!(bobs_apps.len(), 1);
+        assert_eq!(bobs_apps[0].client_id, other_id.as_str());
+        assert_eq!(bobs_apps[0].count, 1);
+    }
+
+    #[tokio::test]
+    async fn connected_apps_skip_revoked_grants_and_fall_back_to_raw_ids() {
+        let (store, client_id, user_id) = fixture().await;
+        let session = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+
+        // Two grants on the client; then one of them is revoked.
+        let revocable = issue_app_session(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+        issue_app_session(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+        let conn = store.conn.lock().await;
+        conn.execute(
+            "UPDATE app_sessions SET revoked_at = ?1 WHERE token_hash = ?2",
+            turso::params![
+                store::stamp(store::now()).unwrap(),
+                hash_token(revocable.expose()),
+            ],
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let apps = list_connected_apps(&store, &user_id).await.unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].client_id, client_id.as_str());
+        assert_eq!(apps[0].count, 1);
+
+        // A grant whose client row never existed shows the raw client_id
+        // as its name.
+        let conn = store.conn.lock().await;
+        conn.execute(
+            "INSERT INTO app_sessions \
+                 (token_hash, user_id, client_id, session_hash, created_at, expires_at) \
+                 VALUES ('ghost-hash', ?1, 'ghost-app', ?2, ?3, ?4)",
+            turso::params![
+                user_id.to_string(),
+                session.hash(),
+                store::stamp(store::now()).unwrap(),
+                store::stamp(store::now() + time::Duration::days(30)).unwrap(),
+            ],
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let apps = list_connected_apps(&store, &user_id).await.unwrap();
+        assert_eq!(apps.len(), 2);
+        let ghost = apps
+            .iter()
+            .find(|app| app.client_id == "ghost-app")
+            .unwrap();
+        assert_eq!(ghost.name, "ghost-app");
+        assert_eq!(ghost.count, 1);
+
+        // And an expired grant is not a connected app either.
+        let conn = store.conn.lock().await;
+        conn.execute(
+            "UPDATE app_sessions SET expires_at = ?1 WHERE client_id = 'ghost-app'",
+            turso::params![store::stamp(store::now() - time::Duration::days(1)).unwrap()],
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let apps = list_connected_apps(&store, &user_id).await.unwrap();
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].client_id, client_id.as_str());
     }
 }

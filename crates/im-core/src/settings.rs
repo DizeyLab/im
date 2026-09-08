@@ -238,6 +238,7 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
 pub struct Policy {
     pub invite_days: i64,
     pub session_days: i64,
+    pub max_sessions: i64,
     pub pending_minutes: i64,
     pub reset_minutes: i64,
     pub login_attempts_per_hour: i64,
@@ -248,6 +249,7 @@ impl Default for Policy {
         Self {
             invite_days: 7,
             session_days: 30,
+            max_sessions: 5,
             pending_minutes: 10,
             reset_minutes: 60,
             login_attempts_per_hour: 10,
@@ -268,6 +270,7 @@ pub async fn policy(store: &Store) -> Result<Policy> {
     Ok(Policy {
         invite_days: number(store, "invite_days", defaults.invite_days).await?,
         session_days: number(store, "session_days", defaults.session_days).await?,
+        max_sessions: number(store, "max_sessions", defaults.max_sessions).await?,
         pending_minutes: number(store, "pending_minutes", defaults.pending_minutes).await?,
         reset_minutes: number(store, "reset_minutes", defaults.reset_minutes).await?,
         login_attempts_per_hour: number(
@@ -295,6 +298,12 @@ pub async fn set_policy(store: &Store, policy: &Policy) -> Result<()> {
         store,
         "session_days",
         &clamp(policy.session_days, defaults.session_days).to_string(),
+    )
+    .await?;
+    set(
+        store,
+        "max_sessions",
+        &clamp(policy.max_sessions, defaults.max_sessions).to_string(),
     )
     .await?;
     set(
@@ -460,5 +469,29 @@ mod tests {
         set_smtp(&store, &value, None).await.unwrap();
         assert_eq!(standing(&store).await.unwrap(), Standing::Unchecked);
         assert!(last_check(&store).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn policy_defaults_roundtrip_and_zero_clamps_to_default() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+
+        // A fresh database reads as the born-with defaults.
+        assert_eq!(policy(&store).await.unwrap(), Policy::default());
+        assert_eq!(policy(&store).await.unwrap().max_sessions, 5);
+
+        // A written value comes back...
+        let mut value = Policy::default();
+        value.max_sessions = 2;
+        set_policy(&store, &value).await.unwrap();
+        assert_eq!(policy(&store).await.unwrap().max_sessions, 2);
+
+        // ...and zero or negative — a cap that would lock every user out
+        // of their own account — clamps back to the default, unstored.
+        value.max_sessions = 0;
+        set_policy(&store, &value).await.unwrap();
+        assert_eq!(policy(&store).await.unwrap().max_sessions, 5);
+        value.max_sessions = -3;
+        set_policy(&store, &value).await.unwrap();
+        assert_eq!(policy(&store).await.unwrap().max_sessions, 5);
     }
 }

@@ -604,8 +604,8 @@ async fn service_outcome(
 }
 
 /// The knobs the code shipped with, now the panel's: invite and reset link
-/// lifetimes, the sign-in session's days, the pending marker's minutes, and
-/// the sign-in failure ceiling. Same form skin as Mail.
+/// lifetimes, the sign-in session's days and per-user ceiling, the pending
+/// marker's minutes, and the sign-in failure ceiling. Same form skin as Mail.
 async fn settings_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
     let policy = settings::policy(&app(cx).store).await?;
     Ok(format!(
@@ -617,6 +617,8 @@ async fn settings_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::
       <input class="auth-input auth-input-mono" type="number" name="invite_days" min="1" value="{}"></label>
     <label class="auth-field"><span class="auth-label">{session_days}</span>
       <input class="auth-input auth-input-mono" type="number" name="session_days" min="1" value="{}"></label>
+    <label class="auth-field"><span class="auth-label">{max_sessions}</span>
+      <input class="auth-input auth-input-mono" type="number" name="max_sessions" min="1" value="{}"></label>
     <label class="auth-field"><span class="auth-label">{pending_minutes}</span>
       <input class="auth-input auth-input-mono" type="number" name="pending_minutes" min="1" value="{}"></label>
     <label class="auth-field"><span class="auth-label">{reset_minutes}</span>
@@ -628,6 +630,7 @@ async fn settings_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::
 </div>"#,
         policy.invite_days,
         policy.session_days,
+        policy.max_sessions,
         policy.pending_minutes,
         policy.reset_minutes,
         policy.login_attempts_per_hour,
@@ -635,6 +638,7 @@ async fn settings_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::
         sub = t(lang, Key::SettingsSub),
         invite_days = t(lang, Key::InviteDaysLabel),
         session_days = t(lang, Key::SessionDaysLabel),
+        max_sessions = t(lang, Key::MaxSessionsLabel),
         pending_minutes = t(lang, Key::PendingMinutesLabel),
         reset_minutes = t(lang, Key::ResetMinutesLabel),
         attempts = t(lang, Key::LoginAttemptsLabel),
@@ -646,6 +650,7 @@ async fn settings_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::
 struct PolicyForm {
     invite_days: i64,
     session_days: i64,
+    max_sessions: i64,
     pending_minutes: i64,
     reset_minutes: i64,
     login_attempts_per_hour: i64,
@@ -663,6 +668,7 @@ async fn settings_save(cx: &Cx, Form(input): Form<PolicyForm>) -> Result<Respons
         &settings::Policy {
             invite_days: input.invite_days,
             session_days: input.session_days,
+            max_sessions: input.max_sessions,
             pending_minutes: input.pending_minutes,
             reset_minutes: input.reset_minutes,
             login_attempts_per_hour: input.login_attempts_per_hour,

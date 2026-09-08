@@ -568,6 +568,43 @@ fn sessions_html(
     rows
 }
 
+/// The connected-apps card builds its rows as a string — one per app holding
+/// an active grant — under the sessions card's own discipline: everything
+/// app-controlled (name, client id) crosses `escape` before it reaches the
+/// markup. The summary names the app and carries its active count; the
+/// detail holds the client id and the last-connected stamp.
+fn apps_html(apps: &[im_core::oidc::ConnectedApp], lang: Lang) -> String {
+    let mut rows = String::new();
+    for app in apps {
+        rows.push_str(&format!(
+            concat!(
+                r#"<details class="session-item"><summary class="session-head">"#,
+                r#"<span class="session-device">{}</span>"#,
+                r#"<span class="session-ip mono">{}</span>"#,
+                r#"</summary><div class="session-detail">"#,
+                r#"<dl class="profile-fields">"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
+                r#"<dd class="profile-value mono">{}</dd></div>"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
+                r#"<dd class="profile-value">{}</dd></div>"#,
+                r#"<div class="profile-field"><dt class="auth-label">{}</dt>"#,
+                r#"<dd class="profile-value">{}</dd></div>"#,
+                r#"</dl>"#,
+                r#"</div></details>"#
+            ),
+            escape(&app.name),
+            app.count,
+            t(lang, Key::ClientIdLabel),
+            escape(&app.client_id),
+            t(lang, Key::ActiveGrantsLabel),
+            app.count,
+            t(lang, Key::LastConnectedLabel),
+            stamp_min(app.last_at),
+        ));
+    }
+    rows
+}
+
 /// The signed-in landing. im is an auth service, not an app: this page is
 /// the proof of session, the person's profile — photo and the counts their
 /// identity has earned — and the way out. izlek gives a profile its own
@@ -586,11 +623,18 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
     let sessions = im_core::sessions::list_sessions(&server::app(cx).store, &user.id).await?;
     let current = server::presented_session(cx).map(|token| im_core::accounts::hash_token(&token));
     let sessions_html = sessions_html(&sessions, current.as_deref(), lang);
+    let apps = im_core::oidc::list_connected_apps(&server::app(cx).store, &user.id).await?;
+    let apps_html = if apps.is_empty() {
+        format!(r#"<div class="auth-sub">{}</div>"#, t(lang, Key::AppsEmpty))
+    } else {
+        apps_html(&apps, lang)
+    };
     // Same idiom as the admin panel's nav: one tab per section, the live one
     // underlined.
     let nav = [
         ("profile", t(lang, Key::ProfileLabel)),
         ("sessions", t(lang, Key::SessionsTitle)),
+        ("apps", t(lang, Key::StatConnectedApps)),
         ("preferences", t(lang, Key::PreferencesLabel)),
         ("password", t(lang, Key::PasswordLabel)),
     ]
@@ -628,6 +672,12 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                 <span class="auth-submit-text">(t(lang, Key::SignOutEverywhere))</span>
                             </button>
                         </form>
+                    </div>
+                }
+                if section == "apps" {
+                    <div class="auth-card">
+                        <div class="auth-title">(t(lang, Key::StatConnectedApps))</div>
+                        <div class="session-list">(topcoat::view::Unescaped::new_unchecked(apps_html))</div>
                     </div>
                 }
                 if section == "preferences" {
@@ -704,7 +754,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                         <div class="auth-sub">(t(lang, Key::AccountPasswordNote))</div>
                     </div>
                 }
-                if section != "sessions" && section != "preferences" && section != "password" {
+                if section != "sessions" && section != "preferences" && section != "password" && section != "apps" {
                     <div class="auth-card">
                         <div class="profile-head">
                             if user.has_photo {

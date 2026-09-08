@@ -916,4 +916,81 @@ mod tests {
         // The unowned rows still do.
         assert!(panel.contains(r#"action="/admin/services_remove""#));
     }
+    #[tokio::test]
+    async fn admin_settings_save_and_echo_the_max_sessions_ceiling() {
+        let Setup { router, store, .. } = setup().await;
+        let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let session = im_core::sessions::create_session(&store, &ada.id, &Default::default())
+            .await
+            .unwrap();
+        let cookie = format!("{SESSION_COOKIE}={}", session.expose());
+
+        let (_status, location, _) = post_form(
+            &router,
+            "/admin/settings",
+            "invite_days=30&session_days=7&max_sessions=2&pending_minutes=10&reset_minutes=15&login_attempts_per_hour=20",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=settings&ok=settings")
+        );
+        let panel = get_page(&router, "/admin?section=settings", &cookie).await;
+        assert!(
+            panel.contains(r#"name="max_sessions" min="1" value="2""#),
+            "the saved ceiling must echo back into the form: {panel}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_landing_lists_connected_apps_and_an_empty_note_without_them() {
+        let Setup {
+            router,
+            client_id,
+            store,
+            ..
+        } = setup().await;
+        let ben = im_core::accounts::user_by_email(&store, "ben@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let session = im_core::sessions::create_session(&store, &ben.id, &Default::default())
+            .await
+            .unwrap();
+        let cookie = format!("{SESSION_COOKIE}={}", session.expose());
+
+        // No grants yet: the section is its empty note, with no rows at all.
+        let page = get_page(&router, "/?section=apps", &cookie).await;
+        assert!(page.contains("Connected apps"), "the title is missing");
+        assert!(
+            page.contains("No apps are connected yet."),
+            "the empty note is missing: {page}"
+        );
+
+        // A minted app session is a grant: the seeded app shows under Ben's
+        // landing with its name, its client id and its active count.
+        im_core::oidc::issue_app_session(
+            &store,
+            &ben.id,
+            &ClientId::from(client_id.clone()),
+            &im_core::accounts::hash_token(session.expose()),
+        )
+        .await
+        .unwrap();
+        let page = get_page(&router, "/?section=apps", &cookie).await;
+        assert!(page.contains("tasks"), "the app's name is missing: {page}");
+        assert!(
+            page.contains(&client_id),
+            "the client id is missing: {page}"
+        );
+        assert!(
+            !page.contains("No apps are connected yet."),
+            "the empty note must yield once a grant exists"
+        );
+    }
+
 }
