@@ -45,6 +45,8 @@ pub fn error_text(code: &str, lang: Lang) -> &'static str {
         "bad_ui" => t(lang, Key::ErrBadUi),
         "bad_language" => t(lang, Key::ErrBadLanguage),
         "bad_service" => t(lang, Key::ErrBadService),
+        "bad_client" => t(lang, Key::ErrBadClient),
+        "no_such_client" => t(lang, Key::ErrNoSuchClient),
         "empty_subject" => t(lang, Key::ErrEmptySubject),
         "empty_body" => t(lang, Key::ErrEmptyBody),
         "no_such_user" => t(lang, Key::ErrNoSuchUser),

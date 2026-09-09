@@ -81,6 +81,17 @@ const ADMIN_SCRIPT: &str = r#"<script>(function () {
     if (e.key !== 'Escape') { return; }
     document.querySelectorAll('.admin-confirm[open]').forEach(function (d) { d.removeAttribute('open'); });
   }, true);
+  // The show-once banner's copy button: copies the secret beside it, flips
+  // its label, and works without script too — the value is selectable text.
+  document.addEventListener('click', function (e) {
+    var b = e.target.closest && e.target.closest('.admin-copy');
+    if (!b) { return; }
+    var row = b.closest('.admin-copy-row');
+    var v = row && row.querySelector('.admin-copy-value');
+    if (!v) { return; }
+    var done = function () { b.textContent = b.getAttribute('data-copied-label'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(v.textContent).then(done, done); } else { try { document.execCommand('copy'); } catch (err) {} done(); }
+  }, true);
 })();</script>"#;
 
 fn back(cx: &Cx, section: &str, extra: &str) -> Result<Response> {
@@ -111,12 +122,17 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
     let ok = query_value(&query, "ok");
     let why = query_value(&query, "why");
     let invited = query_value(&query, "invited");
+    // The one read that takes a stashed client secret off the shelf: a
+    // replayed, reloaded, or forged ticket finds the shelf empty.
+    let shown = query_value(&query, "shown")
+        .as_deref()
+        .and_then(server::take_shown_secret);
 
     let nav = |current: &str| {
         [
             ("users", t(lang, Key::NavUsers)),
             ("services", t(lang, Key::NavServices)),
-            ("mail", t(lang, Key::NavMail)),
+            ("clients", t(lang, Key::NavClients)),
             ("message", t(lang, Key::NavMessage)),
             ("settings", t(lang, Key::NavSettings)),
             ("logs", t(lang, Key::NavLogs)),
@@ -137,7 +153,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         "settings" => settings_section(cx, lang).await?,
         "logs" => logs_section(cx, lang).await?,
         "services" => services_section(cx, lang).await?,
-        "users" => users_section(cx, &me, invited.as_deref(), lang).await?,
+        "clients" => clients_section(cx, shown, lang).await?,
         _ => users_section(cx, &me, invited.as_deref(), lang).await?,
     };
 
@@ -158,6 +174,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                 "settings" => t(lang, Key::OkSettingsSaved),
                 "services" => t(lang, Key::OkServicesSaved),
                 "email_changed" => t(lang, Key::OkEmailChanged),
+                "client_revoked" => t(lang, Key::OkClientRevoked),
                 _ => t(lang, Key::OkDone),
             }
         )),
@@ -614,6 +631,176 @@ async fn service_outcome(
         }
         Err(e) => Err(e.into()),
     }
+}
+
+/// The relying parties: every client the family's apps sign in with. One
+/// table in the panel's own skins — rotate and revoke as the two-step
+/// disclosures — and the add line under it wearing the invite form's skin.
+/// A create or rotate answers a 303 whose `shown` ticket picks the fresh
+/// secret off the shelf for exactly one render; the page never learns a
+/// secret twice.
+async fn clients_section(
+    cx: &Cx,
+    shown: Option<(String, String)>,
+    lang: i18n::Lang,
+) -> Result<String, topcoat::Error> {
+    let clients = im_core::oidc::list_clients(&app(cx).store).await?;
+    let mut rows = String::new();
+    for client in &clients {
+        let id = escape(&client.client_id.to_string());
+        let name = escape(&client.name);
+        let uris = client
+            .redirect_uris
+            .iter()
+            .map(|uri| escape(uri))
+            .collect::<Vec<_>>()
+            .join("<br>");
+        let registered = client
+            .created_at
+            .format(&time::macros::format_description!("[year]-[month]-[day]"))
+            .unwrap_or_default();
+        // Rotation kills the old pair the moment the new one exists, so it
+        // says what it costs before it does it — like every destructive row
+        // action here.
+        let rotate = confirm_action(
+            "client",
+            &id,
+            "/admin/clients_rotate",
+            t(lang, Key::RotateWord),
+            "",
+            &i18n::rotate_client_title(lang, &name),
+            t(lang, Key::RotateCost),
+            t(lang, Key::ConfirmRotate),
+        );
+        let revoke_action = confirm_action(
+            "client",
+            &id,
+            "/admin/clients_revoke",
+            t(lang, Key::RevokeWord),
+            " admin-danger",
+            &i18n::revoke_client_title(lang, &name),
+            t(lang, Key::RevokeCost),
+            t(lang, Key::ConfirmRevoke),
+        );
+        rows.push_str(&format!(
+            r#"<tr><td>{name}</td><td class="mono">{id}</td><td class="mono">{uris}</td><td class="muted">{registered}</td><td class="actions">{rotate}{revoke_action}</td></tr>"#,
+        ));
+    }
+    // The show-once banner: the note says what to do with it, the value is
+    // click-to-copy, and the shelf behind it has already handed it over.
+    let shown_html = shown
+        .map(|(client_id, secret)| {
+            format!(
+                r#"<div class="auth-note">{note}<div class="admin-copy-row"><div class="muted">{id_label}: <span class="mono">{client_id}</span></div><div class="auth-secret admin-copy-value">{secret}</div><button class="admin-action admin-copy" type="button" data-copied-label="{copied}">{copy}</button></div></div>"#,
+                note = t(lang, Key::SecretShownNote),
+                id_label = t(lang, Key::ClientIdLabel),
+                client_id = escape(&client_id),
+                secret = escape(&secret),
+                copied = t(lang, Key::CopiedWord),
+                copy = t(lang, Key::CopyWord),
+            )
+        })
+        .unwrap_or_default();
+    Ok(format!(
+        r#"<div class="admin-card">
+  <div class="auth-title">{title}</div>
+  {shown_html}
+  <div class="admin-table-wrap">
+  <table class="admin-table">
+    <thead><tr><th>{name_label}</th><th>{id_label}</th><th>{uris_label}</th><th>{registered_label}</th><th></th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  </div>
+  <form method="post" action="/admin/clients_add" class="admin-invite">
+    <input class="auth-input" type="text" name="name" placeholder="drive" aria-label="{name_label}" required>
+    <input class="auth-input auth-input-mono" type="text" name="redirect_uris" placeholder="http://127.0.0.1:9000/callback https://drive.dizey.sh/callback" aria-label="{uris_label}" required>
+    <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{add}</span></button>
+  </form>
+</div>"#,
+        title = t(lang, Key::ClientsTitle),
+        name_label = t(lang, Key::NameCol),
+        id_label = t(lang, Key::ClientIdLabel),
+        uris_label = t(lang, Key::RedirectUrisLabel),
+        registered_label = t(lang, Key::RegisteredCol),
+        add = t(lang, Key::ClientAdd),
+    ))
+}
+
+/// One user of the clients forms: the name, and one or more redirect URIs
+/// — whitespace- or comma-separated, as loose as the CLI's argument list,
+/// because a family dev's `http://127.0.0.1` redirect is a legitimate row.
+#[derive(Deserialize)]
+struct ClientForm {
+    name: String,
+    redirect_uris: String,
+}
+
+#[route(POST "/admin/clients_add")]
+async fn clients_add(cx: &Cx, Form(input): Form<ClientForm>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let name = input.name.trim().to_string();
+    let uris: Vec<String> = input
+        .redirect_uris
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .map(str::trim)
+        .filter(|uri| !uri.is_empty())
+        .map(str::to_string)
+        .collect();
+    if name.is_empty() || uris.is_empty() {
+        return back(cx, "clients", "&error=bad_client");
+    }
+    let (id, secret) = im_core::oidc::create_client(&app(cx).store, &name, uris).await?;
+    server::log_event(cx, "client_created", Some(&me.email), Some(&name)).await;
+    let shown = server::stash_shown_secret(id.to_string(), secret.expose().to_string());
+    back(cx, "clients", &format!("&shown={shown}"))
+}
+
+#[derive(Deserialize)]
+struct ClientAction {
+    client: String,
+}
+
+#[route(POST "/admin/clients_rotate")]
+async fn clients_rotate(cx: &Cx, Form(input): Form<ClientAction>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    // The log line names the client like a person, so the name comes off
+    // the row before the secret under it moves.
+    let name = match im_core::oidc::client_by_id(&app(cx).store, &input.client).await? {
+        Some(client) => client.name,
+        None => return back(cx, "clients", "&error=no_such_client"),
+    };
+    match im_core::oidc::rotate_client_secret(&app(cx).store, &input.client).await? {
+        Some(secret) => {
+            server::log_event(cx, "client_rotated", Some(&me.email), Some(&name)).await;
+            let shown =
+                server::stash_shown_secret(input.client.clone(), secret.expose().to_string());
+            back(cx, "clients", &format!("&shown={shown}"))
+        }
+        None => back(cx, "clients", "&error=no_such_client"),
+    }
+}
+
+#[route(POST "/admin/clients_revoke")]
+async fn clients_revoke(cx: &Cx, Form(input): Form<ClientAction>) -> Result<Response> {
+    let me = match require_admin(cx).await {
+        Ok(me) => me,
+        Err(redirect) => return Ok(redirect),
+    };
+    let name = match im_core::oidc::client_by_id(&app(cx).store, &input.client).await? {
+        Some(client) => client.name,
+        None => return back(cx, "clients", "&error=no_such_client"),
+    };
+    if !im_core::oidc::revoke_client(&app(cx).store, &input.client).await? {
+        return back(cx, "clients", "&error=no_such_client");
+    }
+    server::log_event(cx, "client_revoked", Some(&me.email), Some(&name)).await;
+    back(cx, "clients", "&ok=client_revoked")
 }
 
 /// The knobs the code shipped with, now the panel's: invite and reset link
@@ -1563,4 +1750,360 @@ async fn probe(
     }
     // The chip changed; watching tabs re-read it on the next tick.
     let _ = live.send(server::LiveEvent::Tick);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use im_core::accounts::{create_invite, create_user_from_invite};
+    use im_core::model::{ClientId, UserId};
+    use im_core::oidc::{introspect_app_session, issue_app_session, list_clients};
+    use im_core::sessions::{SessionMeta, create_session};
+    use im_core::store::Store;
+    use topcoat::cookie::RouterBuilderCookieExt as _;
+    use topcoat::router::{
+        Body, Router, RouterBuilderDiscoverExt as _, StatusCode, header, to_bytes,
+    };
+
+    use crate::config::Config;
+    use crate::server::{self, SESSION_COOKIE};
+
+    struct Setup {
+        router: Router,
+        store: Arc<Store>,
+        admin_id: UserId,
+        admin_cookie: String,
+        plain_cookie: String,
+    }
+
+    async fn setup() -> Setup {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let invite = create_invite(&store, "root@example.com", None, true)
+            .await
+            .unwrap();
+        let admin = create_user_from_invite(&store, invite.expose(), "Root", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let bare = create_invite(&store, "sid@example.com", None, false)
+            .await
+            .unwrap();
+        let plain = create_user_from_invite(&store, bare.expose(), "Sid", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let admin_session = create_session(&store, &admin.id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let plain_session = create_session(&store, &plain.id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let (live, _) = tokio::sync::broadcast::channel(64);
+        let store = Arc::new(store);
+        let app = server::App {
+            store: store.clone(),
+            config: Config {
+                database: ":memory:".into(),
+                listen: "127.0.0.1:7650".parse().unwrap(),
+                issuer: "http://127.0.0.1:7650".into(),
+                services: Vec::new(),
+            },
+            live,
+        };
+        let router = Router::builder()
+            .discover()
+            .cookies()
+            .app_context(app)
+            .build();
+        Setup {
+            router,
+            store,
+            admin_id: admin.id,
+            admin_cookie: format!("{SESSION_COOKIE}={}", admin_session.expose()),
+            plain_cookie: format!("{SESSION_COOKIE}={}", plain_session.expose()),
+        }
+    }
+
+    /// A form post through the router, answered as (status, Location, body).
+    async fn post_form(
+        router: &Router,
+        uri: &str,
+        body: &str,
+        cookie: Option<&str>,
+    ) -> (StatusCode, Option<String>, String) {
+        let mut builder = http::Request::builder()
+            .method(http::Method::POST)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let response = router
+            .handle(builder.body(Body::from(body.to_string())).unwrap())
+            .await;
+        let (parts, body) = response.into_parts();
+        let location = parts
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let bytes = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        (parts.status, location, String::from_utf8(bytes).unwrap())
+    }
+
+    /// A GET with (maybe) a session cookie, answered as (status, Location).
+    async fn get_location(
+        router: &Router,
+        uri: &str,
+        cookie: Option<&str>,
+    ) -> (StatusCode, Option<String>) {
+        let mut builder = http::Request::builder().uri(uri);
+        if let Some(cookie) = cookie {
+            builder = builder.header(header::COOKIE, cookie);
+        }
+        let response = router.handle(builder.body(Body::empty()).unwrap()).await;
+        let (parts, _) = response.into_parts();
+        let location = parts
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        (parts.status, location)
+    }
+
+    fn basic(client_id: &str, secret: &str) -> String {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{client_id}:{secret}"))
+        )
+    }
+
+    /// Registers a client through the panel itself and returns the pair the
+    /// one show-once render would carry: the 303's claim ticket, taken off
+    /// the shelf — first reader wins.
+    async fn create_via_panel(setup: &Setup, name: &str) -> (String, String) {
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_add",
+            &format!("name={name}&redirect_uris=http://127.0.0.1:9000/callback"),
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let location = location.expect("a 303 back to the section");
+        assert!(location.starts_with("/admin?section=clients&shown="));
+        let ticket = location.trim_start_matches("/admin?section=clients&shown=");
+        let (id, secret) = server::take_shown_secret(ticket).expect("the one showing");
+        let row = list_clients(&setup.store).await.unwrap();
+        assert_eq!(id, row[0].client_id.to_string());
+        (id, secret)
+    }
+
+    /// GETs `/directory` with an app's Basic pair.
+    async fn directory(router: &Router, authorization: String) -> StatusCode {
+        let response = router
+            .handle(
+                http::Request::builder()
+                    .uri("/directory")
+                    .header(header::AUTHORIZATION, authorization)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        response.into_parts().0.status
+    }
+
+    #[tokio::test]
+    async fn clients_add_shows_the_secret_once_and_the_pair_authenticates() {
+        let setup = setup().await;
+
+        // The add answers a 303 whose query carries only a claim ticket —
+        // never the secret itself.
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_add",
+            "name=drive&redirect_uris=http://127.0.0.1:9000/callback",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let location = location.expect("a 303 back to the section");
+        assert!(location.starts_with("/admin?section=clients&shown="));
+        assert!(!location.contains("secret"));
+
+        // First reader wins: the ticket yields the pair exactly once, then
+        // the shelf is empty — a replayed or reloaded URL shows nothing.
+        let ticket = location.trim_start_matches("/admin?section=clients&shown=");
+        let (id, secret) = server::take_shown_secret(ticket).expect("the one showing");
+        assert!(server::take_shown_secret(ticket).is_none());
+        assert!(
+            server::take_shown_secret("a-forged-ticket").is_none(),
+            "a forged ticket shows nothing"
+        );
+
+        // The pair the one render showed authenticates on /directory.
+        assert_eq!(
+            directory(&setup.router, basic(&id, &secret)).await,
+            StatusCode::OK
+        );
+
+        // The registry row carries the digest only — the listing can never
+        // leak the secret.
+        let rows = list_clients(&setup.store).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "drive");
+        assert_ne!(rows[0].client_id.to_string(), secret);
+    }
+
+    #[tokio::test]
+    async fn clients_rotate_kills_the_old_pair_and_shows_a_new_secret_once() {
+        let setup = setup().await;
+        let (id, old_secret) = create_via_panel(&setup, "drive").await;
+
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_rotate",
+            &format!("client={id}"),
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let location = location.expect("a 303 back to the section");
+        assert!(location.starts_with("/admin?section=clients&shown="));
+        let ticket = location.trim_start_matches("/admin?section=clients&shown=");
+        let (rotated_id, new_secret) = server::take_shown_secret(ticket).expect("the one showing");
+        assert_eq!(rotated_id, id, "the shelf names the same client");
+        assert_ne!(old_secret, new_secret);
+
+        // The old pair is dead; the new one authenticates.
+        assert_eq!(
+            directory(&setup.router, basic(&id, &old_secret)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            directory(&setup.router, basic(&id, &new_secret)).await,
+            StatusCode::OK
+        );
+
+        // An unknown client is the section's refusal, not a minted secret.
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_rotate",
+            "client=no-such-client",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=clients&error=no_such_client")
+        );
+    }
+
+    #[tokio::test]
+    async fn clients_revoke_kills_the_pair_and_its_tokens() {
+        let setup = setup().await;
+        let (id, secret) = create_via_panel(&setup, "drive").await;
+        let client_id = ClientId::from(id.clone());
+
+        // An app session minted under the client, alive until revoked.
+        let session = create_session(&setup.store, &setup.admin_id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let app_token =
+            issue_app_session(&setup.store, &setup.admin_id, &client_id, &session.hash())
+                .await
+                .unwrap();
+        assert!(
+            introspect_app_session(&setup.store, app_token.expose(), &id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_revoke",
+            &format!("client={id}"),
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=clients&ok=client_revoked")
+        );
+
+        // The pair no longer authenticates, and the app session it minted
+        // no longer introspects — while the admin's own sign-in session
+        // lives on.
+        assert_eq!(
+            directory(&setup.router, basic(&id, &secret)).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert!(
+            introspect_app_session(&setup.store, app_token.expose(), &id)
+                .await
+                .unwrap()
+                .is_none(),
+            "no ghost app session after revocation"
+        );
+        assert_eq!(
+            im_core::sessions::list_sessions(&setup.store, &setup.admin_id)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "the admin's two sign-in sessions — the cookie's and the one that \
+             minted the app token — both stay"
+        );
+    }
+
+    #[tokio::test]
+    async fn client_routes_refuse_non_admins() {
+        let setup = setup().await;
+
+        // Every client write answers a non-admin with the panel's plain
+        // redirect home; nothing is created, rotated, or revoked.
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_add",
+            "name=drive&redirect_uris=http://127.0.0.1:9000/callback",
+            Some(&setup.plain_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_revoke",
+            "client=no-such-client",
+            Some(&setup.plain_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
+        assert!(list_clients(&setup.store).await.unwrap().is_empty());
+
+        // The section read is gated the same way.
+        let (status, location) = get_location(
+            &setup.router,
+            "/admin?section=clients",
+            Some(&setup.plain_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
+
+        // And a signed-out visitor cannot even create.
+        let (status, _, _) = post_form(
+            &setup.router,
+            "/admin/clients_add",
+            "name=drive&redirect_uris=http://127.0.0.1:9000/callback",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+    }
 }

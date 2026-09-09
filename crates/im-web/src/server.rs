@@ -8,7 +8,9 @@
 //! fetch with `accept: text/html`, so the 303's target document is what
 //! comes back — no refusal-carrying layer as in İzlek is needed.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use im_core::model::User;
 use im_core::store::Store;
@@ -68,6 +70,44 @@ pub async fn notify_profile(cx: &Cx, user_id: &im_core::model::UserId) {
 pub async fn log_event(cx: &Cx, kind: &str, actor: Option<&str>, detail: Option<&str>) {
     im_core::events::log(&app(cx).store, kind, actor, detail).await;
     note(cx);
+}
+
+// ---------------------------------------------------------------------------
+// The show-once shelf
+// ---------------------------------------------------------------------------
+
+/// How long a stashed secret waits for its one reader.
+const SHOWN_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// Where a freshly minted client secret waits between its POST and the one
+/// GET that shows it. The panel's write answers a 303 — the house idiom —
+/// but the secret itself must never ride a URL or a log line, so the query
+/// carries only a random claim ticket: the shelf holds the plaintext, the
+/// page's read takes it out (`take_shown_secret`), and a replayed or
+/// reloaded URL finds the shelf empty and renders no secret at all. A
+/// restart drops the shelf — the admin mints another, as with the CLI.
+static SHOWN_SECRETS: LazyLock<Mutex<HashMap<String, ((String, String), Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Parks a client's fresh pair on the shelf and returns the claim ticket
+/// for its URL. The id travels too — it is the public half of the pair and
+/// the one render shows it beside the secret.
+pub fn stash_shown_secret(client_id: String, secret: String) -> String {
+    let ticket = im_core::accounts::Token::mint().expose().to_string();
+    let mut shelf = SHOWN_SECRETS.lock().unwrap_or_else(PoisonError::into_inner);
+    shelf.retain(|_, (_, parked)| parked.elapsed() < SHOWN_TTL);
+    shelf.insert(ticket.clone(), ((client_id, secret), Instant::now()));
+    ticket
+}
+
+/// Takes a stashed pair out — exactly once; the second reader of the same
+/// ticket gets nothing.
+pub fn take_shown_secret(ticket: &str) -> Option<(String, String)> {
+    SHOWN_SECRETS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(ticket)
+        .map(|(pair, _)| pair)
 }
 
 pub fn app(cx: &Cx) -> &App {

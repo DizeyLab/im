@@ -115,6 +115,101 @@ pub fn verify_client_secret(client: &OidcClient, secret: &str) -> bool {
     digests_match(&client.secret_hash, &hash_token(secret))
 }
 
+/// A registered client, as the panel's Clients section and the CLI list it:
+/// no secret material — the row's digest stays an internal affair.
+#[derive(Debug, Clone)]
+pub struct ClientSummary {
+    pub client_id: ClientId,
+    pub name: String,
+    pub redirect_uris: Vec<String>,
+    pub created_at: time::OffsetDateTime,
+}
+
+/// Every registered client, oldest first — the admin panel's roster.
+pub async fn list_clients(store: &Store) -> Result<Vec<ClientSummary>> {
+    let conn = store.conn.lock().await;
+    let mut rows = conn
+        .query(
+            "SELECT client_id, name, redirect_uris, created_at FROM oidc_clients \
+                 ORDER BY created_at, client_id",
+            (),
+        )
+        .await
+        .map_err(backend)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(backend)? {
+        let uris_raw = store::text(&row, 2)?;
+        out.push(ClientSummary {
+            client_id: ClientId::from(store::text(&row, 0)?),
+            name: store::text(&row, 1)?,
+            redirect_uris: serde_json::from_str(&uris_raw)
+                .map_err(|e| StoreError::Corrupt(format!("redirect_uris {uris_raw:?}: {e}")))?,
+            created_at: store::parse_stamp(&store::text(&row, 3)?)?,
+        });
+    }
+    Ok(out)
+}
+
+/// Replaces a client's secret, returning the fresh one — shown exactly once;
+/// the row keeps only the new digest and every pair minted before is dead.
+/// `None` for an unknown client.
+pub async fn rotate_client_secret(store: &Store, client_id: &str) -> Result<Option<Token>> {
+    let conn = store.conn.lock().await;
+    let secret = Token::mint();
+    let updated = conn
+        .execute(
+            "UPDATE oidc_clients SET secret_hash = ?1 WHERE client_id = ?2",
+            turso::params![secret.hash(), client_id],
+        )
+        .await
+        .map_err(backend)?;
+    Ok((updated > 0).then_some(secret))
+}
+
+/// Deletes a client outright: the registry row and every refresh token and
+/// app session minted under it, one immediate transaction — no token row
+/// outlives the pair that minted it, and introspection reads them as
+/// inactive on the very next call. The person's sign-in sessions are not
+/// touched: the client's doors close, the browsers' stay open. `false` for
+/// an unknown client.
+pub async fn revoke_client(store: &Store, client_id: &str) -> Result<bool> {
+    let conn = store.conn.lock().await;
+    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
+    let outcome = async {
+        conn.execute(
+            "DELETE FROM refresh_tokens WHERE client_id = ?1",
+            turso::params![client_id],
+        )
+        .await
+        .map_err(backend)?;
+        conn.execute(
+            "DELETE FROM app_sessions WHERE client_id = ?1",
+            turso::params![client_id],
+        )
+        .await
+        .map_err(backend)?;
+        let deleted = conn
+            .execute(
+                "DELETE FROM oidc_clients WHERE client_id = ?1",
+                turso::params![client_id],
+            )
+            .await
+            .map_err(backend)?;
+        Ok(deleted > 0)
+    }
+    .await;
+    match outcome {
+        Ok(known) => {
+            conn.execute("COMMIT", ()).await.map_err(backend)?;
+            Ok(known)
+        }
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            Err(e)
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Authorization codes
 // ---------------------------------------------------------------------------
@@ -909,5 +1004,116 @@ mod tests {
         let apps = list_connected_apps(&store, &user_id).await.unwrap();
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].client_id, client_id.as_str());
+    }
+
+    #[tokio::test]
+    async fn rotate_client_secret_kills_the_old_pair() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let (client_id, original_secret) =
+            create_client(&store, "drive", vec!["http://app/cb".into()])
+                .await
+                .unwrap();
+
+        // Rotation replaces the digest: the new secret verifies, the old
+        // one stops, and the unknown id stays a None.
+        let rotated = rotate_client_secret(&store, client_id.as_str())
+            .await
+            .unwrap()
+            .expect("a known client rotates");
+        let row = client_by_id(&store, client_id.as_str())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(verify_client_secret(&row, rotated.expose()));
+        assert!(!verify_client_secret(&row, original_secret.expose()));
+        assert!(
+            rotate_client_secret(&store, "no-such-client")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn revoke_client_deletes_its_tokens_in_one_sweep() {
+        let (store, client_id, user_id) = fixture().await;
+        let session = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let app_token = issue_app_session(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+        let refresh = issue_refresh(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+
+        // Alive until revoked: introspection answers.
+        assert!(
+            introspect_app_session(&store, app_token.expose(), client_id.as_str())
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        assert!(revoke_client(&store, client_id.as_str()).await.unwrap());
+
+        // The pair is gone, and with it every token minted under it: the
+        // app session no longer introspects, the refresh no longer turns.
+        // The person's central session is untouched.
+        assert!(
+            introspect_app_session(&store, app_token.expose(), client_id.as_str())
+                .await
+                .unwrap()
+                .is_none(),
+            "no ghost app session after client revocation"
+        );
+        assert!(
+            rotate_refresh(&store, refresh.expose())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            client_by_id(&store, client_id.as_str())
+                .await
+                .unwrap()
+                .is_none(),
+            "the registry row itself is gone"
+        );
+        assert_eq!(
+            crate::sessions::list_sessions(&store, &user_id)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the person's own sign-in session stays"
+        );
+
+        // Revoking again is a quiet false, not an error.
+        assert!(!revoke_client(&store, client_id.as_str()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn list_clients_returns_the_registry_rows() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let (first, _) = create_client(
+            &store,
+            "drive",
+            vec!["http://a/cb".into(), "http://127.0.0.1:9000/cb".into()],
+        )
+        .await
+        .unwrap();
+        let (second, _) = create_client(&store, "in", vec!["https://in.dizey.sh/cb".into()])
+            .await
+            .unwrap();
+        let rows = list_clients(&store).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].client_id, first);
+        assert_eq!(rows[0].name, "drive");
+        assert_eq!(
+            rows[0].redirect_uris,
+            vec!["http://a/cb", "http://127.0.0.1:9000/cb"]
+        );
+        assert_eq!(rows[1].client_id, second);
     }
 }

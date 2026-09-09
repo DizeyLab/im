@@ -97,9 +97,23 @@ async fn main() {
             };
             set_admin_cli(config, email, false).await;
         }
+        Some("rotate-client") => {
+            let Some(id) = args.get(2) else {
+                eprintln!("usage: im-web rotate-client <client_id>");
+                std::process::exit(2);
+            };
+            rotate_client(config, id).await;
+        }
+        Some("revoke-client") => {
+            let Some(id) = args.get(2) else {
+                eprintln!("usage: im-web revoke-client <client_id>");
+                std::process::exit(2);
+            };
+            revoke_client(config, id).await;
+        }
         Some(other) => {
             eprintln!(
-                "im: unknown command {other:?} (expected: invite, revoke, promote, demote, create-client, or none to serve)"
+                "im: unknown command {other:?} (expected: invite, revoke, promote, demote, create-client, rotate-client, revoke-client, or none to serve)"
             );
             std::process::exit(2);
         }
@@ -259,6 +273,69 @@ async fn create_client(config: Config, name: &str, uris: &[String]) {
     println!("  client_secret {}", secret.expose());
     println!("  (the secret is shown once; its digest is all the database keeps)");
 }
+
+/// `im-web rotate-client <client_id>`: replaces the client's secret and
+/// prints the new one exactly once — the app's old pair dies with the write.
+///
+/// Needs the server stopped, like every CLI arm: Turso is a single-writer
+/// engine, and this process would hold the same file.
+async fn rotate_client(config: Config, id: &str) {
+    let store = open_store(&config).await;
+    let name = client_name(&store, id).await;
+    match im_core::oidc::rotate_client_secret(&store, id)
+        .await
+        .expect("failed to rotate the client secret")
+    {
+        Some(secret) => {
+            im_core::events::log(&store, "client_rotated", Some("cli"), Some(&name)).await;
+            println!("im      client {id} ({name})");
+            println!("  client_secret {}", secret.expose());
+            println!("  (the secret is shown once; its digest is all the database keeps)");
+        }
+        None => {
+            eprintln!("im: no client {id}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// `im-web revoke-client <client_id>`: deletes the registry row and every
+/// refresh token and app session minted under it; the person's own sign-in
+/// sessions stay.
+///
+/// Needs the server stopped, like every CLI arm: Turso is a single-writer
+/// engine, and this process would hold the same file.
+async fn revoke_client(config: Config, id: &str) {
+    let store = open_store(&config).await;
+    // The name rides the log line and the goodbye, so it comes off the row
+    // before the row goes.
+    let name = client_name(&store, id).await;
+    match im_core::oidc::revoke_client(&store, id)
+        .await
+        .expect("failed to revoke the client")
+    {
+        true => {
+            println!(
+                "im      client {id} ({name}) revoked — its tokens and app sessions went with it"
+            );
+        }
+        false => {
+            eprintln!("im: no client {id}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// The client's display name, or its id when no row stands behind it — the
+/// log's detail is the name when there is one.
+async fn client_name(store: &Arc<im_core::store::Store>, id: &str) -> String {
+    im_core::oidc::client_by_id(store, id)
+        .await
+        .expect("failed to read the client")
+        .map(|client| client.name)
+        .unwrap_or_else(|| id.to_string())
+}
+
 async fn serve(config: Config) {
     for line in config.report() {
         println!("im      {line}");

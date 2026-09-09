@@ -69,6 +69,8 @@ pub enum Key {
     ErrBadUi,
     ErrBadLanguage,
     ErrBadService,
+    ErrBadClient,
+    ErrNoSuchClient,
     ErrFallback,
 
     // Good-news codes (`pages.rs`'s `ok_text`).
@@ -180,6 +182,7 @@ pub enum Key {
     OkSettingsSaved,
     OkServicesSaved,
     OkMessageSent,
+    OkClientRevoked,
 
     // Admin mail section: the composed notice.
     MessageTitle,
@@ -238,6 +241,22 @@ pub enum Key {
     RoleMember,
     RoleAdmin,
     InviteButton,
+
+    // Admin clients section: the family's relying parties.
+    NavClients,
+    ClientsTitle,
+    RedirectUrisLabel,
+    RegisteredCol,
+    ClientAdd,
+    RotateWord,
+    RevokeWord,
+    ConfirmRotate,
+    ConfirmRevoke,
+    RotateCost,
+    RevokeCost,
+    SecretShownNote,
+    CopyWord,
+    CopiedWord,
 
     // Admin settings section.
     SettingsTitle,
@@ -369,6 +388,10 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ErrBadService, Tr) => {
             "Bir hizmet; küçük harf, rakam ya da tire ile yazılmış bir anahtar, bir ad ve http(s) adresi ister."
         }
+        (ErrBadClient, En) => "A client needs a name and at least one redirect URI.",
+        (ErrBadClient, Tr) => "Bir istemci; bir ad ve en az bir yönlendirme adresi ister.",
+        (ErrNoSuchClient, En) => "No such client.",
+        (ErrNoSuchClient, Tr) => "Böyle bir istemci yok.",
         (ErrFallback, En) => "Something went wrong. Try again.",
         (ErrFallback, Tr) => "Bir şeyler ters gitti. Yeniden dene.",
 
@@ -585,7 +608,10 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (OkServicesSaved, Tr) => "Hizmetler kaydedildi.",
         (OkMessageSent, En) => "Message sent.",
         (OkMessageSent, Tr) => "Mesaj gönderildi.",
-
+        (OkClientRevoked, En) => "Client revoked — its tokens and app sessions went with it.",
+        (OkClientRevoked, Tr) => {
+            "İstemci iptal edildi — jetonları ve uygulama oturumları da gitti."
+        }
         (MessageTitle, En) => "Send a message",
         (MessageTitle, Tr) => "Mesaj gönder",
         (MessageToLabel, En) => "To",
@@ -699,6 +725,47 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (RoleAdmin, Tr) => "yönetici",
         (InviteButton, En) => "Invite",
         (InviteButton, Tr) => "Davet et",
+
+        (NavClients, En) => "Clients",
+        (NavClients, Tr) => "İstemciler",
+        (ClientsTitle, En) => "Clients",
+        (ClientsTitle, Tr) => "İstemciler",
+        (RedirectUrisLabel, En) => "Redirect URIs",
+        (RedirectUrisLabel, Tr) => "Yönlendirme adresleri",
+        (RegisteredCol, En) => "Registered",
+        (RegisteredCol, Tr) => "Kayıt",
+        (ClientAdd, En) => "Register client",
+        (ClientAdd, Tr) => "İstemci kaydet",
+        (RotateWord, En) => "Rotate",
+        (RotateWord, Tr) => "Yenile",
+        (RevokeWord, En) => "Revoke",
+        (RevokeWord, Tr) => "İptal et",
+        (ConfirmRotate, En) => "Confirm rotate",
+        (ConfirmRotate, Tr) => "Yenilemeyi onayla",
+        (ConfirmRevoke, En) => "Confirm revoke",
+        (ConfirmRevoke, Tr) => "İptali onayla",
+        (RotateCost, En) => {
+            "The old secret stops working the moment the new one exists — put the new one in the app's config."
+        }
+        (RotateCost, Tr) => {
+            "Eski anahtar, yenisi oluştuğu anda geçersiz olur — yenisini uygulamanın ayarlarına koy."
+        }
+        (RevokeCost, En) => {
+            "The pair stops working, and its refresh tokens and app sessions go with it."
+        }
+        (RevokeCost, Tr) => {
+            "Anahtar çifti geçersiz olur; yenileme jetonları ve uygulama oturumları da silinir."
+        }
+        (SecretShownNote, En) => {
+            "This secret is shown once. Put the pair in the app's config now — only its digest stays here."
+        }
+        (SecretShownNote, Tr) => {
+            "Bu anahtar bir kez gösterilir. Çifti şimdi uygulamanın ayarlarına koy — buraya yalnızca özeti kalır."
+        }
+        (CopyWord, En) => "Copy",
+        (CopyWord, Tr) => "Kopyala",
+        (CopiedWord, En) => "Copied",
+        (CopiedWord, Tr) => "Kopyalandı",
 
         (SettingsTitle, En) => "Settings",
         (SettingsTitle, Tr) => "Ayarlar",
@@ -881,6 +948,9 @@ pub fn kind_word(lang: Lang, kind: &str) -> String {
         "smtp_checked" => ("Mail server checked", "Posta sunucusu denetlendi"),
         "message_sent" => ("Message sent", "Mesaj gönderildi"),
         "message_failed" => ("Message failed", "Mesaj başarısız"),
+        "client_created" => ("Client created", "İstemci oluşturuldu"),
+        "client_rotated" => ("Client secret rotated", "İstemci anahtarı yenilendi"),
+        "client_revoked" => ("Client revoked", "İstemci iptal edildi"),
         _ => return kind.to_string(),
     };
     match lang {
@@ -951,6 +1021,23 @@ pub fn remove_service_title(lang: Lang, name_html: &str) -> String {
     match lang {
         Lang::En => format!("Remove {name_html}?"),
         Lang::Tr => format!("{name_html} kaldırılsın mı?"),
+    }
+}
+
+/// A client row's "Rotate <name>'s secret?" disclosure title. `name_html`
+/// is already escaped.
+pub fn rotate_client_title(lang: Lang, name_html: &str) -> String {
+    match lang {
+        Lang::En => format!("Rotate {name_html}'s secret?"),
+        Lang::Tr => format!("{name_html} anahtarı yenilensin mi?"),
+    }
+}
+
+/// See [`rotate_client_title`].
+pub fn revoke_client_title(lang: Lang, name_html: &str) -> String {
+    match lang {
+        Lang::En => format!("Revoke {name_html}?"),
+        Lang::Tr => format!("{name_html} iptal edilsin mi?"),
     }
 }
 
