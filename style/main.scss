@@ -1021,6 +1021,19 @@ body:has(.log-list) {
     border-top: 1px solid var(--border-soft);
     vertical-align: middle;
   }
+
+  // Long mono strings — addresses, client ids, redirect URIs — wrap inside
+  // their columns instead of stretching the card sideways, the way the
+  // sessions fold keeps user-agent strings inside the panel.
+  td.mono {
+    overflow-wrap: anywhere;
+  }
+}
+
+// The clients table's registered date reads as one token; it holds its
+// line while the mono columns beside it take the wrap.
+.admin-clients td.muted {
+  white-space: nowrap;
 }
 
 .mono { font-family: var(--font-mono); }

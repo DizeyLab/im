@@ -391,7 +391,13 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
     }, 200);
   });
 
+  // The panel's own refresh: a tick says something moved and the page
+  // re-reads itself in place. While a show-once banner (a fresh client
+  // secret) stands, the refresh holds — the banner is a one-render affair,
+  // and a re-read would find the shelf empty and wipe it. The panel
+  // catches up on the next tick once the admin has moved on.
   window.__imRefresh = function () {
+    if (document.querySelector('.auth-secret')) { return; }
     fetch(location.href, { headers: { accept: 'text/html' } })
       .then(function (r) { return r.text(); })
       .then(function (html) {

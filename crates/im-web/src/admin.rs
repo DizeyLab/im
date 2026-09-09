@@ -706,7 +706,7 @@ async fn clients_section(
   <div class="auth-title">{title}</div>
   {shown_html}
   <div class="admin-table-wrap">
-  <table class="admin-table">
+  <table class="admin-table admin-clients">
     <thead><tr><th>{name_label}</th><th>{id_label}</th><th>{uris_label}</th><th>{registered_label}</th><th></th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
@@ -1762,6 +1762,7 @@ mod tests {
     use im_core::oidc::{introspect_app_session, issue_app_session, list_clients};
     use im_core::sessions::{SessionMeta, create_session};
     use im_core::store::Store;
+    use topcoat::asset::RouterBuilderAssetExt as _;
     use topcoat::cookie::RouterBuilderCookieExt as _;
     use topcoat::router::{
         Body, Router, RouterBuilderDiscoverExt as _, StatusCode, header, to_bytes,
@@ -1776,6 +1777,11 @@ mod tests {
         admin_id: UserId,
         admin_cookie: String,
         plain_cookie: String,
+        /// Whether the built asset bundle was found beside the target
+        /// directory and rides this router — page renders are then
+        /// assertable. It is a build artifact, not a source file, so its
+        /// absence skips render assertions instead of failing them.
+        assets: bool,
     }
 
     async fn setup() -> Setup {
@@ -1810,17 +1816,26 @@ mod tests {
             },
             live,
         };
-        let router = Router::builder()
-            .discover()
-            .cookies()
-            .app_context(app)
-            .build();
+        // The bundle lives at `target/<profile>/assets`, two hops up from
+        // this test binary — exactly where `AssetBundle::load` would look
+        // for the server executable.
+        let bundle = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().and_then(|deps| deps.parent()).map(|p| p.join("assets")))
+            .and_then(|dir| topcoat::asset::AssetBundle::load_dir(dir).ok());
+        let assets = bundle.is_some();
+        let mut builder = Router::builder().discover().cookies();
+        if let Some(bundle) = bundle {
+            builder = builder.assets(bundle);
+        }
+        let router = builder.app_context(app).build();
         Setup {
             router,
             store,
             admin_id: admin.id,
             admin_cookie: format!("{SESSION_COOKIE}={}", admin_session.expose()),
             plain_cookie: format!("{SESSION_COOKIE}={}", plain_session.expose()),
+            assets,
         }
     }
 
@@ -1851,24 +1866,30 @@ mod tests {
         (parts.status, location, String::from_utf8(bytes).unwrap())
     }
 
-    /// A GET with (maybe) a session cookie, answered as (status, Location).
-    async fn get_location(
+    /// A GET with (maybe) a session cookie, answered as
+    /// (status, Location, body).
+    async fn get_full(
         router: &Router,
         uri: &str,
         cookie: Option<&str>,
-    ) -> (StatusCode, Option<String>) {
+    ) -> (StatusCode, Option<String>, String) {
         let mut builder = http::Request::builder().uri(uri);
         if let Some(cookie) = cookie {
             builder = builder.header(header::COOKIE, cookie);
         }
         let response = router.handle(builder.body(Body::empty()).unwrap()).await;
-        let (parts, _) = response.into_parts();
+        let (parts, body) = response.into_parts();
         let location = parts
             .headers
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        (parts.status, location)
+        let bytes = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        (
+            parts.status,
+            location,
+            String::from_utf8(bytes).unwrap(),
+        )
     }
 
     fn basic(client_id: &str, secret: &str) -> String {
@@ -2087,7 +2108,7 @@ mod tests {
         assert!(list_clients(&setup.store).await.unwrap().is_empty());
 
         // The section read is gated the same way.
-        let (status, location) = get_location(
+        let (status, location, _) = get_full(
             &setup.router,
             "/admin?section=clients",
             Some(&setup.plain_cookie),
@@ -2095,7 +2116,6 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert_eq!(location.as_deref(), Some("/"));
-
         // And a signed-out visitor cannot even create.
         let (status, _, _) = post_form(
             &setup.router,
@@ -2105,5 +2125,61 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
+    }
+
+    #[tokio::test]
+    async fn shown_ticket_renders_the_banner_exactly_once() {
+        let setup = setup().await;
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/clients_add",
+            "name=drive&redirect_uris=http://127.0.0.1:9000/callback",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let location = location.expect("a 303 back to the section");
+
+        // Rendering needs the built asset bundle; without it the page
+        // cannot render by design, and the ticket's once-only delivery
+        // stays covered by the shelf tests above.
+        if !setup.assets {
+            return;
+        }
+
+        // The one render: the page GET itself consumes the ticket, and the
+        // banner carries the secret plain.
+        let (page, _, body) =
+            get_full(&setup.router, &location, Some(&setup.admin_cookie)).await;
+        assert_eq!(page, StatusCode::OK);
+        assert!(
+            body.contains("<div class=\"auth-secret admin-copy-value\">"),
+            "banner renders"
+        );
+        let secret = body
+            .split("admin-copy-value\">")
+            .nth(1)
+            .expect("the banner's value box")
+            .split("</div>")
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(!secret.is_empty());
+        let id = list_clients(&setup.store).await.unwrap()[0]
+            .client_id
+            .to_string();
+        assert!(body.contains(&id), "the client id rides the banner too");
+        // Spent: the same URL — the live tick's morph, a reload — renders
+        // the section with no banner, and a forged ticket renders nothing.
+        let (_, _, replay) =
+            get_full(&setup.router, &location, Some(&setup.admin_cookie)).await;
+        assert!(!replay.contains("<div class=\"auth-secret"));
+        let (_, _, forged) = get_full(
+            &setup.router,
+            "/admin?section=clients&shown=forged-ticket",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert!(!forged.contains("<div class=\"auth-secret"));
     }
 }
