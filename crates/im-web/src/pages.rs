@@ -44,6 +44,7 @@ pub fn error_text(code: &str, lang: Lang) -> &'static str {
         "bad_theme" => t(lang, Key::ErrBadTheme),
         "bad_ui" => t(lang, Key::ErrBadUi),
         "bad_language" => t(lang, Key::ErrBadLanguage),
+        "bad_zone" => t(lang, Key::ErrBadZone),
         "bad_service" => t(lang, Key::ErrBadService),
         "bad_client" => t(lang, Key::ErrBadClient),
         "no_such_client" => t(lang, Key::ErrNoSuchClient),
@@ -71,6 +72,41 @@ pub fn ok_text(code: &str, lang: Lang) -> &'static str {
         "password" => t(lang, Key::PasswordSaved),
         _ => t(lang, Key::OkDone),
     }
+}
+
+/// The offsets the timezone field offers, `"UTC-12:00"` through
+/// `"UTC+14:00"` — iz's settings select, ported verbatim so both sides
+/// speak the same values over the directory. Fixed offsets: no tz database
+/// rides along for what a display label needs, and `"UTC"` stands for
+/// +00:00.
+pub(crate) fn zone_options() -> Vec<String> {
+    (-12..=14)
+        .map(|hour: i32| {
+            if hour == 0 {
+                "UTC".to_string()
+            } else {
+                format!(
+                    "UTC{}{:02}:00",
+                    if hour > 0 { "+" } else { "-" },
+                    hour.abs()
+                )
+            }
+        })
+        .collect()
+}
+
+/// The timezone `<option>` list, pre-selected to the account's stored one.
+pub(crate) fn timezone_select(current: &str) -> String {
+    zone_options()
+        .into_iter()
+        .map(|zone| {
+            format!(
+                r#"<option value="{z}"{sel}>{z}</option>"#,
+                z = zone,
+                sel = if zone == current { r#" selected="selected""# } else { "" },
+            )
+        })
+        .collect::<String>()
 }
 
 /// The refusal this request carries back, if any. Values come percent-
@@ -713,6 +749,12 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                 <select class="auth-input" name="language">
                                     <option value="en" selected=(user.language == "en")>"English"</option>
                                     <option value="tr" selected=(user.language == "tr")>"Türkçe"</option>
+                                </select>
+                            </label>
+                            <label class="auth-field">
+                                <span class="auth-label">(t(lang, Key::TimeZoneLabel))</span>
+                                <select class="auth-input" name="timezone">
+                                    (topcoat::view::Unescaped::new_unchecked(timezone_select(&user.timezone)))
                                 </select>
                             </label>
                             <button class="auth-submit" type="submit">

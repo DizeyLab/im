@@ -608,6 +608,7 @@ pub async fn introspect_app_session(
         "name": user.name,
         "admin": user.admin,
         "photo_version": user.photo_version,
+        "timezone": user.timezone,
         "exp": expires.unix_timestamp(),
     })))
 }
@@ -727,6 +728,11 @@ mod tests {
             assert_eq!(active["active"], true);
             assert_eq!(active["sub"], id.as_str());
             assert_eq!(active["admin"], want);
+            assert_eq!(
+                active["timezone"],
+                crate::model::DEFAULT_TIMEZONE,
+                "introspection carries the display timezone"
+            );
         }
     }
 

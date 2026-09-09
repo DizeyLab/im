@@ -46,6 +46,16 @@ pub struct DirectoryMember {
     /// `/photo/{sub}` be cached hard and still arrive fresh.
     #[serde(default)]
     pub photo_version: u64,
+    /// The member's display timezone (a fixed offset like "UTC+03:00").
+    /// Defaulted: rows mirrored before im carried the field still read.
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
+}
+
+/// The timezone im starts every account on, and the one this SDK assumes
+/// when a mirrored row predates the field.
+fn default_timezone() -> String {
+    "UTC+03:00".to_string()
 }
 
 /// One event off the directory stream. The only thing `/directory/live`
@@ -366,6 +376,7 @@ mod tests {
         assert_eq!(
             events,
             vec![DirectoryEvent::Profile(DirectoryMember {
+                timezone: default_timezone(),
                 sub: "one".into(),
                 email: "one@example.com".into(),
                 name: "Ann".into(),
@@ -387,6 +398,7 @@ mod tests {
             events.extend(parser.feed(&whole.as_bytes()[cut..]));
             assert_eq!(events.len(), 1, "cut at {cut}");
             assert_eq!(events[0], DirectoryEvent::Profile(DirectoryMember {
+            timezone: default_timezone(),
                 sub: "two".into(),
                 email: "two@example.com".into(),
                 name: "Ann".into(),
@@ -403,6 +415,7 @@ mod tests {
         let events = parser.feed(frame("three", 1).replace('\n', "\r\n").as_bytes());
         assert_eq!(events.len(), 1);
         assert_eq!(events[0], DirectoryEvent::Profile(DirectoryMember {
+            timezone: default_timezone(),
             sub: "three".into(),
             email: "three@example.com".into(),
             name: "Ann".into(),
@@ -429,6 +442,7 @@ mod tests {
         assert_eq!(
             events[0],
             DirectoryEvent::Profile(DirectoryMember {
+                timezone: default_timezone(),
                 sub: "four".into(),
                 email: "four@example.com".into(),
                 name: "Ann".into(),

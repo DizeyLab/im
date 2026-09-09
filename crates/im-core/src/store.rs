@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS users (
   photo_version INTEGER NOT NULL DEFAULT 0,
   theme TEXT NOT NULL DEFAULT 'light',
   language TEXT NOT NULL DEFAULT 'en',
-  ui TEXT NOT NULL DEFAULT 'instrument'
+  ui TEXT NOT NULL DEFAULT 'instrument',
+  timezone TEXT NOT NULL DEFAULT 'UTC+03:00'
 );
 CREATE TABLE IF NOT EXISTS invites (
   token TEXT PRIMARY KEY,
@@ -269,6 +270,16 @@ impl Store {
             // ALTER over the owner precedent: databases born before the
             // column get it here, and every existing row reads NULL until
             // its app re-registers.
+            // The display timezone (iz's fixed-offset spelling): the
+            // DEFAULT backfills every existing row to UTC+03:00.
+            if !has_column(&conn, "users", "timezone").await? {
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT 'UTC+03:00'",
+                    (),
+                )
+                .await
+                .map_err(backend)?;
+            }
             if !has_column(&conn, "services", "client_id").await? {
                 conn.execute("ALTER TABLE services ADD COLUMN client_id TEXT", ())
                     .await

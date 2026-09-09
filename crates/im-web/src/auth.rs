@@ -545,6 +545,7 @@ struct PreferencesForm {
     theme: Option<String>,
     ui: Option<String>,
     language: Option<String>,
+    timezone: Option<String>,
 }
 
 /// The landing's preferences: three selects, validated against the option
@@ -573,8 +574,17 @@ async fn preferences(cx: &Cx, Form(input): Form<PreferencesForm>) -> Redirect {
     if language != "en" && language != "tr" {
         return see("/?section=preferences&error=bad_language".to_string());
     }
+    let Some(timezone) = input.timezone.as_deref() else {
+        return see("/?section=preferences&error=bad_zone".to_string());
+    };
+    if !crate::pages::zone_options().contains(&timezone.to_string()) {
+        return see("/?section=preferences&error=bad_zone".to_string());
+    }
     let store = &server::app(cx).store;
-    im_core::accounts::set_preferences(store, &user.id, theme, language, ui).await?;
+    im_core::accounts::set_preferences(store, &user.id, theme, language, ui, timezone).await?;
+    // The timezone rides the directory: registered siblings apply it live,
+    // the way a name or photo change announces itself.
+    server::notify_profile(cx, &user.id).await;
     server::log_event(cx, "preferences_saved", Some(&user.email), None).await;
     see("/?section=preferences&ok=preferences".to_string())
 }

@@ -304,6 +304,8 @@ pub enum Key {
     ThemeLabel,
     UiLabel,
     LanguageLabel,
+    TimeZoneLabel,
+    ErrBadZone,
     LightOption,
     DarkOption,
     InstrumentOption,
@@ -380,6 +382,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ErrBadUi, Tr) => "Bu bir arayüz değil.",
         (ErrBadLanguage, En) => "That is not a language.",
         (ErrBadLanguage, Tr) => "Bu bir dil değil.",
+        (ErrBadZone, En) => "That is not a time zone.",
+        (ErrBadZone, Tr) => "Bu bir saat dilimi değil.",
         (ErrBadService, En) => {
             "A service needs a key of lowercase letters, digits, or dashes, a name, and an http(s) address."
         }
@@ -854,6 +858,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (UiLabel, Tr) => "ARAYÜZ",
         (LanguageLabel, En) => "LANGUAGE",
         (LanguageLabel, Tr) => "DİL",
+        (TimeZoneLabel, En) => "TIME ZONE",
+        (TimeZoneLabel, Tr) => "SAAT DİLİMİ",
         (LightOption, En) => "Light",
         (LightOption, Tr) => "Açık",
         (DarkOption, En) => "Dark",

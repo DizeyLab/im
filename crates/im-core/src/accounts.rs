@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 
-use crate::model::{Invite, User, UserId};
+use crate::model::{DEFAULT_TIMEZONE, Invite, User, UserId};
 use crate::store::{self, Result, Store, StoreError, backend};
 
 /// Argon2id at the OWASP Password Storage Cheat Sheet's recommended second
@@ -392,6 +392,7 @@ pub async fn create_user_from_invite(
         theme: "light".to_string(),
         language: "en".to_string(),
         ui: "instrument".to_string(),
+        timezone: DEFAULT_TIMEZONE.to_string(),
     };
     let password_hash = hash_password(password)?;
     // The lock is taken only now — the reads above (`invite_by_token`) lock
@@ -656,7 +657,8 @@ pub async fn verify_login(
     let mut rows = conn
         .query(
             "SELECT id, email, name, password_hash, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL, photo_version, theme, language, ui FROM users WHERE email = ?1 COLLATE NOCASE",
+             photo_mime IS NOT NULL, photo_version, theme, language, ui, timezone \
+             FROM users WHERE email = ?1 COLLATE NOCASE",
             turso::params![email],
         )
         .await
@@ -678,6 +680,7 @@ pub async fn verify_login(
         theme: store::text(&row, 10)?,
         language: store::text(&row, 11)?,
         ui: store::text(&row, 12)?,
+        timezone: store::text(&row, 13)?,
     };
     let phc = store::text(&row, 3)?;
     if !verify_password(password, &phc) || user.disabled {
@@ -750,7 +753,8 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
     let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL, photo_version, theme, language, ui FROM users WHERE id = ?1",
+             photo_mime IS NOT NULL, photo_version, theme, language, ui, timezone \
+             FROM users WHERE id = ?1",
             turso::params![id.to_string()],
         )
         .await
@@ -771,6 +775,7 @@ pub async fn user_by_id(store: &Store, id: &UserId) -> Result<Option<User>> {
         theme: store::text(&row, 9)?,
         language: store::text(&row, 10)?,
         ui: store::text(&row, 11)?,
+        timezone: store::text(&row, 12)?,
     }))
 }
 
@@ -801,7 +806,8 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
     let mut rows = conn
         .query(
             "SELECT id, email, name, totp_confirmed, admin, disabled, created_at, \
-             photo_mime IS NOT NULL, photo_version, theme, language, ui FROM users ORDER BY created_at",
+             photo_mime IS NOT NULL, photo_version, theme, language, ui, timezone \
+             FROM users ORDER BY created_at",
             (),
         )
         .await
@@ -821,6 +827,7 @@ pub async fn list_users(store: &Store) -> Result<Vec<User>> {
             theme: store::text(&row, 9)?,
             language: store::text(&row, 10)?,
             ui: store::text(&row, 11)?,
+            timezone: store::text(&row, 12)?,
         });
     }
     Ok(users)
@@ -863,11 +870,18 @@ pub async fn set_preferences(
     theme: &str,
     language: &str,
     ui: &str,
+    timezone: &str,
 ) -> Result<()> {
     let conn = store.conn.lock().await;
     conn.execute(
-        "UPDATE users SET theme = ?1, language = ?2, ui = ?3 WHERE id = ?4",
-        turso::params![theme.to_string(), language.to_string(), ui.to_string(), user.to_string()],
+        "UPDATE users SET theme = ?1, language = ?2, ui = ?3, timezone = ?4 WHERE id = ?5",
+        turso::params![
+            theme.to_string(),
+            language.to_string(),
+            ui.to_string(),
+            timezone.to_string(),
+            user.to_string()
+        ],
     )
     .await
     .map_err(backend)?;
@@ -1430,6 +1444,23 @@ mod tests {
             .unwrap();
         assert!(!login_blocked(&store, "ann@example.com").await.unwrap());
     }
+    #[tokio::test]
+    async fn timezone_defaults_to_the_family_offset_and_follows_preferences() {
+        let store = fixture().await;
+        let ann = seeded_user(&store, "ann@example.com", "Ann").await;
+        assert_eq!(
+            user_by_id(&store, &ann.id).await.unwrap().unwrap().timezone,
+            DEFAULT_TIMEZONE,
+            "a fresh account — and a migrated row via the DEFAULT — starts on +3"
+        );
+        set_preferences(&store, &ann.id, "dark", "tr", "ledger", "UTC-05:00")
+            .await
+            .unwrap();
+        let reloaded = user_by_id(&store, &ann.id).await.unwrap().unwrap();
+        assert_eq!(reloaded.timezone, "UTC-05:00");
+        assert_eq!(reloaded.theme, "dark");
+    }
+
     async fn seeded_user(store: &Store, email: &str, name: &str) -> User {
         let invite = create_invite(store, email, None, false).await.unwrap();
         create_user_from_invite(store, invite.expose(), name, "tDLr9!mZQ2xv")

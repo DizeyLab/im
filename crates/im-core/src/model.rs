@@ -7,6 +7,11 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+/// The timezone a fresh account — and every row the migration backfills —
+/// starts on. The value is one of the fixed-offset strings the settings
+/// select offers (iz's format, carried verbatim over the directory).
+pub const DEFAULT_TIMEZONE: &str = "UTC+03:00";
+
 macro_rules! id_wrapper {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
@@ -70,6 +75,9 @@ pub struct User {
     pub theme: String,
     pub language: String,
     pub ui: String,
+    /// Display-only fixed offset in iz's spelling ("UTC+03:00", or "UTC"
+    /// for zero). Apps read it over the directory to render times.
+    pub timezone: String,
 }
 
 /// An outstanding (or spent) invite, as stored. The raw token exists only in

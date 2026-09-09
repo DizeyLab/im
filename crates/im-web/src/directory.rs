@@ -30,6 +30,10 @@ pub struct DirectoryMember {
     pub name: String,
     pub admin: bool,
     pub photo_version: u64,
+    /// The member's display timezone, iz's fixed-offset spelling. This
+    /// side only serializes — the field is always written — so the serde
+    /// default lives on the SDK's reading half.
+    pub timezone: String,
 }
 
 impl DirectoryMember {
@@ -41,6 +45,7 @@ impl DirectoryMember {
             name: user.name.clone(),
             admin: user.admin,
             photo_version: user.photo_version,
+            timezone: user.timezone.clone(),
         }
     }
 }
@@ -249,6 +254,8 @@ mod tests {
         client_id: String,
         secret: String,
         store: Arc<Store>,
+        /// A handle on the live bus, for asserting what a change announces.
+        live: tokio::sync::broadcast::Sender<server::LiveEvent>,
     }
 
     async fn setup() -> Setup {
@@ -310,7 +317,7 @@ mod tests {
                 issuer: "http://127.0.0.1:7650".into(),
                 services,
             },
-            live,
+            live: live.clone(),
         };
         let router = Router::builder()
             .discover()
@@ -329,6 +336,7 @@ mod tests {
             client_id: client_id.to_string(),
             secret: secret.expose().to_string(),
             store,
+            live,
         }
     }
 
@@ -558,6 +566,7 @@ mod tests {
             client_id,
             secret,
             store,
+            ..
         } = setup().await;
         let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
             .await
@@ -673,6 +682,7 @@ mod tests {
             client_id,
             secret,
             store,
+            ..
         } = setup().await;
         let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
             .await
@@ -854,6 +864,7 @@ mod tests {
             client_id,
             secret,
             store,
+            ..
         } = setup().await;
         // The setup already seeded; a re-boot's seed must be a no-op, even
         // though `in` is exactly the name the config carries.
@@ -884,6 +895,7 @@ mod tests {
             client_id,
             secret,
             store,
+            ..
         } = setup().await;
 
         // No pair, no write.
@@ -966,6 +978,7 @@ mod tests {
             client_id,
             secret,
             store,
+            ..
         } = setup().await;
         let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
             .await
@@ -1379,5 +1392,83 @@ mod tests {
             location.as_deref(),
             Some("/login?error=email_change_invalid")
         );
+    }
+
+    #[tokio::test]
+    async fn timezone_rides_the_directory_and_the_live_frame() {
+        let Setup {
+            router,
+            client_id,
+            secret,
+            store,
+            live,
+        } = setup().await;
+        let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let session = im_core::sessions::create_session(&store, &ada.id, &Default::default())
+            .await
+            .unwrap();
+        let cookie = format!("{SESSION_COOKIE}={}", session.expose());
+
+        // The entry carries the family default before anyone touches it.
+        let (status, body) = get(&router, Some(basic(&client_id, &secret))).await;
+        assert_eq!(status, StatusCode::OK);
+        let roster = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        assert_eq!(roster[0]["timezone"], "UTC+03:00");
+
+        // Saving preferences with a new timezone refuses a value outside
+        // the select's list, and announces a real change as a profile
+        // frame — the same ride a name or photo change takes.
+        let mut rx = live.subscribe();
+        let (status, location, _) = post_form(
+            &router,
+            "/preferences",
+            "theme=light&ui=instrument&language=en&timezone=UTC-05:00",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/?section=preferences&ok=preferences")
+        );
+        match rx.try_recv().unwrap() {
+            server::LiveEvent::Profile(member) => {
+                assert_eq!(member.timezone, "UTC-05:00");
+            }
+            other => panic!("a profile change announces the row, got {other:?}"),
+        }
+
+        // And the roster reads the stored zone back.
+        let (_, body) = get(&router, Some(basic(&client_id, &secret))).await;
+        let roster = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        let ada_entry = roster
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|member| member["email"] == "ada@example.com")
+            .unwrap();
+        assert_eq!(ada_entry["timezone"], "UTC-05:00");
+
+        // A value the select never offers is refused whole.
+        let (status, location, _) = post_form(
+            &router,
+            "/preferences",
+            "theme=light&ui=instrument&language=en&timezone=Mars/Olympus",
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/?section=preferences&error=bad_zone")
+        );
+        let reloaded = im_core::accounts::user_by_id(&store, &ada.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.timezone, "UTC-05:00", "nothing half-written");
     }
 }
