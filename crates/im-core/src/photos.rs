@@ -26,7 +26,7 @@ fn photo_file(store: &Store, user_id: &str) -> std::path::PathBuf {
 /// there before intact, never a truncated one under the real name.
 fn write_file_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
-    let tmp = path.with_extension(format!("{}.tmp", ulid::Ulid::new()));
+    let tmp = path.with_extension(format!("{}.tmp", ulid::Ulid::generate()));
     let mut file = std::fs::File::create(&tmp)?;
     file.write_all(bytes)?;
     file.sync_all()?;
@@ -42,7 +42,7 @@ pub async fn set_photo(store: &Store, user: &UserId, bytes: &[u8], mime: &str) -
     // leaves the committed photo exactly as it was, and a crash between
     // commit and rename serves the old bytes next to a staged file the boot
     // sweep collects — stale, never destroyed.
-    let staged = path.with_extension(format!("incoming-{}", ulid::Ulid::new()));
+    let staged = path.with_extension(format!("incoming-{}", ulid::Ulid::generate()));
     write_file_atomic(&staged, bytes).map_err(|e| StoreError::Backend(e.to_string()))?;
     let written = {
         let conn = store.conn.lock().await;

@@ -5,7 +5,7 @@ use im_core::model::User;
 use topcoat::Result;
 use topcoat::asset::{Asset, asset};
 use topcoat::context::Cx;
-use topcoat::view::view;
+use topcoat::view::{BoxView, Child, View, ViewExt, view};
 
 use crate::i18n::{Key, Lang, lang_of, t};
 use crate::server;
@@ -15,13 +15,13 @@ pub(crate) const STYLE: Asset = asset!("assets/main.css");
 
 /// The mark, in the word as it is in the name: lower case, the Turkish
 /// tittle. Text-only here — the auth card is the whole chrome.
-pub async fn wordmark(cx: &Cx) -> Result {
-    view! {
+pub async fn wordmark(cx: &Cx) -> Result<impl View + '_> {
+    Ok(view! {
         cx =>
         <span class="wordmark">
             <span class="wordmark-text">"im"</span>
         </span>
-    }
+    })
 }
 
 /// The signed-in chrome's wordmark with the family behind it: the `im`
@@ -31,7 +31,7 @@ pub async fn wordmark(cx: &Cx) -> Result {
 /// is CSS on `:hover` / `:focus-within`. A family with no siblings renders
 /// the bare mark — nothing to reveal. The list is the stored one, the same
 /// rows `/family` serves, minus im's own row.
-pub async fn family_wordmark(cx: &Cx) -> Result {
+pub async fn family_wordmark(cx: &Cx) -> Result<BoxView<'_>> {
     let services = im_core::services::list(&server::app(cx).store).await?;
     let siblings = services
         .iter()
@@ -43,10 +43,10 @@ pub async fn family_wordmark(cx: &Cx) -> Result {
         })
         .collect::<Vec<_>>();
     if siblings.is_empty() {
-        return wordmark(cx).await;
+        return wordmark(cx).await.map(ViewExt::boxed);
     }
     let marks = siblings.join(r#"<span class="trio-sep">·</span>"#);
-    view! {
+    Ok(view! {
         cx =>
         <div class="wordmark-family">
             <span class="wordmark" tabindex="0">
@@ -55,19 +55,21 @@ pub async fn family_wordmark(cx: &Cx) -> Result {
             <nav class="service-trio">(topcoat::view::Unescaped::new_unchecked(marks))</nav>
         </div>
     }
+    .boxed())
 }
 
 /// The profile card's face: the photo when the account has one, the name's
 /// first letter on a quiet tile when it does not. The URL's `?v=` is the
 /// row's `photo_version` — the same number `/directory` answers with — so
 /// a changed photo is a changed URL, in this process and in every sibling.
-pub async fn avatar(cx: &Cx, user: &im_core::model::User) -> Result {
+pub async fn avatar<'a>(cx: &'a Cx, user: &'a im_core::model::User) -> Result<BoxView<'a>> {
     if user.has_photo {
         let src = format!("/photo/{}?v={}", user.id, user.photo_version);
-        view! {
+        Ok(view! {
             cx =>
             <img class="profile-avatar" src=(src) alt=(user.name.clone())>
         }
+        .boxed())
     } else {
         let initial = user
             .name
@@ -76,11 +78,13 @@ pub async fn avatar(cx: &Cx, user: &im_core::model::User) -> Result {
             .unwrap_or('?')
             .to_uppercase()
             .to_string();
-        view! {
+        Ok(view! {
             cx =>
             <span class="profile-avatar profile-avatar-initial">(initial)</span>
         }
+        .boxed())
     }
+
 }
 
 /// The one script im serves, and the only behavior it carries: the avatar
@@ -94,7 +98,7 @@ pub async fn avatar(cx: &Cx, user: &im_core::model::User) -> Result {
 /// document listeners, so the hard-post re-render never needs rewiring.
 /// Emitted by the landing and the person page — every surface that draws a
 /// clickable face.
-pub async fn avatar_script(cx: &Cx, lang: Lang) -> Result {
+pub async fn avatar_script(cx: &Cx, lang: Lang) -> Result<impl View + '_> {
     use topcoat::view::Unescaped;
     /// Single-quoted into the script below; the staged strings carry no
     /// quoting of their own, and this keeps it true if one ever does.
@@ -212,7 +216,7 @@ pub async fn avatar_script(cx: &Cx, lang: Lang) -> Result {
             "__IM_CANCEL_UPLOAD__",
             &js_escape(t(lang, Key::CancelUploadLabel)),
         );
-    view! { cx => <script>(Unescaped::new_unchecked(js))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(js))</script> })
 }
 
 /// Soft navigation, iz's model cut to im's shape: same-app links and form
@@ -222,7 +226,7 @@ pub async fn avatar_script(cx: &Cx, lang: Lang) -> Result {
 /// belong to the avatar script above and are left to it. Global listeners
 /// live on document/window and survive every swap; the guard makes the
 /// re-created script a no-op.
-pub async fn soft_nav_script(cx: &Cx) -> Result {
+pub async fn soft_nav_script(cx: &Cx) -> Result<impl View + '_> {
     use topcoat::view::Unescaped;
     const JS: &str = r#"(function () {
   if (window.__imSoft) { return; }
@@ -410,7 +414,7 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
       .catch(function () {});
   };
 })();"#;
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> })
 }
 
 /// The live channel's client, iz's shape: a bare tick says *something*
@@ -418,7 +422,7 @@ pub async fn soft_nav_script(cx: &Cx) -> Result {
 /// ordinary gate answers — and morphs with fields and scroll intact. A
 /// focused field freezes the refresh mid-typing. Mounted only for a signed-in
 /// viewer, so auth screens never reconnect against a 401.
-pub async fn live_script(cx: &Cx) -> Result {
+pub async fn live_script(cx: &Cx) -> Result<impl View + '_> {
     use topcoat::view::Unescaped;
     const JS: &str = r#"(function () {
   if (window.__imLive) { return; }
@@ -433,19 +437,28 @@ pub async fn live_script(cx: &Cx) -> Result {
     src.onmessage = function () { schedule(); };
   } catch (err) {}
 })();"#;
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> })
 }
 
 /// A full document around an already-rendered stage — the same way
 /// izlek-web's `#[layout]` receives its slot. The viewer stamps the chrome:
 /// their theme/language/ui when signed in, English/light/instrument when
 /// not — mirroring iz's root_layout, minus its build stamp.
-pub async fn shell(cx: &Cx, title: &str, viewer: Option<&User>, stage: Result) -> Result {
-    let stage = stage?;
-    let lang = lang_of(viewer);
-    let dark = viewer.is_some_and(|user| user.theme == "dark");
-    let ui = viewer.map_or("instrument", |user| user.ui.as_str());
-    view! {
+pub async fn shell<'a>(
+    cx: &'a Cx,
+    title: impl Into<String>,
+    viewer: Option<User>,
+    stage: Child<'a>,
+) -> Result<impl View + 'a> {
+    let title = title.into();
+    let lang = lang_of(viewer.as_ref());
+    let dark = viewer.as_ref().is_some_and(|user| user.theme == "dark");
+    let ui = viewer
+        .as_ref()
+        .map_or("instrument", |user| user.ui.as_str())
+        .to_string();
+    let live = viewer.is_some();
+    Ok(view! {
         cx =>
         <!DOCTYPE html>
         <html lang=(lang.code()) data-theme=(dark.then_some("dark")) data-ui=(ui)>
@@ -463,12 +476,12 @@ pub async fn shell(cx: &Cx, title: &str, viewer: Option<&User>, stage: Result) -
             </head>
             <body>
                 (stage)
-                (soft_nav_script(cx).await?)
-                if viewer.is_some() {
-                    (live_script(cx).await?)
-                    (crate::dropdown::dropdown_script(cx).await?)
+                (soft_nav_script(cx).await?.first().await?)
+                if live {
+                    (live_script(cx).await?.first().await?)
+                    (crate::dropdown::dropdown_script(cx).await?.first().await?)
                 }
             </body>
         </html>
-    }
+    })
 }

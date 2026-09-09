@@ -22,7 +22,7 @@ pub async fn log(store: &Store, kind: &str, actor: Option<&str>, detail: Option<
         .execute(
             "INSERT INTO events (id, at, kind, actor, detail) VALUES (?1, ?2, ?3, ?4, ?5)",
             turso::params![
-                ulid::Ulid::new().to_string(),
+                ulid::Ulid::generate().to_string(),
                 store::stamp(store::now()).expect("rfc3339 of now"),
                 kind,
                 actor,

@@ -9,7 +9,7 @@ use topcoat::context::Cx;
 use topcoat::router::error::see_other;
 use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{page, path_param, route};
-use topcoat::view::view;
+use topcoat::view::{BoxView, Child, View, ViewExt, view};
 
 use crate::i18n::{Key, Lang, lang_of, t};
 use crate::layout::{avatar, family_wordmark, shell, wordmark};
@@ -161,21 +161,21 @@ fn current_query(cx: &Cx) -> String {
 /// The front door: the sign-in card, or the signed-in landing when the
 /// browser already holds a session.
 #[page("/")]
-async fn landing(cx: &Cx) -> Result {
+async fn landing(cx: &Cx) -> Result<BoxView<'_>> {
     match server::current_user(cx).await {
-        Some(user) => signed_in(cx, &user).await,
-        None => login_card(cx).await,
+        Some(user) => signed_in(cx, user).await.map(ViewExt::boxed),
+        None => login_card(cx).await.map(ViewExt::boxed),
     }
 }
 
 /// `/login` is the same card with a `back` it must keep: the `/authorize`
 /// call the browser was in the middle of.
 #[page("/login")]
-async fn login(cx: &Cx) -> Result {
+async fn login(cx: &Cx) -> Result<BoxView<'_>> {
     login_card(cx).await
 }
 
-async fn login_card(cx: &Cx) -> Result {
+async fn login_card(cx: &Cx) -> Result<BoxView<'_>> {
     // No session to read a preference from — mirroring iz's auth pages.
     let lang = Lang::En;
     let query = current_query(cx);
@@ -186,7 +186,7 @@ async fn login_card(cx: &Cx) -> Result {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
-                (wordmark(cx).await?)
+                (wordmark(cx).await?.first().await?)
                 <div class="auth-card">
                     <div class="auth-head">
                         <div class="auth-title">(t(lang, Key::SignInTitle))</div>
@@ -230,7 +230,7 @@ async fn login_card(cx: &Cx) -> Result {
             </div>
         </main>
     };
-    shell(cx, t(lang, Key::TitleSignIn), None, stage).await
+    shell(cx, t(lang, Key::TitleSignIn), None, Child::new(stage)).await.map(ViewExt::boxed)
 }
 
 /// The second factor. Reached only with a pending-login cookie; without one
@@ -246,7 +246,7 @@ async fn totp(cx: &Cx) -> Result<Response> {
                 cx =>
                 <main class="auth-stage">
                     <div class="auth-column">
-                        (wordmark(cx).await?)
+                        (wordmark(cx).await?.first().await?)
                         <div class="auth-card">
                             <div class="auth-head">
                                 <div class="auth-title">(t(lang, Key::TotpTitle))</div>
@@ -277,9 +277,11 @@ async fn totp(cx: &Cx) -> Result<Response> {
                     </div>
                 </main>
             };
-            shell(cx, t(lang, Key::TitleTotp), None, stage)
-                .await?
-                .into_response(cx)
+            shell(cx, t(lang, Key::TitleTotp), None, Child::new(stage))
+        .await?
+        .first()
+        .await?
+        .into_response(cx)
         }
         _ => see_other("/login").into_response(cx),
     }
@@ -305,7 +307,7 @@ async fn invite(cx: &Cx) -> Result<Response> {
             cx =>
             <main class="auth-stage">
                 <div class="auth-column">
-                    (wordmark(cx).await?)
+                    (wordmark(cx).await?.first().await?)
                     <div class="auth-card">
                         <div class="auth-head">
                             <div class="auth-title">(t(lang, Key::InviteTitle))</div>
@@ -363,6 +365,7 @@ async fn invite(cx: &Cx) -> Result<Response> {
                 </div>
             </main>
         }
+        .boxed()
     } else {
         let code = match &invite {
             None => "invite_invalid",
@@ -373,7 +376,7 @@ async fn invite(cx: &Cx) -> Result<Response> {
             cx =>
             <main class="auth-stage">
                 <div class="auth-column">
-                    (wordmark(cx).await?)
+                    (wordmark(cx).await?.first().await?)
                     <div class="auth-card">
                         <div class="auth-head">
                             <div class="auth-title">(t(lang, Key::InviteDeadTitle))</div>
@@ -384,8 +387,11 @@ async fn invite(cx: &Cx) -> Result<Response> {
                 </div>
             </main>
         }
+        .boxed()
     };
-    shell(cx, t(lang, Key::TitleInvited), None, stage)
+    shell(cx, t(lang, Key::TitleInvited), None, Child::new(stage))
+        .await?
+        .first()
         .await?
         .into_response(cx)
 }
@@ -414,12 +420,10 @@ async fn enroll(cx: &Cx) -> Result<Response> {
     let issuer = &server::app(cx).config.issuer;
     let uri = im_core::totp::totp_uri("im", &user.email, &secret);
     let qr = qrcode::QrCode::new(uri.as_bytes())
-        .and_then(|code| {
-            Ok::<_, qrcode::types::QrError>(
-                code.render::<qrcode::render::svg::Color>()
-                    .min_dimensions(200, 200)
-                    .build(),
-            )
+        .map(|code| {
+            code.render::<qrcode::render::svg::Color>()
+                .min_dimensions(200, 200)
+                .build()
         })
         .map_err(|e| topcoat::Error::from(std::io::Error::other(format!("qr: {e}"))))?;
     let manual = im_core::totp::display_secret(&secret);
@@ -432,7 +436,7 @@ async fn enroll(cx: &Cx) -> Result<Response> {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
-                (wordmark(cx).await?)
+                (wordmark(cx).await?.first().await?)
                 <div class="auth-card">
                     <div class="auth-head">
                         <div class="auth-title">(t(lang, Key::EnrollTitle))</div>
@@ -465,7 +469,9 @@ async fn enroll(cx: &Cx) -> Result<Response> {
             </div>
         </main>
     };
-    shell(cx, t(lang, Key::TitleEnroll), Some(&user), stage)
+    shell(cx, t(lang, Key::TitleEnroll), Some(user), Child::new(stage))
+        .await?
+        .first()
         .await?
         .into_response(cx)
 }
@@ -648,16 +654,14 @@ fn apps_html(apps: &[im_core::oidc::ConnectedApp], lang: Lang) -> String {
     }
     rows
 }
-
-/// The signed-in landing. im is an auth service, not an app: this page is
 /// the proof of session, the person's profile — photo and the counts their
 /// identity has earned — and the way out. izlek gives a profile its own
 /// page under `/people`; im has exactly one signed-in screen, so the
 /// profile is a section of it. Six cards in one column ran twice the height
 /// of a window, so the landing is sectioned like the admin panel: a tab row
 /// under the wordmark, one section's cards at a time.
-async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
-    let lang = lang_of(Some(user));
+async fn signed_in<'a>(cx: &'a Cx, user: im_core::model::User) -> Result<BoxView<'a>> {
+    let lang = lang_of(Some(&user));
     let query = current_query(cx);
     let section = query_value(&query, "section").unwrap_or_else(|| "profile".to_string());
     let ok = query_value(&query, "ok");
@@ -692,6 +696,25 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
         )
     })
     .collect::<String>();
+    // The stage template moves every value it mentions, so the account's
+    // template data is staged here as owned values first; the markup below
+    // never names `user` itself.
+    let face_button = avatar(cx, &user).await?.first().await?;
+    let face_plain = avatar(cx, &user).await?.first().await?;
+    let theme_light = user.theme == "light";
+    let theme_dark = user.theme == "dark";
+    let ui_instrument = user.ui == "instrument";
+    let ui_ledger = user.ui == "ledger";
+    let lang_en = user.language == "en";
+    let lang_tr = user.language == "tr";
+    let timezone_options = timezone_select(&user.timezone);
+    let email_form = user.email.clone();
+    let email_shown = user.email.clone();
+    let display_name = user.name.clone();
+    let has_photo = user.has_photo;
+    let totp_on = user.totp_confirmed;
+    let is_admin = user.admin;
+    let public_href = format!("/people/{}", user.id);
     // The family lives in the chrome — the siblings' flyout under the
     // wordmark — and its editing in the admin panel; the landing is the
     // account's own page and carries no directory of its own.
@@ -699,7 +722,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
         cx =>
         <main class="auth-stage landing-stage">
             <div class="auth-column">
-                (family_wordmark(cx).await?)
+                (family_wordmark(cx).await?.first().await?)
                 <nav class="admin-tabs landing-nav">(topcoat::view::Unescaped::new_unchecked(nav))</nav>
                 if let Some(code) = ok {
                     <div class="auth-ok">(ok_text(&code, lang))</div>
@@ -733,28 +756,28 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             <label class="auth-field">
                                 <span class="auth-label">(t(lang, Key::ThemeLabel))</span>
                                 <select class="auth-input" name="theme">
-                                    <option value="light" selected=(user.theme == "light")>(t(lang, Key::LightOption))</option>
-                                    <option value="dark" selected=(user.theme == "dark")>(t(lang, Key::DarkOption))</option>
+                                    <option value="light" selected=(theme_light)>(t(lang, Key::LightOption))</option>
+                                    <option value="dark" selected=(theme_dark)>(t(lang, Key::DarkOption))</option>
                                 </select>
                             </label>
                             <label class="auth-field">
                                 <span class="auth-label">(t(lang, Key::UiLabel))</span>
                                 <select class="auth-input" name="ui">
-                                    <option value="instrument" selected=(user.ui == "instrument")>(t(lang, Key::InstrumentOption))</option>
-                                    <option value="ledger" selected=(user.ui == "ledger")>(t(lang, Key::LedgerOption))</option>
+                                    <option value="instrument" selected=(ui_instrument)>(t(lang, Key::InstrumentOption))</option>
+                                    <option value="ledger" selected=(ui_ledger)>(t(lang, Key::LedgerOption))</option>
                                 </select>
                             </label>
                             <label class="auth-field">
                                 <span class="auth-label">(t(lang, Key::LanguageLabel))</span>
                                 <select class="auth-input" name="language">
-                                    <option value="en" selected=(user.language == "en")>"English"</option>
-                                    <option value="tr" selected=(user.language == "tr")>"Türkçe"</option>
+                                    <option value="en" selected=(lang_en)>"English"</option>
+                                    <option value="tr" selected=(lang_tr)>"Türkçe"</option>
                                 </select>
                             </label>
                             <label class="auth-field">
                                 <span class="auth-label">(t(lang, Key::TimeZoneLabel))</span>
                                 <select class="auth-input" name="timezone">
-                                    (topcoat::view::Unescaped::new_unchecked(timezone_select(&user.timezone)))
+                                    (topcoat::view::Unescaped::new_unchecked(timezone_options))
                                 </select>
                             </label>
                             <button class="auth-submit" type="submit">
@@ -823,7 +846,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                     type="email"
                                     name="email"
                                     autocomplete="email"
-                                    value=(user.email.clone())
+                                    value=(email_form)
                                     required=""
                                 >
                             </label>
@@ -837,7 +860,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 if section != "sessions" && section != "preferences" && section != "password" && section != "apps" {
                     <div class="auth-card">
                         <div class="profile-head">
-                            if user.has_photo {
+                            if has_photo {
                                 // The face is the whole control surface: it opens
                                 // the viewer, and the viewer carries Change/Remove
                                 // (avatar_script builds them for a `data-own`
@@ -850,7 +873,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                     aria-label=(t(lang, Key::ViewPhotoAria))
                                     data-own=""
                                 >
-                                    (avatar(cx, user).await?)
+                                    (face_button)
                                 </button>
                                 <input
                                     id="profile-photo-input"
@@ -866,7 +889,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                 // label wraps the hidden input, which autosubmits
                                 // on change (avatar_script) — no buttons at all.
                                 <label class="profile-avatar-upload">
-                                    (avatar(cx, user).await?)
+                                    (face_plain)
                                     <input
                                         class="profile-file-hidden"
                                         type="file"
@@ -878,14 +901,14 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                                 </label>
                             }
                             <div class="profile-heading">
-                                <div class="auth-title">(user.name.clone())</div>
+                                <div class="auth-title">(display_name)</div>
                                 <div class="profile-marks">
-                                    if user.totp_confirmed {
+                                    if totp_on {
                                         <span class="chip chip-connected">(t(lang, Key::TwoFaOn))</span>
                                     } else {
                                         <span class="chip chip-muted">(t(lang, Key::TwoFaOff))</span>
                                     }
-                                    if user.admin {
+                                    if is_admin {
                                         <span class="chip chip-accent">(t(lang, Key::AdminChip))</span>
                                     }
                                 </div>
@@ -894,18 +917,18 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                         <dl class="profile-fields">
                             <div class="profile-field">
                                 <dt class="auth-label">(t(lang, Key::EmailLabel))</dt>
-                                <dd class="profile-value mono">(user.email.clone())</dd>
+                                <dd class="profile-value mono">(email_shown)</dd>
                             </div>
                             <div class="profile-field">
                                 <dt class="auth-label">(t(lang, Key::MemberSinceLabel))</dt>
                                 <dd class="profile-value">(joined)</dd>
                             </div>
                         </dl>
-                        <a class="auth-alt" href=(format!("/people/{}", user.id))>(t(lang, Key::PublicProfileLink))</a>
-                        if !user.totp_confirmed {
+                        <a class="auth-alt" href=(public_href)>(t(lang, Key::PublicProfileLink))</a>
+                        if !totp_on {
                             <a class="auth-alt" href="/enroll">(t(lang, Key::Activate2fa))</a>
                         }
-                        if user.admin {
+                        if is_admin {
                             <a class="auth-alt" href="/admin">(t(lang, Key::AdminPanelLink))</a>
                         }
                         // Both forms carry no visible chrome of their own: the
@@ -917,7 +940,7 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                             action="/api/profile_photo"
                             enctype="multipart/form-data"
                         ></form>
-                        if user.has_photo {
+                        if has_photo {
                             <form
                                 id="profile-photo-remove"
                                 method="post"
@@ -945,15 +968,15 @@ async fn signed_in(cx: &Cx, user: &im_core::model::User) -> Result {
                 <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
-        (crate::layout::avatar_script(cx, lang).await?)
+        (crate::layout::avatar_script(cx, lang).await?.first().await?)
     };
-    shell(cx, "im", Some(user), stage).await
+    shell(cx, "im", Some(user), Child::new(stage)).await.map(ViewExt::boxed)
 }
 
 /// "Forgot it?" — the self-serve reset ask. It answers the same whether the
 /// address has an account: one quiet note, the same one for every address.
 #[page("/forgot")]
-async fn forgot(cx: &Cx) -> Result {
+async fn forgot(cx: &Cx) -> Result<impl View + '_> {
     let lang = Lang::En;
     let query = current_query(cx);
     let error = query_value(&query, "error");
@@ -962,7 +985,7 @@ async fn forgot(cx: &Cx) -> Result {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
-                (wordmark(cx).await?)
+                (wordmark(cx).await?.first().await?)
                 <div class="auth-card">
                     <div class="auth-head">
                         <div class="auth-title">(t(lang, Key::ForgotTitle))</div>
@@ -995,7 +1018,7 @@ async fn forgot(cx: &Cx) -> Result {
             </div>
         </main>
     };
-    shell(cx, t(lang, Key::TitleForgot), None, stage).await
+    shell(cx, t(lang, Key::TitleForgot), None, Child::new(stage)).await
 }
 
 /// The reset link's destination: a new password, twice. A dead link never
@@ -1013,7 +1036,7 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
-                (wordmark(cx).await?)
+                (wordmark(cx).await?.first().await?)
                 <div class="auth-card">
                     <div class="auth-head">
                         <div class="auth-title">(t(lang, Key::ResetTitle))</div>
@@ -1055,7 +1078,9 @@ async fn reset_page(cx: &Cx) -> Result<Response> {
             </div>
         </main>
     };
-    shell(cx, t(lang, Key::TitleReset), None, stage)
+    shell(cx, t(lang, Key::TitleReset), None, Child::new(stage))
+        .await?
+        .first()
         .await?
         .into_response(cx)
 }
@@ -1075,7 +1100,7 @@ async fn email_change_page(cx: &Cx) -> Result<Response> {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
-                (wordmark(cx).await?)
+                (wordmark(cx).await?.first().await?)
                 <div class="auth-card">
                     <div class="auth-head">
                         <div class="auth-title">(t(lang, Key::EmailConfirmTitle))</div>
@@ -1094,7 +1119,9 @@ async fn email_change_page(cx: &Cx) -> Result<Response> {
             </div>
         </main>
     };
-    shell(cx, t(lang, Key::EmailConfirmTitle), None, stage)
+    shell(cx, t(lang, Key::EmailConfirmTitle), None, Child::new(stage))
+        .await?
+        .first()
         .await?
         .into_response(cx)
 }

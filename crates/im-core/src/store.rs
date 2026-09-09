@@ -351,7 +351,7 @@ impl Store {
 /// is a fresh tempdir, as throwaway as the database itself.
 fn photos_dir(path: &Path) -> std::path::PathBuf {
     if path.as_os_str() == ":memory:" {
-        return std::env::temp_dir().join(format!("im-storage-{}", ulid::Ulid::new()));
+        return std::env::temp_dir().join(format!("im-storage-{}", ulid::Ulid::generate()));
     }
     path.parent()
         .filter(|d| !d.as_os_str().is_empty())

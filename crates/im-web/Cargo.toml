@@ -8,7 +8,7 @@ description = "im web app: topcoat UI, OIDC endpoints and the server"
 build = "build.rs"
 
 [dependencies]
-topcoat = { version = "0.6.2", default-features = false, features = [
+topcoat = { version = "0.8.0", default-features = false, features = [
   "router",
   "view",
   "runtime",

@@ -218,15 +218,15 @@ pub async fn set_smtp(store: &Store, smtp: &Smtp, password: Option<&str>) -> Res
     set(store, "smtp_username", &smtp.username).await?;
     set(store, "smtp_from", &smtp.from).await?;
     set(store, "smtp_from_name", &smtp.from_name).await?;
-    if let Some(password) = password {
-        if !password.is_empty() {
-            set(
-                store,
-                "smtp_password",
-                &secret::seal(store.key(), password.as_bytes()),
-            )
-            .await?;
-        }
+    if let Some(password) = password
+        && !password.is_empty()
+    {
+        set(
+            store,
+            "smtp_password",
+            &secret::seal(store.key(), password.as_bytes()),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -480,17 +480,16 @@ mod tests {
         assert_eq!(policy(&store).await.unwrap().max_sessions, 5);
 
         // A written value comes back...
-        let mut value = Policy::default();
-        value.max_sessions = 2;
+        let value = Policy { max_sessions: 2, ..Policy::default() };
         set_policy(&store, &value).await.unwrap();
         assert_eq!(policy(&store).await.unwrap().max_sessions, 2);
 
         // ...and zero or negative — a cap that would lock every user out
         // of their own account — clamps back to the default, unstored.
-        value.max_sessions = 0;
+        let value = Policy { max_sessions: 0, ..Policy::default() };
         set_policy(&store, &value).await.unwrap();
         assert_eq!(policy(&store).await.unwrap().max_sessions, 5);
-        value.max_sessions = -3;
+        let value = Policy { max_sessions: -3, ..Policy::default() };
         set_policy(&store, &value).await.unwrap();
         assert_eq!(policy(&store).await.unwrap().max_sessions, 5);
     }

@@ -15,9 +15,9 @@
 
 use topcoat::Result;
 use topcoat::context::Cx;
-use topcoat::view::{Unescaped, view};
+use topcoat::view::{Unescaped, View, view};
 
-pub async fn dropdown_script(cx: &Cx) -> Result {
+pub async fn dropdown_script(cx: &Cx) -> Result<impl View + '_> {
     const JS: &str = "\
         (function () {\
             function enhanceAll() { document.querySelectorAll('select.auth-input').forEach(enhance); }\
@@ -242,5 +242,5 @@ pub async fn dropdown_script(cx: &Cx) -> Result {
             }, true);\
             enhanceAll();\
         })();";
-    view! { cx => <script>(Unescaped::new_unchecked(JS))</script> }
+    Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> })
 }

@@ -178,8 +178,9 @@ fn seal(key: &[u8; 32], plaintext: &[u8]) -> String {
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; 24];
     rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = XNonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(XNonce::from_slice(&nonce_bytes), plaintext)
+        .encrypt(&nonce, plaintext)
         .expect("XChaCha20-Poly1305 cannot fail on a payload this small");
     let mut payload = nonce_bytes.to_vec();
     payload.extend_from_slice(&ciphertext);
@@ -193,9 +194,8 @@ fn open(key: &[u8; 32], sealed: &str) -> Option<Vec<u8>> {
     }
     let (nonce_bytes, ciphertext) = payload.split_at(24);
     let cipher = XChaCha20Poly1305::new(key.into());
-    cipher
-        .decrypt(XNonce::from_slice(nonce_bytes), ciphertext)
-        .ok()
+    let nonce: &XNonce = nonce_bytes.try_into().ok()?;
+    cipher.decrypt(nonce, ciphertext).ok()
 }
 
 fn seal_json<T: Serialize>(key: &[u8; 32], value: &T) -> String {
@@ -514,7 +514,7 @@ fn verify_claims(
         .map_err(|e| Error::Token(e.to_string()))?;
     let signature = rsa::pkcs1v15::Signature::try_from(signature_bytes.as_slice())
         .map_err(|e| Error::Token(e.to_string()))?;
-    let verifying = rsa::pkcs1v15::VerifyingKey::<sha2_for_rsa::Sha256>::new(key.clone());
+    let verifying = rsa::pkcs1v15::VerifyingKey::<sha2::Sha256>::new(key.clone());
     verifying
         .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
         .map_err(|_| Error::Token("bad signature".into()))?;
@@ -575,8 +575,8 @@ async fn refetch_jwks(state: &ImClient) -> Result<()> {
             continue;
         };
         let key = rsa::RsaPublicKey::new(
-            rsa::BigUint::from_bytes_be(&n),
-            rsa::BigUint::from_bytes_be(&e),
+            rsa::BoxedUint::from_be_slice_vartime(&n),
+            rsa::BoxedUint::from_be_slice_vartime(&e),
         )
         .map_err(|err| Error::Token(format!("bad jwk {kid}: {err}")))?;
         keys.push((kid.to_string(), key));
@@ -595,8 +595,8 @@ mod tests {
 
     fn keypair() -> (rsa::RsaPrivateKey, rsa::RsaPublicKey) {
         // 2048-bit generation is slow for a unit test; 1024 is the smallest
-        // rsa 0.9 accepts and the signature math under test is identical.
-        let private = rsa::RsaPrivateKey::new(&mut rand_core06::OsRng, 1024).unwrap();
+        // rsa accepts and the signature math under test is identical.
+        let private = rsa::RsaPrivateKey::new(&mut rand::rng(), 1024).unwrap();
         let public = private.to_public_key();
         (private, public)
     }
@@ -606,7 +606,7 @@ mod tests {
         let mut out = b64url.encode(header.to_string());
         out.push('.');
         out.push_str(&b64url.encode(claims.to_string()));
-        let signing = rsa::pkcs1v15::SigningKey::<sha2_for_rsa::Sha256>::new(key.clone());
+        let signing = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key.clone());
         let signature = signing.sign(out.as_bytes());
         format!("{}.{}", out, b64url.encode(signature.to_bytes()))
     }

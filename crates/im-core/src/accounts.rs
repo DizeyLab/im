@@ -909,10 +909,10 @@ fn normalize_email(email: &str) -> std::result::Result<String, AccountError> {
 /// address the account already carries quietly succeeds.
 pub async fn set_email(store: &Store, user: &UserId, email: &str) -> std::result::Result<(), AccountError> {
     let email = normalize_email(email)?;
-    if let Some(other) = user_by_email(store, &email).await? {
-        if other.id != *user {
-            return Err(AccountError::EmailTaken);
-        }
+    if let Some(other) = user_by_email(store, &email).await?
+        && other.id != *user
+    {
+        return Err(AccountError::EmailTaken);
     }
     let conn = store.conn.lock().await;
     conn.execute(
@@ -953,10 +953,10 @@ pub async fn request_email_change(
     if new_email == old_email {
         return Err(AccountError::SameEmail);
     }
-    if let Some(other) = user_by_email(store, &new_email).await? {
-        if other.id != *user {
-            return Err(AccountError::EmailTaken);
-        }
+    if let Some(other) = user_by_email(store, &new_email).await?
+        && other.id != *user
+    {
+        return Err(AccountError::EmailTaken);
     }
     let old_token = Token::mint();
     let new_token = Token::mint();
@@ -1040,17 +1040,17 @@ pub async fn confirm_email_change(
     }
     let completes = (clicked_old && new_done) || (!clicked_old && old_done);
     if completes {
-        if let Some(other) = user_by_email(store, &new_email).await? {
-            if other.id != user_id {
-                let conn = store.conn.lock().await;
-                conn.execute(
-                    "DELETE FROM email_changes WHERE old_token_hash = ?1 OR new_token_hash = ?1",
-                    turso::params![hash],
-                )
-                .await
-                .map_err(backend)?;
-                return Err(AccountError::EmailTaken);
-            }
+        if let Some(other) = user_by_email(store, &new_email).await?
+            && other.id != user_id
+        {
+            let conn = store.conn.lock().await;
+            conn.execute(
+                "DELETE FROM email_changes WHERE old_token_hash = ?1 OR new_token_hash = ?1",
+                turso::params![hash],
+            )
+            .await
+            .map_err(backend)?;
+            return Err(AccountError::EmailTaken);
         }
         set_email(store, &user_id, &new_email).await?;
         let stamp = store::stamp(store::now())?;

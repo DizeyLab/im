@@ -55,13 +55,12 @@ fn logout_target(raw: Option<&str>, services: &[im_core::services::Service]) -> 
     if raw.starts_with('/') && !raw.starts_with("//") {
         return raw.to_string();
     }
-    if let Some(origin) = url_origin(raw) {
-        if services
+    if let Some(origin) = url_origin(raw)
+        && services
             .iter()
             .any(|s| url_origin(&s.url).is_some_and(|known| known == origin))
-        {
-            return raw.to_string();
-        }
+    {
+        return raw.to_string();
     }
     "/".to_string()
 }
@@ -519,12 +518,12 @@ async fn revoke_session(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Redire
         return see("/".to_string());
     };
     let store = &server::app(cx).store;
-    if let Some(presented) = server::presented_session(cx) {
-        if im_core::accounts::hash_token(&presented) == input.session {
-            im_core::sessions::revoke_session(store, &presented).await?;
-            server::clear_session_cookie(cx);
-            return see("/".to_string());
-        }
+    if let Some(presented) = server::presented_session(cx)
+        && im_core::accounts::hash_token(&presented) == input.session
+    {
+        im_core::sessions::revoke_session(store, &presented).await?;
+        server::clear_session_cookie(cx);
+        return see("/".to_string());
     }
     // The row's address, when it is still there, is the useful half of the
     // log line — which of their devices they just killed.

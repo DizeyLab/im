@@ -9,7 +9,7 @@ use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::error::not_found;
 use topcoat::router::{page, path_param};
-use topcoat::view::view;
+use topcoat::view::{Child, View, ViewExt, view};
 
 use im_core::accounts;
 
@@ -21,7 +21,7 @@ path_param!(user_id);
 
 /// A person's page. `/people/{user_id}`.
 #[page("/people/{user_id}")]
-async fn people_page(cx: &Cx) -> Result {
+async fn people_page(cx: &Cx) -> Result<impl View + '_> {
     let Some(viewer) = server::current_user(cx).await else {
         return Err(not_found().into());
     };
@@ -35,31 +35,42 @@ async fn people_page(cx: &Cx) -> Result {
     let mine = person.id == viewer.id;
     let stats = im_core::stats::profile_stats(&store, &person.id).await?;
     let joined = person.created_at.date().to_string();
+    // The stage template moves every value it mentions, so the account's
+    // template data is staged here as owned values first; the markup below
+    // never names `person` itself.
+    let face_button = avatar(cx, &person).await?.first().await?;
+    let face_plain = avatar(cx, &person).await?.first().await?;
+    let display_name = person.name.clone();
+    let email_shown = person.email.clone();
+    let has_photo = person.has_photo;
+    let totp_on = person.totp_confirmed;
+    let is_admin = person.admin;
+    let profile_title = format!("{} · im", person.name);
     let stage = view! {
         cx =>
         <main class="auth-stage">
             <div class="auth-column">
-                (family_wordmark(cx).await?)
+                (family_wordmark(cx).await?.first().await?)
                 <div class="auth-card">
                     <div class="profile-head">
-                        if person.has_photo {
+                        if has_photo {
                             // The face opens the viewer here too — same as
                             // the landing, same as iz's person page.
                             <button class="avatar-view" type="button" aria-label=(t(lang, Key::ViewPhotoAria))>
-                                (avatar(cx, &person).await?)
+                                (face_button)
                             </button>
                         } else {
-                            (avatar(cx, &person).await?)
+                            (face_plain)
                         }
                         <div class="profile-heading">
-                            <div class="auth-title">(person.name.clone())</div>
+                            <div class="auth-title">(display_name)</div>
                             <div class="profile-marks">
-                                if person.totp_confirmed {
+                                if totp_on {
                                     <span class="chip chip-connected">(t(lang, Key::TwoFaOn))</span>
                                 } else {
                                     <span class="chip chip-muted">(t(lang, Key::TwoFaOff))</span>
                                 }
-                                if person.admin {
+                                if is_admin {
                                     <span class="chip chip-accent">(t(lang, Key::AdminChip))</span>
                                 }
                             </div>
@@ -68,7 +79,7 @@ async fn people_page(cx: &Cx) -> Result {
                     <dl class="profile-fields">
                         <div class="profile-field">
                             <dt class="auth-label">(t(lang, Key::EmailLabel))</dt>
-                            <dd class="profile-value mono">(person.email.clone())</dd>
+                            <dd class="profile-value mono">(email_shown)</dd>
                         </div>
                         <div class="profile-field">
                             <dt class="auth-label">(t(lang, Key::MemberSinceLabel))</dt>
@@ -98,7 +109,7 @@ async fn people_page(cx: &Cx) -> Result {
                 <div class="auth-footer">(t(lang, Key::BrandFooter))</div>
             </div>
         </main>
-        (crate::layout::avatar_script(cx, lang).await?)
+        (crate::layout::avatar_script(cx, lang).await?.first().await?)
     };
-    shell(cx, &format!("{} · im", person.name), Some(&viewer), stage).await
+    shell(cx, profile_title, Some(viewer), Child::new(stage)).await
 }

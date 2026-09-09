@@ -269,7 +269,7 @@ async fn run(args: &Args) -> Result<Report> {
                 mapping.push_str(&format!("{},{sub}\n", user.id));
                 continue;
             }
-            let sub = ulid::Ulid::new().to_string();
+            let sub = ulid::Ulid::generate().to_string();
             conn.execute(
                 "INSERT INTO users (id, email, name, password_hash, created_at) \
                  VALUES (?1, ?2, ?3, ?4, ?5)",

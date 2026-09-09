@@ -49,61 +49,59 @@ async fn live(cx: &Cx) -> topcoat::Result<Response> {
     let events = futures_util::stream::unfold(
         (rx, deadline, stopping),
         |(mut rx, deadline, mut stopping)| async move {
-            loop {
-                // Already going down: end, so this connection is not one the
-                // shutdown has to sit and wait out.
-                if stopping.as_ref().is_some_and(|watch| *watch.borrow()) {
-                    return None;
-                }
-                let left = deadline.saturating_duration_since(Instant::now());
-                if left.is_zero() {
-                    return None;
-                }
-                // Three things end the wait: an announcement, the window
-                // running out, and the server being told to stop. The third
-                // is watched rather than polled, so SIGTERM is felt at once.
-                let heard = tokio::time::timeout(left, async {
-                    match stopping.as_mut() {
-                        Some(watch) => tokio::select! {
-                            _ = watch.changed() => None,
-                            got = rx.recv() => Some(got),
-                        },
-                        None => Some(rx.recv().await),
-                    }
-                })
-                .await;
-                match heard {
-                    // The window closed, or the server is stopping. Ending
-                    // the stream is the point: the browser reconnects by
-                    // itself and authenticates again.
-                    Err(_) | Ok(None) => return None,
-                    // The broadcaster is gone, which means the process is
-                    // going with it.
-                    Ok(Some(Err(RecvError::Closed))) => return None,
-                    // This reader fell behind and announcements were dropped.
-                    // Which ones is unknowable, so the tick says "re-read
-                    // everything" — the client refetches the whole page, so
-                    // a lagged tick and a plain tick are the same frame.
-                    Ok(Some(Err(RecvError::Lagged(_)))) | Ok(Some(Ok(server::LiveEvent::Tick))) => {}
-                    // One member's row changed. The frame names which one —
-                    // im's own client still just re-fetches the page it is
-                    // on, so the payload is forward-compatibility for a
-                    // future page that can react to its own subject alone.
-                    Ok(Some(Ok(server::LiveEvent::Profile(member)))) => {
-                        return Some((
-                            Ok::<_, std::convert::Infallible>(Event::new().data(
-                                serde_json::json!({ "kind": "profile", "sub": member.sub })
-                                    .to_string(),
-                            )),
-                            (rx, deadline, stopping),
-                        ));
-                    }
-                }
-                return Some((
-                    Ok::<_, std::convert::Infallible>(Event::new().data("{}")),
-                    (rx, deadline, stopping),
-                ));
+            // Already going down: end, so this connection is not one the
+            // shutdown has to sit and wait out.
+            if stopping.as_ref().is_some_and(|watch| *watch.borrow()) {
+                return None;
             }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            // Three things end the wait: an announcement, the window
+            // running out, and the server being told to stop. The third
+            // is watched rather than polled, so SIGTERM is felt at once.
+            let heard = tokio::time::timeout(left, async {
+                match stopping.as_mut() {
+                    Some(watch) => tokio::select! {
+                        _ = watch.changed() => None,
+                        got = rx.recv() => Some(got),
+                    },
+                    None => Some(rx.recv().await),
+                }
+            })
+            .await;
+            match heard {
+                // The window closed, or the server is stopping. Ending
+                // the stream is the point: the browser reconnects by
+                // itself and authenticates again.
+                Err(_) | Ok(None) => return None,
+                // The broadcaster is gone, which means the process is
+                // going with it.
+                Ok(Some(Err(RecvError::Closed))) => return None,
+                // This reader fell behind and announcements were dropped.
+                // Which ones is unknowable, so the tick says "re-read
+                // everything" — the client refetches the whole page, so
+                // a lagged tick and a plain tick are the same frame.
+                Ok(Some(Err(RecvError::Lagged(_)))) | Ok(Some(Ok(server::LiveEvent::Tick))) => {}
+                // One member's row changed. The frame names which one —
+                // im's own client still just re-fetches the page it is
+                // on, so the payload is forward-compatibility for a
+                // future page that can react to its own subject alone.
+                Ok(Some(Ok(server::LiveEvent::Profile(member)))) => {
+                    return Some((
+                        Ok::<_, std::convert::Infallible>(Event::new().data(
+                            serde_json::json!({ "kind": "profile", "sub": member.sub })
+                                .to_string(),
+                        )),
+                        (rx, deadline, stopping),
+                    ));
+                }
+            }
+            Some((
+                Ok::<_, std::convert::Infallible>(Event::new().data("{}")),
+                (rx, deadline, stopping),
+            ))
         },
     );
 

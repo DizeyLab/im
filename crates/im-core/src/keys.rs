@@ -5,6 +5,7 @@
 //! XChaCha20-Poly1305 envelope of its PKCS#8 DER under `im.key`, and only
 //! `active_signing_key` (signing) and `jwks` (the public half) cross the
 //! boundary.
+use rand::SeedableRng as _;
 use rsa::pkcs8::{DecodePrivateKey, DecodePublicKey, EncodePrivateKey, EncodePublicKey};
 use rsa::traits::PublicKeyParts;
 use rsa::{RsaPrivateKey, RsaPublicKey};
@@ -38,7 +39,7 @@ pub async fn active_signing_key(store: &Store) -> Result<(String, RsaPrivateKey)
         return Ok((kid, key));
     }
 
-    let mut rng = rand_core::OsRng;
+    let mut rng = rand::rngs::StdRng::from_rng(&mut rand::rng());
     let key = RsaPrivateKey::new(&mut rng, 2048)
         .map_err(|e| StoreError::Backend(format!("key generation: {e}")))?;
     let public_der = key
@@ -96,8 +97,8 @@ pub async fn jwks(store: &Store) -> Result<serde_json::Value> {
             "use": "sig",
             "alg": "RS256",
             "kid": kid,
-            "n": b64.encode(public.n().to_bytes_be()),
-            "e": b64.encode(public.e().to_bytes_be()),
+            "n": b64.encode(public.n().to_be_bytes_trimmed_vartime()),
+            "e": b64.encode(public.e().to_be_bytes_trimmed_vartime()),
         }));
     }
     Ok(serde_json::json!({ "keys": keys }))

@@ -23,7 +23,7 @@ macro_rules! id_wrapper {
             /// A fresh ULID — sortable, URL-safe, unguessable enough for an id.
             #[cfg(feature = "server")]
             pub fn mint() -> Self {
-                Self(ulid::Ulid::new().to_string())
+                Self(ulid::Ulid::generate().to_string())
             }
 
             pub fn as_str(&self) -> &str {

@@ -13,7 +13,7 @@ use topcoat::cookie::Cookies;
 use topcoat::router::content::Form;
 use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{HeaderValue, StatusCode, header, route};
-use topcoat::view::view;
+use topcoat::view::{Child, ViewExt, view};
 
 use crate::i18n::{self, Key, lang_of, t};
 use crate::layout::shell;
@@ -26,15 +26,17 @@ fn app(cx: &Cx) -> &App {
 }
 
 /// The admin behind this request, or the redirect the request gets instead.
-async fn require_admin(cx: &Cx) -> std::result::Result<User, Response> {
+async fn require_admin(cx: &Cx) -> std::result::Result<User, Box<Response>> {
     match server::current_user(cx).await {
         Some(user) if user.admin => Ok(user),
-        _ => Err((
-            StatusCode::SEE_OTHER,
-            [(header::LOCATION, HeaderValue::from_static("/"))],
-        )
-            .into_response(cx)
-            .expect("a redirect can always be built")),
+        _ => Err(Box::new(
+            (
+                StatusCode::SEE_OTHER,
+                [(header::LOCATION, HeaderValue::from_static("/"))],
+            )
+                .into_response(cx)
+                .expect("a redirect can always be built"),
+        )),
     }
 }
 
@@ -49,18 +51,30 @@ fn escape(raw: &str) -> String {
 
 /// One row action as a two-step disclosure — iz's `confirm-details` idiom:
 /// the summary is the word ("Delete"), the opened panel says what it costs
-/// and holds the button that actually does it. Works with no script at all;
-/// the live script adds outside-click closing.
-fn confirm_action(
-    field: &str,
-    id: &str,
-    action: &str,
-    word: &str,
-    extra_class: &str,
-    title: &str,
-    cost: &str,
-    confirm: &str,
-) -> String {
+/// and holds the button that actually does it. The eight `&str`s travel as
+/// named fields: eight positional parameters tripped the too-many-arguments
+/// lint, and the names read better at the call sites anyway.
+struct ConfirmAction<'a> {
+    field: &'a str,
+    id: &'a str,
+    action: &'a str,
+    word: &'a str,
+    extra_class: &'a str,
+    title: &'a str,
+    cost: &'a str,
+    confirm: &'a str,
+}
+fn confirm_action(ask: ConfirmAction<'_>) -> String {
+    let ConfirmAction {
+        field,
+        id,
+        action,
+        word,
+        extra_class,
+        title,
+        cost,
+        confirm,
+    } = ask;
     format!(
         r#"<details class="admin-confirm"><summary class="admin-action{extra_class}">{word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{title}</div><div class="muted">{cost}</div><form method="post" action="{action}"><input type="hidden" name="{field}" value="{id}"><button class="admin-action{extra_class}" type="submit">{confirm}</button></form></div></details>"#
     )
@@ -110,7 +124,7 @@ fn back(cx: &Cx, section: &str, extra: &str) -> Result<Response> {
 async fn admin_page(cx: &Cx) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let lang = lang_of(Some(&me));
     let query = topcoat::router::request::uri(cx)
@@ -188,6 +202,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         _ => None,
     };
 
+    let my_email = escape(&me.email);
     let stage = view! {
         cx =>
         <main class="admin-shell">
@@ -197,7 +212,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
                     // topbar; the address stays a link too.
                     <a class="wordmark-text wordmark-home" href="/">"im"</a>
                     <nav class="admin-tabs">(topcoat::view::Unescaped::new_unchecked(nav(&section)))</nav>
-                    <a class="auth-alt" href="/">(escape(&me.email))</a>
+                    <a class="auth-alt" href="/">(my_email)</a>
                 </div>
                 if let Some(banner) = banner {
                     (topcoat::view::Unescaped::new_unchecked(banner))
@@ -207,7 +222,9 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
             </div>
         </main>
     };
-    shell(cx, t(lang, Key::TitleAdmin), Some(&me), stage)
+    shell(cx, t(lang, Key::TitleAdmin), Some(me), Child::new(stage))
+        .await?
+        .first()
         .await?
         .into_response(cx)
 }
@@ -330,38 +347,38 @@ async fn users_section(
             // the button that actually does it. No script required; the live
             // script adds outside-click closing on top.
             let toggle = if user.disabled {
-                confirm_action(
-                    "user",
-                    &id,
-                    "/admin/enable",
-                    t(lang, Key::EnableWord),
-                    "",
-                    &i18n::enable_title(lang, &email),
-                    t(lang, Key::EnableCost),
-                    t(lang, Key::ConfirmEnable),
-                )
+                confirm_action(ConfirmAction {
+                    field: "user",
+                    id: &id,
+                    action: "/admin/enable",
+                    word: t(lang, Key::EnableWord),
+                    extra_class: "",
+                    title: &i18n::enable_title(lang, &email),
+                    cost: t(lang, Key::EnableCost),
+                    confirm: t(lang, Key::ConfirmEnable),
+                })
             } else {
-                confirm_action(
-                    "user",
-                    &id,
-                    "/admin/disable",
-                    t(lang, Key::DisableWord),
-                    "",
-                    &i18n::disable_title(lang, &email),
-                    t(lang, Key::DisableCost),
-                    t(lang, Key::ConfirmDisable),
-                )
+                confirm_action(ConfirmAction {
+                    field: "user",
+                    id: &id,
+                    action: "/admin/disable",
+                    word: t(lang, Key::DisableWord),
+                    extra_class: "",
+                    title: &i18n::disable_title(lang, &email),
+                    cost: t(lang, Key::DisableCost),
+                    confirm: t(lang, Key::ConfirmDisable),
+                })
             };
-            let remove = confirm_action(
-                "user",
-                &id,
-                "/admin/delete",
-                t(lang, Key::DeleteWord),
-                " admin-danger",
-                &i18n::delete_title(lang, &email),
-                t(lang, Key::DeleteCost),
-                t(lang, Key::ConfirmDelete),
-            );
+            let remove = confirm_action(ConfirmAction {
+                field: "user",
+                id: &id,
+                action: "/admin/delete",
+                word: t(lang, Key::DeleteWord),
+                extra_class: " admin-danger",
+                title: &i18n::delete_title(lang, &email),
+                cost: t(lang, Key::DeleteCost),
+                confirm: t(lang, Key::ConfirmDelete),
+            });
             format!(
                 r#"{toggle}<form method="post" action="/admin/revoke"><input type="hidden" name="user" value="{id}"><button class="admin-action" type="submit">{sign_out}</button></form>{remove}"#,
                 sign_out = t(lang, Key::SignOutEverywhere),
@@ -524,16 +541,16 @@ async fn services_section(
                 kept_word = t(lang, Key::ServiceKept),
             )
         } else {
-            confirm_action(
-                "key",
-                &key,
-                "/admin/services_remove",
-                t(lang, Key::Remove),
-                " admin-danger",
-                &i18n::remove_service_title(lang, &name),
-                t(lang, Key::RemoveCost),
-                t(lang, Key::ConfirmRemove),
-            )
+            confirm_action(ConfirmAction {
+                field: "key",
+                id: &key,
+                action: "/admin/services_remove",
+                word: t(lang, Key::Remove),
+                extra_class: " admin-danger",
+                title: &i18n::remove_service_title(lang, &name),
+                cost: t(lang, Key::RemoveCost),
+                confirm: t(lang, Key::ConfirmRemove),
+            })
         };
         let (client_cell, uris_cell, registered_cell, client_actions) =
             match linked(service.client_id.as_ref()) {
@@ -647,26 +664,26 @@ async fn services_section(
 /// A client's Rotate/Revoke pair, as the two-step disclosures — the same
 /// controls on a linked service row and on a credential-only row.
 fn client_controls(client_id: &str, name_html: &str, lang: i18n::Lang) -> String {
-    let rotate = confirm_action(
-        "client",
-        client_id,
-        "/admin/clients_rotate",
-        t(lang, Key::RotateWord),
-        "",
-        &i18n::rotate_client_title(lang, name_html),
-        t(lang, Key::RotateCost),
-        t(lang, Key::ConfirmRotate),
-    );
-    let revoke_action = confirm_action(
-        "client",
-        client_id,
-        "/admin/clients_revoke",
-        t(lang, Key::RevokeWord),
-        " admin-danger",
-        &i18n::revoke_client_title(lang, name_html),
-        t(lang, Key::RevokeCost),
-        t(lang, Key::ConfirmRevoke),
-    );
+    let rotate = confirm_action(ConfirmAction {
+        field: "client",
+        id: client_id,
+        action: "/admin/clients_rotate",
+        word: t(lang, Key::RotateWord),
+        extra_class: "",
+        title: &i18n::rotate_client_title(lang, name_html),
+        cost: t(lang, Key::RotateCost),
+        confirm: t(lang, Key::ConfirmRotate),
+    });
+    let revoke_action = confirm_action(ConfirmAction {
+        field: "client",
+        id: client_id,
+        action: "/admin/clients_revoke",
+        word: t(lang, Key::RevokeWord),
+        extra_class: " admin-danger",
+        title: &i18n::revoke_client_title(lang, name_html),
+        cost: t(lang, Key::RevokeCost),
+        confirm: t(lang, Key::ConfirmRevoke),
+    });
     format!("{rotate}{revoke_action}")
 }
 
@@ -749,7 +766,7 @@ struct ServiceForm {
 async fn services_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let limit = match posted_limit(&input.limit_amount, &input.limit_unit) {
         Ok(limit) => limit,
@@ -774,7 +791,7 @@ async fn services_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Respons
 async fn services_edit(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let limit = match posted_limit(&input.limit_amount, &input.limit_unit) {
         Ok(limit) => limit,
@@ -800,7 +817,7 @@ struct ServiceKeyForm {
 async fn services_remove(cx: &Cx, Form(input): Form<ServiceKeyForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let outcome = im_core::services::remove(&app(cx).store, &input.key).await;
     service_outcome(cx, &me, outcome).await
@@ -817,7 +834,7 @@ struct ServiceMoveForm {
 async fn services_move(cx: &Cx, Form(input): Form<ServiceMoveForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let up = match input.dir.as_str() {
         "up" => true,
@@ -862,7 +879,7 @@ struct ClientForm {
 async fn clients_add(cx: &Cx, Form(input): Form<ClientForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let name = input.name.trim().to_string();
     let uris: Vec<String> = input
@@ -890,7 +907,7 @@ struct ClientAction {
 async fn clients_rotate(cx: &Cx, Form(input): Form<ClientAction>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     // The log line names the client like a person, so the name comes off
     // the row before the secret under it moves.
@@ -913,7 +930,7 @@ async fn clients_rotate(cx: &Cx, Form(input): Form<ClientAction>) -> Result<Resp
 async fn clients_revoke(cx: &Cx, Form(input): Form<ClientAction>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let name = match im_core::oidc::client_by_id(&app(cx).store, &input.client).await? {
         Some(client) => client.name,
@@ -983,7 +1000,7 @@ struct PolicyForm {
 async fn settings_save(cx: &Cx, Form(input): Form<PolicyForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     settings::set_policy(
@@ -1361,6 +1378,22 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         );
     }
 
+    let dir_options = format!(
+        r#"<option value=""{}>{}</option><option value="oldest"{}>{}</option>"#,
+        if dir == events::Dir::Newest {
+            " selected"
+        } else {
+            ""
+        },
+        t(lang, Key::NewestFirst),
+        if dir == events::Dir::Oldest {
+            " selected"
+        } else {
+            ""
+        },
+        t(lang, Key::OldestFirst),
+    );
+
     Ok(format!(
         r#"<div class="admin-card">
   <div class="auth-title">{title}</div>
@@ -1394,21 +1427,7 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
         q_value = escape(filter.q.as_deref().unwrap_or("")),
         from_value = escape(&pick("from").unwrap_or_default()),
         to_value = escape(&pick("to").unwrap_or_default()),
-        dir_options = format!(
-            r#"<option value=""{}>{}</option><option value="oldest"{}>{}</option>"#,
-            if dir == events::Dir::Newest {
-                " selected"
-            } else {
-                ""
-            },
-            t(lang, Key::NewestFirst),
-            if dir == events::Dir::Oldest {
-                " selected"
-            } else {
-                ""
-            },
-            t(lang, Key::OldestFirst),
-        ),
+        dir_options = dir_options,
     ))
     .map(|card| card + LOG_FIT_SCRIPT)
 }
@@ -1491,7 +1510,7 @@ struct InviteForm {
 async fn invite(cx: &Cx, Form(input): Form<InviteForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     let email = input.email.trim().to_string();
@@ -1543,7 +1562,7 @@ struct UserEmailForm {
 async fn user_email(cx: &Cx, Form(input): Form<UserEmailForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     let user_id = UserId::from(input.user);
@@ -1568,7 +1587,7 @@ struct InviteAction {
 async fn uninvite(cx: &Cx, Form(input): Form<InviteAction>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     let email = accounts::revoke_invite(store, &input.invite).await?;
@@ -1583,7 +1602,7 @@ async fn uninvite(cx: &Cx, Form(input): Form<InviteAction>) -> Result<Response> 
 async fn delete(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     let user_id = UserId::from(input.user);
@@ -1603,7 +1622,7 @@ struct UserAction {
 async fn revoke(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     let user_id = UserId::from(input.user);
@@ -1636,7 +1655,7 @@ struct SessionRevokeForm {
 async fn session_revoke(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let user_id = UserId::from(input.user.clone());
     if !im_core::sessions::revoke_owned_session(&app(cx).store, &user_id, &input.session).await? {
@@ -1659,7 +1678,7 @@ async fn enable(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
 async fn set_disabled(cx: &Cx, input: UserAction, disabled: bool) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     let user_id = UserId::from(input.user);
@@ -1710,7 +1729,7 @@ struct SmtpForm {
 async fn smtp_save(cx: &Cx, Form(input): Form<SmtpForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     let value = Smtp {
@@ -1733,7 +1752,7 @@ async fn smtp_save(cx: &Cx, Form(input): Form<SmtpForm>) -> Result<Response> {
 async fn smtp_test(cx: &Cx) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     if !settings::smtp(&app(cx).store).await?.configured() {
         return back(cx, "mail", "&error=sender_unset");
@@ -1778,7 +1797,7 @@ struct MessageForm {
 async fn message(cx: &Cx, Form(input): Form<MessageForm>) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     let store = &app(cx).store;
     if !settings::smtp(store).await?.configured() {
@@ -1834,7 +1853,7 @@ async fn message(cx: &Cx, Form(input): Form<MessageForm>) -> Result<Response> {
 async fn smtp_check(cx: &Cx) -> Result<Response> {
     let me = match require_admin(cx).await {
         Ok(me) => me,
-        Err(redirect) => return Ok(redirect),
+        Err(redirect) => return Ok(*redirect),
     };
     if !settings::smtp(&app(cx).store).await?.configured() {
         return back(cx, "mail", "&error=sender_unset");

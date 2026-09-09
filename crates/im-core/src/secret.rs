@@ -42,9 +42,9 @@ pub fn seal(key: &Key, plaintext: &[u8]) -> String {
     let cipher = XChaCha20Poly1305::new(key.into());
     let mut nonce_bytes = [0u8; NONCE_BYTES];
     rand::rng().fill_bytes(&mut nonce_bytes);
-    let nonce = XNonce::from_slice(&nonce_bytes);
+    let nonce = XNonce::from(nonce_bytes);
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .expect("XChaCha20-Poly1305 cannot fail to encrypt a plaintext this small");
     let mut payload = Vec::with_capacity(NONCE_BYTES + ciphertext.len());
     payload.extend_from_slice(&nonce_bytes);
@@ -63,7 +63,7 @@ pub fn open(key: &Key, sealed: &str) -> Option<Vec<u8>> {
     }
     let (nonce_bytes, ciphertext) = payload.split_at(NONCE_BYTES);
     let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce = XNonce::from_slice(nonce_bytes);
+    let nonce: &XNonce = nonce_bytes.try_into().ok()?;
     cipher.decrypt(nonce, ciphertext).ok()
 }
 

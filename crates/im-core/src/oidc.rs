@@ -43,7 +43,7 @@ pub fn sign_jwt(claims: &serde_json::Value, kid: &str, key: &RsaPrivateKey) -> S
     let mut out = b64url.encode(header.to_string());
     out.push('.');
     out.push_str(&b64url.encode(claims.to_string()));
-    let signing = rsa::pkcs1v15::SigningKey::<sha2_for_rsa::Sha256>::new(key.clone());
+    let signing = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(key.clone());
     let signature = signing.sign(out.as_bytes());
     out.push('.');
     out.push_str(&b64url.encode(signature.to_bytes()));
@@ -474,7 +474,7 @@ pub async fn verify_jwt(
     let Ok(signature) = rsa::pkcs1v15::Signature::try_from(signature_bytes.as_slice()) else {
         return Ok(None);
     };
-    let verifying = rsa::pkcs1v15::VerifyingKey::<sha2_for_rsa::Sha256>::new(public);
+    let verifying = rsa::pkcs1v15::VerifyingKey::<sha2::Sha256>::new(public);
     if verifying
         .verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
         .is_err()
@@ -487,10 +487,8 @@ pub async fn verify_jwt(
     let Ok(claims) = serde_json::from_slice::<serde_json::Value>(&claims_bytes) else {
         return Ok(None);
     };
-    if let Some(audience) = audience {
-        if claims["aud"].as_str() != Some(audience) {
-            return Ok(None);
-        }
+    if let Some(audience) = audience && claims["aud"].as_str() != Some(audience) {
+        return Ok(None);
     }
     let Some(exp) = claims["exp"].as_i64() else {
         return Ok(None);
@@ -771,7 +769,7 @@ mod tests {
         assert_eq!(claims["sub"], "u1");
 
         let verifying =
-            rsa::pkcs1v15::VerifyingKey::<sha2_for_rsa::Sha256>::new(key.to_public_key());
+            rsa::pkcs1v15::VerifyingKey::<sha2::Sha256>::new(key.to_public_key());
         let signature =
             rsa::pkcs1v15::Signature::try_from(b64url.decode(parts[2]).unwrap().as_slice())
                 .unwrap();

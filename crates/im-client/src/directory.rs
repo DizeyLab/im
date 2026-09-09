@@ -257,10 +257,10 @@ impl SseParser {
     fn take_event(&mut self) -> Option<DirectoryEvent> {
         let data = std::mem::take(&mut self.data);
         let event = self.event.take();
-        if let Some(kind) = event {
-            if kind != "profile" {
-                return None;
-            }
+        if let Some(kind) = event
+            && kind != "profile"
+        {
+            return None;
         }
         serde_json::from_str::<DirectoryMember>(&data)
             .ok()

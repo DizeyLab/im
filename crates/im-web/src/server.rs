@@ -86,8 +86,8 @@ const SHOWN_TTL: Duration = Duration::from_secs(10 * 60);
 /// page's read takes it out (`take_shown_secret`), and a replayed or
 /// reloaded URL finds the shelf empty and renders no secret at all. A
 /// restart drops the shelf — the admin mints another, as with the CLI.
-static SHOWN_SECRETS: LazyLock<Mutex<HashMap<String, ((String, String), Instant)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+type ShownShelf = HashMap<String, ((String, String), Instant)>;
+static SHOWN_SECRETS: LazyLock<Mutex<ShownShelf>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Parks a client's fresh pair on the shelf and returns the claim ticket
 /// for its URL. The id travels too — it is the public half of the pair and
