@@ -243,8 +243,6 @@ pub enum Key {
     InviteButton,
 
     // Admin clients section: the family's relying parties.
-    NavClients,
-    ClientsTitle,
     RedirectUrisLabel,
     RegisteredCol,
     ClientAdd,
@@ -726,10 +724,6 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (InviteButton, En) => "Invite",
         (InviteButton, Tr) => "Davet et",
 
-        (NavClients, En) => "Clients",
-        (NavClients, Tr) => "İstemciler",
-        (ClientsTitle, En) => "Clients",
-        (ClientsTitle, Tr) => "İstemciler",
         (RedirectUrisLabel, En) => "Redirect URIs",
         (RedirectUrisLabel, Tr) => "Yönlendirme adresleri",
         (RegisteredCol, En) => "Registered",

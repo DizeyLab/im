@@ -173,6 +173,7 @@ async fn seed_services(store: &Store, config: &Config) {
             name: service.name.clone(),
             url: service.url.clone(),
             owner: None,
+            client_id: None,
         })
         .collect();
     match im_core::services::seed_from(store, &seed).await {
@@ -198,6 +199,8 @@ async fn register_self(store: &Store, config: &Config) {
         "Account",
         &config.issuer,
         im_core::services::SELF_OWNER,
+        // im is nobody's client: its own row carries no credential stamp.
+        None,
     )
     .await
     {

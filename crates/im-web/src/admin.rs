@@ -132,7 +132,6 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         [
             ("users", t(lang, Key::NavUsers)),
             ("services", t(lang, Key::NavServices)),
-            ("clients", t(lang, Key::NavClients)),
             ("message", t(lang, Key::NavMessage)),
             ("settings", t(lang, Key::NavSettings)),
             ("logs", t(lang, Key::NavLogs)),
@@ -152,8 +151,9 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         "message" => message_section(cx, lang).await?,
         "settings" => settings_section(cx, lang).await?,
         "logs" => logs_section(cx, lang).await?,
-        "services" => services_section(cx, lang).await?,
-        "clients" => clients_section(cx, shown, lang).await?,
+        // `section=clients` lands here too — the sections are one table
+        // now, and the old address keeps working.
+        "services" | "clients" => services_section(cx, shown, lang).await?,
         _ => users_section(cx, &me, invited.as_deref(), lang).await?,
     };
 
@@ -438,13 +438,26 @@ async fn users_section(
     ))
 }
 
-/// The family registry: the wordmarks every topbar's trio and the landing's
-/// services home render, and `/family` serves. One table in the panel's own
-/// skins — edit and remove as the two-step disclosures, the up/down pair as
-/// plain row buttons — and the add line under it wearing the invite form's
-/// skin.
-async fn services_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
+/// The family registry, wordmarks and credentials as one table. Every
+/// service row carries its client half beside it — client id, redirect
+/// URIs, registered date, Rotate/Revoke — joined by the client id its
+/// `POST /family/register` authenticated; a client with no service row (a
+/// test or stray credential) renders as a credential-only row, and a row
+/// with no client yet shows the dash. The wordmark controls stay the
+/// panel's on rows no app keeps, and the two add lines — a service, a
+/// client — sit under the table.
+async fn services_section(
+    cx: &Cx,
+    shown: Option<(String, String)>,
+    lang: i18n::Lang,
+) -> Result<String, topcoat::Error> {
     let services = im_core::services::list(&app(cx).store).await?;
+    let clients = im_core::oidc::list_clients(&app(cx).store).await?;
+    // The join: a service row's client id names the client whose wordmark
+    // half and credential half render as one.
+    let linked = |id: Option<&String>| {
+        id.and_then(|cid| clients.iter().find(|client| &client.client_id.to_string() == cid))
+    };
     let mut rows = String::new();
     for service in &services {
         let key = escape(&service.key);
@@ -508,32 +521,139 @@ async fn services_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::
                 t(lang, Key::ConfirmRemove),
             )
         };
+        let (client_cell, uris_cell, registered_cell, client_actions) =
+            match linked(service.client_id.as_ref()) {
+                Some(client) => {
+                    let id = escape(&client.client_id.to_string());
+                    let uris = client
+                        .redirect_uris
+                        .iter()
+                        .map(|uri| escape(uri))
+                        .collect::<Vec<_>>()
+                        .join("<br>");
+                    let registered = client
+                        .created_at
+                        .format(&time::macros::format_description!(
+                            "[year]-[month]-[day]"
+                        ))
+                        .unwrap_or_default();
+                    let controls = client_controls(
+                        &id,
+                        &escape(&client.name),
+                        lang,
+                    );
+                    (id, uris, registered, controls)
+                }
+                None => ("—".to_string(), "—".to_string(), "—".to_string(), String::new()),
+            };
         rows.push_str(&format!(
-            r#"<tr><td class="mono">{key}</td><td>{name}</td><td class="mono">{url}</td><td class="actions">{edit}{up}{down}{remove}</td></tr>"#,
+            r#"<tr><td class="mono">{key}</td><td>{name}</td><td class="mono">{url}</td><td class="mono">{client_cell}</td><td class="mono">{uris_cell}</td><td class="muted">{registered_cell}</td><td class="actions">{edit}{up}{down}{remove}{client_actions}</td></tr>"#,
         ));
     }
+    // Clients no service row answers for — the CLI's or the panel's test
+    // credentials — still sit in the table, their credential half alone.
+    for client in &clients {
+        let id = client.client_id.to_string();
+        if services
+            .iter()
+            .any(|service| service.client_id.as_deref() == Some(id.as_str()))
+        {
+            continue;
+        }
+        let name = escape(&client.name);
+        let uris = client
+            .redirect_uris
+            .iter()
+            .map(|uri| escape(uri))
+            .collect::<Vec<_>>()
+            .join("<br>");
+        let registered = client
+            .created_at
+            .format(&time::macros::format_description!("[year]-[month]-[day]"))
+            .unwrap_or_default();
+        let controls = client_controls(&id, &name, lang);
+        rows.push_str(&format!(
+            r#"<tr><td class="muted">—</td><td>{name}</td><td class="muted">—</td><td class="mono">{}</td><td class="mono">{uris}</td><td class="muted">{registered}</td><td class="actions">{controls}</td></tr>"#,
+            escape(&id),
+        ));
+    }
+    // The show-once banner: the note says what to do with it, the value is
+    // click-to-copy, and the shelf behind it has already handed it over.
+    let shown_html = shown
+        .map(|(client_id, secret)| {
+            format!(
+                r#"<div class="auth-note">{note}<div class="admin-copy-row"><div class="muted">{id_label}: <span class="mono">{client_id}</span></div><div class="auth-secret admin-copy-value">{secret}</div><button class="admin-action admin-copy" type="button" data-copied-label="{copied}">{copy}</button></div></div>"#,
+                note = t(lang, Key::SecretShownNote),
+                id_label = t(lang, Key::ClientIdLabel),
+                client_id = escape(&client_id),
+                secret = escape(&secret),
+                copied = t(lang, Key::CopiedWord),
+                copy = t(lang, Key::CopyWord),
+            )
+        })
+        .unwrap_or_default();
     Ok(format!(
         r#"<div class="admin-card">
   <div class="auth-title">{title}</div>
+  {shown_html}
   <div class="admin-table-wrap">
-  <table class="admin-table">
-    <thead><tr><th>{key_label}</th><th>{name_label}</th><th>{url_label}</th><th></th></tr></thead>
+  <table class="admin-table admin-clients">
+    <thead><tr><th>{key_label}</th><th>{name_label}</th><th>{url_label}</th><th>{id_label}</th><th>{uris_label}</th><th>{registered_label}</th><th></th></tr></thead>
     <tbody>{rows}</tbody>
   </table>
   </div>
+  <div class="muted">{service_add_label}</div>
   <form method="post" action="/admin/services_add" class="admin-invite">
     <input class="auth-input auth-input-mono" type="text" name="key" placeholder="in" aria-label="{key_label}" required>
     <input class="auth-input" type="text" name="name" placeholder="{name_label}" aria-label="{name_label}" required>
     <input class="auth-input auth-input-mono" type="text" name="url" placeholder="https://in.dizey.sh" aria-label="{url_label}" required>
     <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{add}</span></button>
   </form>
+  <div class="muted">{client_add_label}</div>
+  <form method="post" action="/admin/clients_add" class="admin-invite">
+    <input class="auth-input" type="text" name="name" placeholder="drive" aria-label="{name_label}" required>
+    <input class="auth-input auth-input-mono" type="text" name="redirect_uris" placeholder="http://127.0.0.1:9000/callback https://drive.dizey.sh/callback" aria-label="{uris_label}" required>
+    <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{client_add}</span></button>
+  </form>
 </div>"#,
         title = t(lang, Key::ServicesTitle),
         key_label = t(lang, Key::ServiceKeyLabel),
         name_label = t(lang, Key::NameCol),
         url_label = t(lang, Key::AddressLabel),
+        id_label = t(lang, Key::ClientIdLabel),
+        uris_label = t(lang, Key::RedirectUrisLabel),
+        registered_label = t(lang, Key::RegisteredCol),
+        service_add_label = t(lang, Key::ServiceAdd),
         add = t(lang, Key::ServiceAdd),
+        client_add_label = t(lang, Key::ClientAdd),
+        client_add = t(lang, Key::ClientAdd),
     ))
+}
+
+/// A client's Rotate/Revoke pair, as the two-step disclosures — the same
+/// controls on a linked service row and on a credential-only row.
+fn client_controls(client_id: &str, name_html: &str, lang: i18n::Lang) -> String {
+    let rotate = confirm_action(
+        "client",
+        client_id,
+        "/admin/clients_rotate",
+        t(lang, Key::RotateWord),
+        "",
+        &i18n::rotate_client_title(lang, name_html),
+        t(lang, Key::RotateCost),
+        t(lang, Key::ConfirmRotate),
+    );
+    let revoke_action = confirm_action(
+        "client",
+        client_id,
+        "/admin/clients_revoke",
+        t(lang, Key::RevokeWord),
+        " admin-danger",
+        &i18n::revoke_client_title(lang, name_html),
+        t(lang, Key::RevokeCost),
+        t(lang, Key::ConfirmRevoke),
+    );
+    format!("{rotate}{revoke_action}")
 }
 
 /// One user of the services forms: key, name, address. The add form fills
@@ -558,6 +678,7 @@ async fn services_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Respons
             name: input.name,
             url: input.url,
             owner: None,
+            client_id: None,
         },
     )
     .await;
@@ -631,99 +752,6 @@ async fn service_outcome(
         }
         Err(e) => Err(e.into()),
     }
-}
-
-/// The relying parties: every client the family's apps sign in with. One
-/// table in the panel's own skins — rotate and revoke as the two-step
-/// disclosures — and the add line under it wearing the invite form's skin.
-/// A create or rotate answers a 303 whose `shown` ticket picks the fresh
-/// secret off the shelf for exactly one render; the page never learns a
-/// secret twice.
-async fn clients_section(
-    cx: &Cx,
-    shown: Option<(String, String)>,
-    lang: i18n::Lang,
-) -> Result<String, topcoat::Error> {
-    let clients = im_core::oidc::list_clients(&app(cx).store).await?;
-    let mut rows = String::new();
-    for client in &clients {
-        let id = escape(&client.client_id.to_string());
-        let name = escape(&client.name);
-        let uris = client
-            .redirect_uris
-            .iter()
-            .map(|uri| escape(uri))
-            .collect::<Vec<_>>()
-            .join("<br>");
-        let registered = client
-            .created_at
-            .format(&time::macros::format_description!("[year]-[month]-[day]"))
-            .unwrap_or_default();
-        // Rotation kills the old pair the moment the new one exists, so it
-        // says what it costs before it does it — like every destructive row
-        // action here.
-        let rotate = confirm_action(
-            "client",
-            &id,
-            "/admin/clients_rotate",
-            t(lang, Key::RotateWord),
-            "",
-            &i18n::rotate_client_title(lang, &name),
-            t(lang, Key::RotateCost),
-            t(lang, Key::ConfirmRotate),
-        );
-        let revoke_action = confirm_action(
-            "client",
-            &id,
-            "/admin/clients_revoke",
-            t(lang, Key::RevokeWord),
-            " admin-danger",
-            &i18n::revoke_client_title(lang, &name),
-            t(lang, Key::RevokeCost),
-            t(lang, Key::ConfirmRevoke),
-        );
-        rows.push_str(&format!(
-            r#"<tr><td>{name}</td><td class="mono">{id}</td><td class="mono">{uris}</td><td class="muted">{registered}</td><td class="actions">{rotate}{revoke_action}</td></tr>"#,
-        ));
-    }
-    // The show-once banner: the note says what to do with it, the value is
-    // click-to-copy, and the shelf behind it has already handed it over.
-    let shown_html = shown
-        .map(|(client_id, secret)| {
-            format!(
-                r#"<div class="auth-note">{note}<div class="admin-copy-row"><div class="muted">{id_label}: <span class="mono">{client_id}</span></div><div class="auth-secret admin-copy-value">{secret}</div><button class="admin-action admin-copy" type="button" data-copied-label="{copied}">{copy}</button></div></div>"#,
-                note = t(lang, Key::SecretShownNote),
-                id_label = t(lang, Key::ClientIdLabel),
-                client_id = escape(&client_id),
-                secret = escape(&secret),
-                copied = t(lang, Key::CopiedWord),
-                copy = t(lang, Key::CopyWord),
-            )
-        })
-        .unwrap_or_default();
-    Ok(format!(
-        r#"<div class="admin-card">
-  <div class="auth-title">{title}</div>
-  {shown_html}
-  <div class="admin-table-wrap">
-  <table class="admin-table admin-clients">
-    <thead><tr><th>{name_label}</th><th>{id_label}</th><th>{uris_label}</th><th>{registered_label}</th><th></th></tr></thead>
-    <tbody>{rows}</tbody>
-  </table>
-  </div>
-  <form method="post" action="/admin/clients_add" class="admin-invite">
-    <input class="auth-input" type="text" name="name" placeholder="drive" aria-label="{name_label}" required>
-    <input class="auth-input auth-input-mono" type="text" name="redirect_uris" placeholder="http://127.0.0.1:9000/callback https://drive.dizey.sh/callback" aria-label="{uris_label}" required>
-    <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{add}</span></button>
-  </form>
-</div>"#,
-        title = t(lang, Key::ClientsTitle),
-        name_label = t(lang, Key::NameCol),
-        id_label = t(lang, Key::ClientIdLabel),
-        uris_label = t(lang, Key::RedirectUrisLabel),
-        registered_label = t(lang, Key::RegisteredCol),
-        add = t(lang, Key::ClientAdd),
-    ))
 }
 
 /// One user of the clients forms: the name, and one or more redirect URIs
@@ -1916,8 +1944,12 @@ mod tests {
         assert!(location.starts_with("/admin?section=clients&shown="));
         let ticket = location.trim_start_matches("/admin?section=clients&shown=");
         let (id, secret) = server::take_shown_secret(ticket).expect("the one showing");
-        let row = list_clients(&setup.store).await.unwrap();
-        assert_eq!(id, row[0].client_id.to_string());
+        let stored = list_clients(&setup.store).await.unwrap();
+        let row = stored
+            .iter()
+            .find(|client| client.name == name)
+            .expect("the fresh row");
+        assert_eq!(id, row.client_id.to_string());
         (id, secret)
     }
 
@@ -2181,5 +2213,76 @@ mod tests {
         )
         .await;
         assert!(!forged.contains("<div class=\"auth-secret"));
+    }
+
+    #[tokio::test]
+    async fn merged_section_renders_linked_unlinked_and_bare_rows() {
+        let setup = setup().await;
+
+        // A client registered through the panel, then the service row its
+        // app writes with that pair: the two halves link.
+        let (id, _secret) = create_via_panel(&setup, "drive").await;
+        im_core::services::register(
+            &setup.store,
+            "drive",
+            "Drive",
+            "https://drive.dizey.sh",
+            &id,
+            Some(&id),
+        )
+        .await
+        .unwrap();
+        // A second client no service row answers for, and a service row
+        // with no client yet.
+        create_via_panel(&setup, "stray").await;
+        im_core::services::add(
+            &setup.store,
+            &im_core::services::Service {
+                key: "wiki".into(),
+                name: "Wiki".into(),
+                url: "https://wiki.dizey.sh".into(),
+                owner: None,
+                client_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // Rendering needs the built asset bundle; without it the render
+        // assertions stay skipped (the routes themselves are covered).
+        if !setup.assets {
+            return;
+        }
+        let (status, _, body) = get_full(
+            &setup.router,
+            "/admin?section=services",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        // The linked row: wordmark half and credential half, one row.
+        assert!(body.contains(">Drive</td>"), "the service name renders");
+        assert!(body.contains(&id), "the linked client id renders");
+        assert!(body.contains("https://drive.dizey.sh"), "the url renders");
+        assert!(body.contains("http://127.0.0.1:9000/callback"), "uris render");
+        // The credential-only row: the stray client's name, no key or url.
+        assert!(body.contains(">stray</td>"), "the stray client renders");
+        // The bare service row and the unlinked client carry the dash.
+        assert!(body.contains(">Wiki</td>"), "the bare service renders");
+        assert!(
+            body.contains("<td class=\"muted\">—</td>"),
+            "client-less halves read as the dash"
+        );
+
+        // The old address lands on the merged section too.
+        let (status, _, alias) = get_full(
+            &setup.router,
+            "/admin?section=clients",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(alias.contains(">Drive</td>"), body.contains(">Drive</td>"));
     }
 }

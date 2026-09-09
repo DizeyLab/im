@@ -201,7 +201,15 @@ async fn family_register(
             .into_response(cx);
     };
     let store = server::app(cx).store.clone();
-    match im_core::services::register(&store, &input.key, &input.name, &input.url, &client_id).await
+    match im_core::services::register(
+        &store,
+        &input.key,
+        &input.name,
+        &input.url,
+        &client_id,
+        Some(&client_id),
+    )
+    .await
     {
         Ok(service) => Json(serde_json::to_value(service).unwrap()).into_response(cx),
         Err(im_core::store::StoreError::Conflict(_)) => (
@@ -396,6 +404,7 @@ mod tests {
                 name: service.name.clone(),
                 url: service.url.clone(),
                 owner: None,
+                client_id: None,
             })
             .collect()
     }
@@ -853,6 +862,7 @@ mod tests {
             name: "Files".into(),
             url: "http://127.0.0.1:7655".into(),
             owner: None,
+            client_id: None,
         }];
         assert!(!im_core::services::seed_from(&store, &reseed).await.unwrap());
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
@@ -1049,6 +1059,44 @@ mod tests {
             panel.contains(r#"name="max_sessions" min="1" value="2""#),
             "the saved ceiling must echo back into the form: {panel}"
         );
+    }
+
+    #[tokio::test]
+    async fn family_register_stamps_the_authenticated_client_on_its_row() {
+        let Setup {
+            router,
+            client_id,
+            secret,
+            store,
+            ..
+        } = setup().await;
+
+        // First register: the row is appended with the caller's stamp.
+        let (status, _) = post_register(
+            &router,
+            Some(basic(&client_id, &secret)),
+            serde_json::json!({"key": "drive", "name": "Drive", "url": "https://drive.dizey.sh"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = im_core::services::list(&store).await.unwrap();
+        let row = rows.iter().find(|s| s.key == "drive").unwrap();
+        assert_eq!(row.client_id.as_deref(), Some(client_id.as_str()));
+
+        // The next boot's register refreshes the row and keeps the stamp
+        // current — one row, still the caller's.
+        let (status, _) = post_register(
+            &router,
+            Some(basic(&client_id, &secret)),
+            serde_json::json!({"key": "drive", "name": "Drive", "url": "https://drive2.dizey.sh"}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = im_core::services::list(&store).await.unwrap();
+        assert_eq!(rows.iter().filter(|s| s.key == "drive").count(), 1);
+        let row = rows.iter().find(|s| s.key == "drive").unwrap();
+        assert_eq!(row.url, "https://drive2.dizey.sh");
+        assert_eq!(row.client_id.as_deref(), Some(client_id.as_str()));
     }
 
     #[tokio::test]

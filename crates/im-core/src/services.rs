@@ -29,6 +29,14 @@ pub struct Service {
     /// three public fields the siblings mirror, and nothing more.
     #[serde(skip)]
     pub owner: Option<String>,
+    /// The relying-party credential this row answers for — the client id
+    /// `POST /family/register` authenticated, stamped on every register,
+    /// insert and refresh alike. im's own row stays `None`: the IdP is not
+    /// its own client. This is the panel's join key between the wordmark
+    /// and its Rotate/Revoke controls; a row the seed or the panel made
+    /// carries `None` until its app registers.
+    #[serde(skip)]
+    pub client_id: Option<String>,
 }
 
 /// The owner im writes on its own row, registered from `issuer` on every
@@ -84,7 +92,7 @@ pub async fn list(store: &Store) -> Result<Vec<Service>> {
     let conn = store.conn.lock().await;
     let mut rows = conn
         .query(
-            "SELECT key, name, url, owner FROM services ORDER BY position, key",
+            "SELECT key, name, url, owner, client_id FROM services ORDER BY position, key",
             (),
         )
         .await
@@ -96,6 +104,7 @@ pub async fn list(store: &Store) -> Result<Vec<Service>> {
             name: store::text(&row, 1)?,
             url: store::text(&row, 2)?,
             owner: store::opt_text(&row, 3)?,
+            client_id: store::opt_text(&row, 4)?,
         });
     }
     Ok(services)
@@ -281,6 +290,7 @@ pub async fn register(
     name: &str,
     url: &str,
     owner: &str,
+    client_id: Option<&str>,
 ) -> Result<Service> {
     validate(key, name, url).map_err(StoreError::Invalid)?;
     let url = url.trim_end_matches('/').to_string();
@@ -292,11 +302,12 @@ pub async fn register(
         }
         Some(_) => {
             // Claiming an unowned row or refreshing our own: the address is
-            // the app's to say, the name stays whatever is stored.
+            // the app's to say, the name stays whatever is stored, and the
+            // credential stamp follows the caller on every register.
             let conn = store.conn.lock().await;
             conn.execute(
-                "UPDATE services SET url = ?2, owner = ?3 WHERE key = ?1",
-                turso::params![key, url.as_str(), owner],
+                "UPDATE services SET url = ?2, owner = ?3, client_id = ?4 WHERE key = ?1",
+                turso::params![key, url.as_str(), owner, client_id],
             )
             .await
             .map_err(backend)?;
@@ -304,9 +315,9 @@ pub async fn register(
         None => {
             let conn = store.conn.lock().await;
             conn.execute(
-                "INSERT INTO services (key, name, url, position, owner) \
-                     VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(position), -1) + 1 FROM services), ?4)",
-                turso::params![key, name.trim(), url.as_str(), owner],
+                "INSERT INTO services (key, name, url, position, owner, client_id) \
+                     VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(position), -1) + 1 FROM services), ?4, ?5)",
+                turso::params![key, name.trim(), url.as_str(), owner, client_id],
             )
             .await
             .map_err(backend)?;
@@ -364,6 +375,7 @@ mod tests {
             name: name.to_string(),
             url: url.to_string(),
             owner: None,
+            client_id: None,
         }
     }
 
@@ -519,6 +531,7 @@ mod tests {
             "Account",
             "http://127.0.0.1:7650/",
             SELF_OWNER,
+            None,
         )
         .await
         .unwrap();
@@ -527,25 +540,36 @@ mod tests {
             "the slash is normalized off"
         );
         assert_eq!(row.owner.as_deref(), Some(SELF_OWNER));
+        assert_eq!(row.client_id, None, "im is not its own client");
 
         // A seeded row belongs to nobody; the app that names it claims it,
         // keeping the name the seed (or a later rename) gave it.
         add(&store, &service("in", "Dosyalar", "http://127.0.0.1:7655"))
             .await
             .unwrap();
-        let row = register(&store, "in", "Files", "https://in.example", "in-client")
+        let row = register(&store, "in", "Files", "https://in.example", "in-client", Some("in-client"))
             .await
             .unwrap();
         assert_eq!(row.name, "Dosyalar", "the name stays the admin's");
         assert_eq!(row.url, "https://in.example");
         assert_eq!(row.owner.as_deref(), Some("in-client"));
+        assert_eq!(
+            row.client_id.as_deref(),
+            Some("in-client"),
+            "the claim stamps the credential"
+        );
 
         // The same app's next boot moves the address only.
-        let row = register(&store, "in", "Whatever", "https://in.dizey.sh", "in-client")
+        let row = register(&store, "in", "Whatever", "https://in.dizey.sh", "in-client", Some("in-client"))
             .await
             .unwrap();
         assert_eq!(row.name, "Dosyalar");
         assert_eq!(row.url, "https://in.dizey.sh");
+        assert_eq!(
+            row.client_id.as_deref(),
+            Some("in-client"),
+            "the refresh keeps the stamp current"
+        );
         // And no row was duplicated by any of it.
         assert_eq!(keys(&store).await, vec!["im".to_string(), "in".to_string()]);
     }
@@ -553,11 +577,11 @@ mod tests {
     #[tokio::test]
     async fn a_key_another_app_keeps_is_a_conflict_and_the_row_is_untouched() {
         let store = store().await;
-        register(&store, "in", "Files", "https://in.example", "in-client")
+        register(&store, "in", "Files", "https://in.example", "in-client", Some("in-client"))
             .await
             .unwrap();
         assert!(matches!(
-            register(&store, "in", "Files", "https://evil.example", "iz-client").await,
+            register(&store, "in", "Files", "https://evil.example", "iz-client", None).await,
             Err(StoreError::Conflict(_))
         ));
         assert_eq!(list(&store).await.unwrap()[0].url, "https://in.example");
@@ -566,7 +590,7 @@ mod tests {
     #[tokio::test]
     async fn the_panel_cannot_remove_an_owned_row_or_move_its_address() {
         let store = store().await;
-        register(&store, "in", "Files", "https://in.example", "in-client")
+        register(&store, "in", "Files", "https://in.example", "in-client", Some("in-client"))
             .await
             .unwrap();
         assert!(matches!(
@@ -595,7 +619,7 @@ mod tests {
     #[tokio::test]
     async fn the_family_json_never_carries_the_owner() {
         let store = store().await;
-        register(&store, "im", "Account", "http://127.0.0.1:7650", SELF_OWNER)
+        register(&store, "im", "Account", "http://127.0.0.1:7650", SELF_OWNER, None)
             .await
             .unwrap();
         let json = serde_json::to_value(list(&store).await.unwrap()).unwrap();

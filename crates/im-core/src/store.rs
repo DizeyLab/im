@@ -153,7 +153,8 @@ CREATE TABLE IF NOT EXISTS services (
   name TEXT NOT NULL,
   url TEXT NOT NULL,
   position INTEGER NOT NULL,
-  owner TEXT
+  owner TEXT,
+  client_id TEXT
 );
 ";
 
@@ -261,13 +262,15 @@ impl Store {
                 .await
                 .map_err(backend)?;
             }
-            // What a session remembers about its browser: the listing shows
-            // these, so old databases grow them the same guarded way.
-            // The app that keeps a service row: `im` for this app's own
-            // entry, a client id for a sibling that registers itself, NULL
-            // for the config seed's and the panel's own rows.
-            if !has_column(&conn, "services", "owner").await? {
-                conn.execute("ALTER TABLE services ADD COLUMN owner TEXT", ())
+            // The family rows' client linkage (the merge of the panel's
+            // services and clients sections): a `POST /family/register`
+            // stamps the authenticated client's id beside its row, so the
+            // panel can show the wordmark and its credential as one thing.
+            // ALTER over the owner precedent: databases born before the
+            // column get it here, and every existing row reads NULL until
+            // its app re-registers.
+            if !has_column(&conn, "services", "client_id").await? {
+                conn.execute("ALTER TABLE services ADD COLUMN client_id TEXT", ())
                     .await
                     .map_err(backend)?;
             }
