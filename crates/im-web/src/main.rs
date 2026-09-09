@@ -174,6 +174,7 @@ async fn seed_services(store: &Store, config: &Config) {
             url: service.url.clone(),
             owner: None,
             client_id: None,
+            storage_limit_bytes: None,
         })
         .collect();
     match im_core::services::seed_from(store, &seed).await {

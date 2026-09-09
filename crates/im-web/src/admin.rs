@@ -473,6 +473,9 @@ async fn services_section(
         // A kept row posts the stored address back in a hidden field: the
         // form's name change is accepted, and the store refuses only a
         // *changed* address.
+        // The storage limit: the panel's field on every row — a kept
+        // row's cap is im's to set, like its name. An empty amount posts
+        // no limit; the unit pairs with the amount it edits.
         let address_field = if kept {
             format!(
                 r#"<input type="hidden" name="url" value="{url}">"#,
@@ -485,8 +488,19 @@ async fn services_section(
                 url = url,
             )
         };
+        let (limit_amount, limit_unit) = service
+            .storage_limit_bytes
+            .map(bytes_as_unit)
+            .unwrap_or_default();
+        let limit_field = format!(
+            r#"<label class="auth-field"><span class="auth-label">{limit_label}</span><input class="auth-input auth-input-mono" type="number" name="limit_amount" min="0" step="any" value="{limit_amount}"></label><select class="auth-input admin-role" name="limit_unit" aria-label="{limit_label}"><option value="MiB"{mib}>MiB</option><option value="GiB"{gib}>GiB</option></select>"#,
+            limit_label = t(lang, Key::ServicesStorageLimit),
+            limit_amount = limit_amount,
+            mib = if limit_unit == "MiB" { " selected" } else { "" },
+            gib = if limit_unit == "GiB" { " selected" } else { "" },
+        );
         let edit = format!(
-            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/services_edit" class="admin-form"><input type="hidden" name="key" value="{key}"><label class="auth-field"><span class="auth-label">{name_label}</span><input class="auth-input auth-input-mono" type="text" name="name" value="{name}" required></label>{address_field}<button class="admin-action" type="submit">{save}</button></form></div></details>"#,
+            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/services_edit" class="admin-form"><input type="hidden" name="key" value="{key}"><label class="auth-field"><span class="auth-label">{name_label}</span><input class="auth-input auth-input-mono" type="text" name="name" value="{name}" required></label>{address_field}{limit_field}<button class="admin-action" type="submit">{save}</button></form></div></details>"#,
             edit_word = t(lang, Key::EditWord),
             edit_title = i18n::edit_service_title(lang, &name),
             key = key,
@@ -656,13 +670,79 @@ fn client_controls(client_id: &str, name_html: &str, lang: i18n::Lang) -> String
     format!("{rotate}{revoke_action}")
 }
 
-/// One user of the services forms: key, name, address. The add form fills
-/// all three; the edit form carries the key in its hidden field.
+/// One mebibyte / gibibyte in bytes: the only two units the limit field
+/// speaks. Raw bytes never reach the browser — the form posts a decimal
+/// amount plus one of these units, converted back here.
+const MIB_BYTES: f64 = 1_048_576.0;
+const GIB_BYTES: f64 = 1_073_741_824.0;
+
+/// The `(amount, unit)` pair a stored limit edits as: gibibytes once the
+/// value reaches one, mebibytes below it, so `2 GiB` edits as `2` GiB
+/// rather than `2048` MiB, while a small `512 MiB` cap stays addressable.
+fn bytes_as_unit(bytes: u64) -> (String, &'static str) {
+    if bytes >= GIB_BYTES as u64 {
+        (trim_amount(bytes as f64 / GIB_BYTES), "GiB")
+    } else {
+        (trim_amount(bytes as f64 / MIB_BYTES), "MiB")
+    }
+}
+
+/// A form amount for a number input: two decimals at most, trailing zeros
+/// (and a bare point) trimmed, so the field reads `2` and `2.5`, never
+/// `2.00` or `2.5000000001`.
+fn trim_amount(value: f64) -> String {
+    let rounded = (value * 100.0).round() / 100.0;
+    let text = format!("{rounded:.2}");
+    text.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// The bytes an `(amount, unit)` pair names, or `None` when the pair is
+/// not a usable limit: an unknown unit, or an amount that is not a finite
+/// non-negative number.
+fn unit_bytes(amount: &str, unit: &str) -> Option<u64> {
+    let per = match unit {
+        "MiB" => MIB_BYTES,
+        "GiB" => GIB_BYTES,
+        _ => return None,
+    };
+    let value: f64 = amount.trim().parse().ok()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some((value * per).round() as u64)
+}
+
+/// The limit a services form posts, in bytes: `Ok(None)` when the amount
+/// is blank — the field empties to clear the limit — `Ok(Some(bytes))`
+/// when it parses, and `Err` when a non-blank amount is not a usable
+/// number against its unit, which is the panel's refusal.
+fn posted_limit(
+    amount: &Option<String>,
+    unit: &Option<String>,
+) -> Result<Option<u64>, ()> {
+    let Some(amount) = amount
+        .as_deref()
+        .map(str::trim)
+        .filter(|amount| !amount.is_empty())
+    else {
+        return Ok(None);
+    };
+    match unit_bytes(amount, unit.as_deref().unwrap_or_default()) {
+        Some(bytes) => Ok(Some(bytes)),
+        None => Err(()),
+    }
+}
+
+/// One user of the services forms: key, name, address — and, on the edit
+/// form, the storage limit as an amount plus its unit. The add form posts
+/// neither limit field; the empty amount clears.
 #[derive(Deserialize)]
 struct ServiceForm {
     key: String,
     name: String,
     url: String,
+    limit_amount: Option<String>,
+    limit_unit: Option<String>,
 }
 
 #[route(POST "/admin/services_add")]
@@ -670,6 +750,10 @@ async fn services_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Respons
     let me = match require_admin(cx).await {
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
+    };
+    let limit = match posted_limit(&input.limit_amount, &input.limit_unit) {
+        Ok(limit) => limit,
+        Err(()) => return back(cx, "services", "&error=bad_service"),
     };
     let outcome = im_core::services::add(
         &app(cx).store,
@@ -679,6 +763,7 @@ async fn services_add(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Respons
             url: input.url,
             owner: None,
             client_id: None,
+            storage_limit_bytes: limit,
         },
     )
     .await;
@@ -691,8 +776,18 @@ async fn services_edit(cx: &Cx, Form(input): Form<ServiceForm>) -> Result<Respon
         Ok(me) => me,
         Err(redirect) => return Ok(redirect),
     };
-    let outcome =
-        im_core::services::edit(&app(cx).store, &input.key, &input.name, &input.url).await;
+    let limit = match posted_limit(&input.limit_amount, &input.limit_unit) {
+        Ok(limit) => limit,
+        Err(()) => return back(cx, "services", "&error=bad_service"),
+    };
+    let outcome = im_core::services::edit(
+        &app(cx).store,
+        &input.key,
+        &input.name,
+        &input.url,
+        limit,
+    )
+    .await;
     service_outcome(cx, &me, outcome).await
 }
 
@@ -2243,6 +2338,7 @@ mod tests {
                 url: "https://wiki.dizey.sh".into(),
                 owner: None,
                 client_id: None,
+                storage_limit_bytes: None,
             },
         )
         .await
@@ -2284,5 +2380,112 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(alias.contains(">Drive</td>"), body.contains(">Drive</td>"));
+    }
+
+    #[tokio::test]
+    async fn services_edit_saves_the_limit_and_the_rest_is_refused() {
+        let setup = setup().await;
+        im_core::services::add(
+            &setup.store,
+            &im_core::services::Service {
+                key: "in".into(),
+                name: "Files".into(),
+                url: "https://in.dizey.sh".into(),
+                owner: None,
+                client_id: None,
+                storage_limit_bytes: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        // The edit posts an amount plus its unit; the row stores bytes.
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/services_edit",
+            "key=in&name=Files&url=https://in.dizey.sh&limit_amount=2&limit_unit=GiB",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&ok=services")
+        );
+        assert_eq!(
+            im_core::services::list(&setup.store).await.unwrap()[0].storage_limit_bytes,
+            Some(2 * 1024 * 1024 * 1024)
+        );
+
+        // An empty amount clears the limit — no limit stated.
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/services_edit",
+            "key=in&name=Files&url=https://in.dizey.sh&limit_amount=&limit_unit=GiB",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&ok=services")
+        );
+        assert_eq!(
+            im_core::services::list(&setup.store).await.unwrap()[0].storage_limit_bytes,
+            None
+        );
+
+        // A non-blank amount that is not a usable number is the section's
+        // refusal, and the stored limit is left alone.
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/services_edit",
+            "key=in&name=Files&url=https://in.dizey.sh&limit_amount=abc&limit_unit=GiB",
+            Some(&setup.admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            location.as_deref(),
+            Some("/admin?section=services&error=bad_service")
+        );
+        assert_eq!(
+            im_core::services::list(&setup.store).await.unwrap()[0].storage_limit_bytes,
+            None
+        );
+
+        // A non-admin gets the panel's plain redirect; the row never moves.
+        let (status, location, _) = post_form(
+            &setup.router,
+            "/admin/services_edit",
+            "key=in&name=Files&url=https://in.dizey.sh&limit_amount=2&limit_unit=GiB",
+            Some(&setup.plain_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
+        assert_eq!(
+            im_core::services::list(&setup.store).await.unwrap()[0].storage_limit_bytes,
+            None
+        );
+
+        // The section renders the amount and its unit pair, empty on a
+        // row with no limit (bundle permitting).
+        if setup.assets {
+            let (status, _, body) = get_full(
+                &setup.router,
+                "/admin?section=services",
+                Some(&setup.admin_cookie),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains("name=\"limit_amount\""), "{body}");
+            assert!(body.contains("name=\"limit_unit\""), "{body}");
+            assert!(body.contains(">GiB</option>"), "{body}");
+            assert!(
+                body.contains("name=\"limit_amount\" min=\"0\" step=\"any\" value=\"\""),
+                "a no-limit row edits empty: {body}"
+            );
+        }
     }
 }

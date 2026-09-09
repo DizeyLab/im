@@ -26,7 +26,7 @@ pub struct Service {
     /// The app that keeps this row — `SELF_OWNER` for im's own entry, a
     /// client id for a sibling that registered itself, `None` for a row the
     /// seed or the panel made. Never serialized: `/family`'s shape is the
-    /// three public fields the siblings mirror, and nothing more.
+    /// public fields below, and the ownership stays im's business.
     #[serde(skip)]
     pub owner: Option<String>,
     /// The relying-party credential this row answers for — the client id
@@ -37,6 +37,13 @@ pub struct Service {
     /// carries `None` until its app registers.
     #[serde(skip)]
     pub client_id: Option<String>,
+    /// The storage cap the panel holds this service to, in bytes — im's
+    /// field alone, never the keeping app's. Served to the family as
+    /// `limit_bytes` (JSON `null` when unstated, the sibling's own default
+    /// standing in its place); a register's refresh never touches it, the
+    /// way it never touches the name.
+    #[serde(rename = "limit_bytes")]
+    pub storage_limit_bytes: Option<u64>,
 }
 
 /// The owner im writes on its own row, registered from `issuer` on every
@@ -92,7 +99,8 @@ pub async fn list(store: &Store) -> Result<Vec<Service>> {
     let conn = store.conn.lock().await;
     let mut rows = conn
         .query(
-            "SELECT key, name, url, owner, client_id FROM services ORDER BY position, key",
+            "SELECT key, name, url, owner, client_id, storage_limit_bytes \
+                 FROM services ORDER BY position, key",
             (),
         )
         .await
@@ -105,6 +113,7 @@ pub async fn list(store: &Store) -> Result<Vec<Service>> {
             url: store::text(&row, 2)?,
             owner: store::opt_text(&row, 3)?,
             client_id: store::opt_text(&row, 4)?,
+            storage_limit_bytes: store::opt_int(&row, 5)?.map(|bytes| bytes.max(0) as u64),
         });
     }
     Ok(services)
@@ -132,22 +141,34 @@ pub async fn add(store: &Store, service: &Service) -> Result<()> {
         )));
     }
     conn.execute(
-        "INSERT INTO services (key, name, url, position) \
-             VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(position), -1) + 1 FROM services))",
-        turso::params![service.key.as_str(), service.name.trim(), url.as_str()],
+        "INSERT INTO services (key, name, url, position, storage_limit_bytes) \
+             VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(position), -1) + 1 FROM services), ?4)",
+        turso::params![
+            service.key.as_str(),
+            service.name.trim(),
+            url.as_str(),
+            service.storage_limit_bytes.map(|bytes| bytes as i64)
+        ],
     )
     .await
     .map_err(backend)?;
     Ok(())
 }
 
-/// Rewrites a service's name and address. The key travels in the form's
-/// hidden field and is not editable; a key not on the list is refused, so a
-/// form posted against a since-removed row cannot resurrect it.
-/// A row an app keeps only takes its new name here: the address is the
+/// Rewrites a service's name, address, and storage limit. The key travels
+/// in the form's hidden field and is not editable; a key not on the list is
+/// refused, so a form posted against a since-removed row cannot resurrect
+/// it. A row an app keeps only takes its new name here: the address is the
 /// app's own, rewritten on its every boot, so accepting one from the panel
-/// would show an edit the next boot silently undoes.
-pub async fn edit(store: &Store, key: &str, name: &str, url: &str) -> Result<()> {
+/// would show an edit the next boot silently undoes. The limit is im's on
+/// every row — kept or not, an empty field clears it to no limit stated.
+pub async fn edit(
+    store: &Store,
+    key: &str,
+    name: &str,
+    url: &str,
+    storage_limit_bytes: Option<u64>,
+) -> Result<()> {
     validate(key, name, url).map_err(StoreError::Invalid)?;
     let url = url.trim_end_matches('/');
     if let Some(row) = owned_row(store, key).await?
@@ -161,11 +182,16 @@ pub async fn edit(store: &Store, key: &str, name: &str, url: &str) -> Result<()>
     let conn = store.conn.lock().await;
     let updated = conn
         .execute(
-            "UPDATE services SET name = ?2, url = ?3 WHERE key = ?1",
-            turso::params![key, name.trim(), url],
+            "UPDATE services SET name = ?2, url = ?3, storage_limit_bytes = ?4 WHERE key = ?1",
+            turso::params![
+                key,
+                name.trim(),
+                url,
+                storage_limit_bytes.map(|bytes| bytes as i64)
+            ],
         )
-        .await
-        .map_err(backend)?;
+    .await
+    .map_err(backend)?;
     if updated == 0 {
         return Err(StoreError::Invalid(format!("no service keyed {key:?}")));
     }
@@ -376,6 +402,7 @@ mod tests {
             url: url.to_string(),
             owner: None,
             client_id: None,
+            storage_limit_bytes: None,
         }
     }
 
@@ -401,7 +428,7 @@ mod tests {
         assert_eq!(list(&store).await.unwrap()[0].url, "http://127.0.0.1:7655");
         // The panel renamed the first entry; a re-boot with the same config
         // must not bring the old name back.
-        edit(&store, "in", "Renamed", "http://127.0.0.1:7655")
+        edit(&store, "in", "Renamed", "http://127.0.0.1:7655", None)
             .await
             .unwrap();
         assert!(!seed_from(&store, &seed).await.unwrap());
@@ -423,7 +450,7 @@ mod tests {
             .unwrap_or_else(|| panic!("a taken key must be refused"));
         // The refused add changed nothing.
         assert_eq!(keys(&store).await, vec!["im".to_string(), "in".to_string()]);
-        edit(&store, "in", "Dosyalar", "https://in.example")
+        edit(&store, "in", "Dosyalar", "https://in.example", None)
             .await
             .unwrap();
         let services = list(&store).await.unwrap();
@@ -432,7 +459,7 @@ mod tests {
         // A form posted against a since-removed key cannot resurrect it.
         remove(&store, "in").await.unwrap();
         assert!(matches!(
-            edit(&store, "in", "Zombie", "https://in.example").await,
+            edit(&store, "in", "Zombie", "https://in.example", None).await,
             Err(StoreError::Invalid(_))
         ));
         assert_eq!(keys(&store).await, vec!["im".to_string()]);
@@ -598,11 +625,11 @@ mod tests {
             Err(StoreError::Invalid(_))
         ));
         assert!(matches!(
-            edit(&store, "in", "Dosyalar", "https://elsewhere.example").await,
+            edit(&store, "in", "Dosyalar", "https://elsewhere.example", None).await,
             Err(StoreError::Invalid(_))
         ));
         // The name is still the admin's, and a name-only edit lands.
-        edit(&store, "in", "Dosyalar", "https://in.example")
+        edit(&store, "in", "Dosyalar", "https://in.example", None)
             .await
             .unwrap();
         let row = &list(&store).await.unwrap()[0];
@@ -617,17 +644,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_family_json_never_carries_the_owner() {
+    async fn the_family_json_carries_the_limit_and_never_the_owner() {
         let store = store().await;
         register(&store, "im", "Account", "http://127.0.0.1:7650", SELF_OWNER, None)
             .await
             .unwrap();
         let json = serde_json::to_value(list(&store).await.unwrap()).unwrap();
         let row = &json.as_array().unwrap()[0];
+        let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
         assert_eq!(
-            row.as_object().unwrap().keys().collect::<Vec<_>>(),
-            vec!["key", "name", "url"],
+            keys,
+            vec!["key", "limit_bytes", "name", "url"],
             "the sibling mirrors deserialize this shape: {json}"
         );
+        assert!(
+            row["limit_bytes"].is_null(),
+            "no stated limit reads null, not absence"
+        );
+        // A stated limit rides as plain bytes; the owner never travels.
+        edit(
+            &store,
+            "im",
+            "Account",
+            "http://127.0.0.1:7650",
+            Some(512 * 1024 * 1024),
+        )
+        .await
+        .unwrap();
+        let json = serde_json::to_value(list(&store).await.unwrap()).unwrap();
+        assert_eq!(
+            json[0]["limit_bytes"],
+            serde_json::json!(512 * 1024 * 1024)
+        );
+        assert!(json[0].get("owner").is_none());
+        assert!(json[0].get("client_id").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_storage_limit_round_trips_and_survives_a_register() {
+        let store = store().await;
+        add(
+            &store,
+            &Service {
+                storage_limit_bytes: Some(512 * 1024 * 1024),
+                ..service("in", "Files", "http://127.0.0.1:7655")
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            list(&store).await.unwrap()[0].storage_limit_bytes,
+            Some(512 * 1024 * 1024),
+            "add carries the stated limit in"
+        );
+        // The edit rewrites the limit; the row holds plain bytes.
+        edit(
+            &store,
+            "in",
+            "Files",
+            "http://127.0.0.1:7655",
+            Some(2 * 1024 * 1024 * 1024),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            list(&store).await.unwrap()[0].storage_limit_bytes,
+            Some(2 * 1024 * 1024 * 1024)
+        );
+        // A kept row: the app re-registers, the limit stays im's — the
+        // refresh rewrites the address and credential, never the cap.
+        register(
+            &store,
+            "in",
+            "Files",
+            "http://127.0.0.1:7655",
+            "in-client",
+            Some("in-client"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            list(&store).await.unwrap()[0].storage_limit_bytes,
+            Some(2 * 1024 * 1024 * 1024),
+            "the app's register never touches the limit"
+        );
+        // The field empties to cleared: NULL is no limit stated.
+        edit(&store, "in", "Files", "http://127.0.0.1:7655", None)
+            .await
+            .unwrap();
+        assert_eq!(list(&store).await.unwrap()[0].storage_limit_bytes, None);
     }
 }

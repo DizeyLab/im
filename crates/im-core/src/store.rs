@@ -155,7 +155,8 @@ CREATE TABLE IF NOT EXISTS services (
   url TEXT NOT NULL,
   position INTEGER NOT NULL,
   owner TEXT,
-  client_id TEXT
+  client_id TEXT,
+  storage_limit_bytes INTEGER
 );
 ";
 
@@ -285,6 +286,18 @@ impl Store {
                     .await
                     .map_err(backend)?;
             }
+            // The per-service storage cap: the panel's limit on how many
+            // bytes a sibling that stores (in's Files) may hold. Served to
+            // the family over `/family` as `limit_bytes`; NULL states no
+            // limit, and the sibling's own default stands.
+            if !has_column(&conn, "services", "storage_limit_bytes").await? {
+                conn.execute(
+                    "ALTER TABLE services ADD COLUMN storage_limit_bytes INTEGER",
+                    (),
+                )
+                .await
+                .map_err(backend)?;
+            }
             if !has_column(&conn, "sessions", "ip").await? {
                 conn.execute("ALTER TABLE sessions ADD COLUMN ip TEXT", ())
                     .await
@@ -403,6 +416,9 @@ pub(crate) fn opt_text(row: &Row, idx: usize) -> Result<Option<String>> {
 pub(crate) fn int(row: &Row, idx: usize) -> Result<i64> {
     row.get::<i64>(idx).map_err(backend)
 }
+pub(crate) fn opt_int(row: &Row, idx: usize) -> Result<Option<i64>> {
+    row.get::<Option<i64>>(idx).map_err(backend)
+}
 
 #[cfg(test)]
 mod tests {
@@ -446,5 +462,59 @@ mod tests {
         let path = dir.path().join("im.db");
         let _store = Store::open(&path).await.unwrap();
         assert!(dir.path().join("im.key").exists());
+    }
+
+    #[tokio::test]
+    async fn an_old_shaped_services_table_grows_the_limit_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("im.db");
+        // The previous generation's services table, before the storage
+        // limit was a thing. `Store::open` creates the rest of the schema
+        // around it and ALTERs the column in without touching the row.
+        {
+            let db = turso::Builder::new_local(path.to_str().unwrap())
+                .build()
+                .await
+                .unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute_batch(
+                "CREATE TABLE services (
+                    key TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    url TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    owner TEXT
+                );
+                INSERT INTO services (key, name, url, position, owner)
+                    VALUES ('in', 'Files', 'http://127.0.0.1:7655', 0, NULL);",
+            )
+            .await
+            .unwrap();
+            drop(conn);
+            drop(db);
+        }
+        let store = Store::open(&path).await.unwrap();
+        let rows = crate::services::list(&store).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].storage_limit_bytes, None,
+            "a pre-limit row reads no limit"
+        );
+        crate::services::edit(
+            &store,
+            "in",
+            "Files",
+            "http://127.0.0.1:7655",
+            Some(512 * 1024 * 1024),
+        )
+        .await
+        .unwrap();
+        // A re-boot on the already-migrated table is the guarded no-op,
+        // and the stored value survives it.
+        let store = Store::open(&path).await.unwrap();
+        assert_eq!(
+            crate::services::list(&store).await.unwrap()[0].storage_limit_bytes,
+            Some(512 * 1024 * 1024)
+        );
     }
 }

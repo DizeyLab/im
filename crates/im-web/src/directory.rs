@@ -413,6 +413,7 @@ mod tests {
                 url: service.url.clone(),
                 owner: None,
                 client_id: None,
+                storage_limit_bytes: None,
             })
             .collect()
     }
@@ -676,6 +677,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn family_carries_the_limit_bytes_null_and_stated() {
+        let Setup {
+            router,
+            client_id,
+            secret,
+            store,
+            ..
+        } = setup().await;
+        let pair = basic(&client_id, &secret);
+        // No limit stated anywhere yet: every row's `limit_bytes` is null,
+        // the shape an unconfigured sibling still parses.
+        let (status, body) = get_family(&router, Some(pair.clone())).await;
+        assert_eq!(status, StatusCode::OK);
+        let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        for row in family.as_array().unwrap() {
+            assert!(
+                row.get("limit_bytes").unwrap().is_null(),
+                "no limit yet: {row}"
+            );
+        }
+
+        // The panel sets iz's cap; the next read carries plain bytes.
+        im_core::services::edit(
+            &store,
+            "iz",
+            "Board",
+            "http://127.0.0.1:7654",
+            Some(512 * 1024 * 1024),
+        )
+        .await
+        .unwrap();
+        let (status, body) = get_family(&router, Some(pair)).await;
+        assert_eq!(status, StatusCode::OK);
+        let family = serde_json::from_str::<serde_json::Value>(&body).unwrap();
+        let iz = family
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["key"] == "iz")
+            .unwrap();
+        assert_eq!(
+            iz["limit_bytes"],
+            serde_json::json!(512 * 1024 * 1024),
+            "{body}"
+        );
+    }
+
+
+    #[tokio::test]
     async fn the_panel_edits_the_family_and_every_reader_follows_the_table() {
         let Setup {
             router,
@@ -874,6 +924,7 @@ mod tests {
             url: "http://127.0.0.1:7655".into(),
             owner: None,
             client_id: None,
+            storage_limit_bytes: None,
         }];
         assert!(!im_core::services::seed_from(&store, &reseed).await.unwrap());
         let (_, body) = get_family(&router, Some(basic(&client_id, &secret))).await;
@@ -946,7 +997,7 @@ mod tests {
         assert_eq!(body["error"], "owned");
 
         // The keeper's next boot moves the address; the name is the panel's.
-        im_core::services::edit(&store, "wiki", "Vikipedi", "http://wiki.example")
+        im_core::services::edit(&store, "wiki", "Vikipedi", "http://wiki.example", None)
             .await
             .unwrap();
         let (status, body) = post_register(
