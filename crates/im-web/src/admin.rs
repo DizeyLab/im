@@ -1970,6 +1970,7 @@ mod tests {
     };
 
     use crate::config::Config;
+    use crate::health::Probe;
     use crate::server::{self, SESSION_COOKIE};
 
     struct Setup {
@@ -2590,7 +2591,7 @@ mod tests {
         let http = reqwest::Client::new();
 
         // A stand-in service answering the deploy body.
-        use crate::health::{Probe, probe_healthz};
+        use crate::health::probe_healthz;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         let addr = listener.local_addr().unwrap();
@@ -2661,7 +2662,9 @@ mod tests {
     /// The signed-in flyout marks each sibling with the same health the
     /// admin table reads: a sibling answering `ok` renders `health-on`,
     /// a dark port `health-off`, dots only — no body, no latency — and
-    /// im's own row stays out of the flyout.
+    /// im's own row stays out of the flyout. The render needs the asset
+    /// bundle; the markup itself is pinned router-free in
+    /// `family_flyout_marks_pure_html` below.
     #[tokio::test]
     async fn family_flyout_marks_siblings_with_health_dots() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -2671,14 +2674,6 @@ mod tests {
         // A live sibling answering the deploy body, and a dark one.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let live_url = format!("http://{}", listener.local_addr().unwrap());
-        let talker = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 1024];
-            let _ = sock.read(&mut buf).await;
-            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nok dev")
-                .await
-                .unwrap();
-        });
         let dark = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let dark_url = format!("http://{}", dark.local_addr().unwrap());
         drop(dark);
@@ -2698,21 +2693,34 @@ mod tests {
             .await
             .unwrap();
         }
+        // The render needs the asset bundle; without one `GET /` has no
+        // asset config to draw from. The markup itself is pinned
+        // router-free in `family_flyout_marks_pure_html` below.
+        if setup.assets {
+            let talker = tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nok dev")
+                    .await
+                    .unwrap();
+            });
+            let (_, _, body) = get_full(&setup.router, "/", Some(&setup.plain_cookie)).await;
+            talker.await.unwrap();
+            assert!(body.contains("service-trio"), "{body}");
+            assert!(
+                body.contains(r#"<a class="trio-mark" href="http://127.0.0.1:"#),
+                "the marks stay links: {body}"
+            );
+            assert!(body.contains("health-dot health-on"), "the ok sibling reads on: {body}");
+            assert!(body.contains(">iz</a>"), "the live sibling renders: {body}");
+            assert!(body.contains("health-dot health-off"), "the dark sibling reads off: {body}");
+            assert!(body.contains(">in</a>"), "the dark sibling renders: {body}");
+            assert!(!body.contains(">im</a>"), "im's own row stays out: {body}");
+            assert!(!body.contains("ok dev"), "the flyout carries dots only: {body}");
+            assert!(!body.contains(" ms</span>"), "the flyout carries no latency: {body}");
+        }
 
-        let (_, _, body) = get_full(&setup.router, "/", Some(&setup.plain_cookie)).await;
-        talker.await.unwrap();
-        assert!(body.contains("service-trio"), "{body}");
-        assert!(
-            body.contains(r#"<a class="trio-mark" href="http://127.0.0.1:"#),
-            "the marks stay links: {body}"
-        );
-        assert!(body.contains("health-dot health-on"), "the ok sibling reads on: {body}");
-        assert!(body.contains(">iz</a>"), "the live sibling renders: {body}");
-        assert!(body.contains("health-dot health-off"), "the dark sibling reads off: {body}");
-        assert!(body.contains(">in</a>"), "the dark sibling renders: {body}");
-        assert!(!body.contains(">im</a>"), "im's own row stays out: {body}");
-        assert!(!body.contains("ok dev"), "the flyout carries dots only: {body}");
-        assert!(!body.contains(" ms</span>"), "the flyout carries no latency: {body}");
     }
 
     /// A family with no siblings is the bare mark: no flyout in the DOM
@@ -2720,10 +2728,53 @@ mod tests {
     #[tokio::test]
     async fn family_flyout_without_siblings_is_the_bare_mark() {
         let setup = setup().await;
-        let (_, _, body) = get_full(&setup.router, "/", Some(&setup.plain_cookie)).await;
-        assert!(!body.contains("service-trio"), "{body}");
-        assert!(!body.contains("wordmark-family"), "{body}");
-        assert!(!body.contains("health-dot"), "{body}");
-        assert!(body.contains("wordmark-text"), "the bare mark stays: {body}");
+        if setup.assets {
+            let (_, _, body) = get_full(&setup.router, "/", Some(&setup.plain_cookie)).await;
+            assert!(!body.contains("service-trio"), "{body}");
+            assert!(!body.contains("wordmark-family"), "{body}");
+            assert!(!body.contains("health-dot"), "{body}");
+            assert!(body.contains("wordmark-text"), "the bare mark stays: {body}");
+        } else {
+            // No bundle, no render. The empty family stays pinned
+            // router-free: only im's own row exists, so there is
+            // nothing to reveal and nothing to probe — no marks at all.
+            let marks = crate::layout::trio_marks([(
+                "im",
+                "http://127.0.0.1:7650",
+                Probe::Up { body: "ok dev".into(), ms: 1 },
+            )]);
+            assert!(marks.is_empty(), "an im-only family has no flyout: {marks}");
+        }
+    }
+
+    /// The CI gate for the flyout markup: `trio_marks` is the exact
+    /// HTML the flyout renders, so the probe-to-dot mapping and im's
+    /// omission are pinned without a router or an asset bundle — which
+    /// is where the renders above get skipped. Up reads `health-on`,
+    /// Down `health-off`, the keys stay links, and the probe's body and
+    /// latency never leave the admin table.
+    #[test]
+    fn family_flyout_marks_pure_html() {
+        let marks = crate::layout::trio_marks([
+            ("iz", "http://127.0.0.1:9001", Probe::Up { body: "ok dev".into(), ms: 12 }),
+            ("in", "http://127.0.0.1:9002", Probe::Down),
+            // im's own row goes in; it must not come back out.
+            ("im", "http://127.0.0.1:7650", Probe::Up { body: "ok dev".into(), ms: 1 }),
+        ]);
+        assert!(
+            marks.contains(r#"<a class="trio-mark" href="http://127.0.0.1:9001">"#),
+            "the marks stay links: {marks}"
+        );
+        assert!(marks.contains("health-dot health-on"), "the ok sibling reads on: {marks}");
+        assert!(marks.contains(">iz</a>"), "the live sibling renders: {marks}");
+        assert!(marks.contains("health-dot health-off"), "the dark sibling reads off: {marks}");
+        assert!(marks.contains(">in</a>"), "the dark sibling renders: {marks}");
+        assert!(!marks.contains(">im</a>"), "im's own row stays out: {marks}");
+        assert!(!marks.contains("ok dev"), "the flyout carries dots only: {marks}");
+        assert!(!marks.contains(" ms</span>"), "the flyout carries no latency: {marks}");
+        assert!(
+            marks.contains(r#"<span class="trio-sep">·</span>"#),
+            "the marks join on middots: {marks}"
+        );
     }
 }

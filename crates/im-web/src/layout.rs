@@ -53,19 +53,12 @@ pub async fn family_wordmark(cx: &Cx) -> Result<BoxView<'_>> {
         let url = format!("{}/healthz", service.url.trim_end_matches('/'));
         probes.push(tokio::spawn(async move { probe_healthz(&http, &url).await }));
     }
-    let mut marks = Vec::new();
+    let mut rows = Vec::new();
     for (service, probe) in siblings.iter().zip(probes) {
-        let key = crate::pages::escape(&service.key);
-        let url = crate::pages::escape(&service.url);
-        let dot = match probe.await.unwrap_or(Probe::Down) {
-            Probe::Up { .. } => "health-on",
-            Probe::Down => "health-off",
-        };
-        marks.push(format!(
-            r#"<a class="trio-mark" href="{url}"><span class="health-dot {dot}"></span>{key}</a>"#
-        ));
+        let probe = probe.await.unwrap_or(Probe::Down);
+        rows.push((service.key.as_str(), service.url.as_str(), probe));
     }
-    let marks = marks.join(r#"<span class="trio-sep">·</span>"#);
+    let marks = trio_marks(rows);
     Ok(view! {
         cx =>
         <div class="wordmark-family">
@@ -76,6 +69,33 @@ pub async fn family_wordmark(cx: &Cx) -> Result<BoxView<'_>> {
         </div>
     }
     .boxed())
+}
+
+/// The flyout's marks as final HTML, pure over resolved probes: im's own
+/// row filtered out, every sibling a plain link carrying its probe's dot
+/// — `health-on` while it answers `ok`, `health-off` while it does not —
+/// middots between. Dots only: the probe's body and latency belong to
+/// the admin table, never to the chrome. Extracted from
+/// `family_wordmark` so the tests pin this exact markup without a
+/// router or an asset bundle.
+pub(crate) fn trio_marks<'a>(
+    rows: impl IntoIterator<Item = (&'a str, &'a str, Probe)>,
+) -> String {
+    rows.into_iter()
+        .filter(|(key, _, _)| *key != "im")
+        .map(|(key, url, probe)| {
+            let key = crate::pages::escape(key);
+            let url = crate::pages::escape(url);
+            let dot = match probe {
+                Probe::Up { .. } => "health-on",
+                Probe::Down => "health-off",
+            };
+            format!(
+                r#"<a class="trio-mark" href="{url}"><span class="health-dot {dot}"></span>{key}</a>"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(r#"<span class="trio-sep">·</span>"#)
 }
 
 /// The profile card's face: the photo when the account has one, the name's
