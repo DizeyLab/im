@@ -15,6 +15,7 @@ mod auth;
 mod config;
 mod directory;
 mod dropdown;
+mod health;
 mod i18n;
 mod layout;
 mod live;

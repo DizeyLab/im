@@ -15,6 +15,7 @@ use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{HeaderValue, StatusCode, header, route};
 use topcoat::view::{Child, ViewExt, view};
 
+use crate::health::{Probe, probe_healthz};
 use crate::i18n::{self, Key, lang_of, t};
 use crate::layout::shell;
 use crate::mailer;
@@ -1489,39 +1490,6 @@ async fn health_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Er
     ))
 }
 
-/// One `/healthz` reading. `Up` carries the body — the deploy contract's
-/// `ok <build sha>` — and the answer's latency; everything else, refused
-/// or wrong status or a body that does not begin ok or the two-second
-/// ceiling, is `Down`.
-enum Probe {
-    Up { body: String, ms: u128 },
-    Down,
-}
-
-async fn probe_healthz(http: &reqwest::Client, url: &str) -> Probe {
-    let started = std::time::Instant::now();
-    let Ok(answer) = http
-        .get(url)
-        .timeout(std::time::Duration::from_secs(2))
-        .send()
-        .await
-    else {
-        return Probe::Down;
-    };
-    if !answer.status().is_success() {
-        return Probe::Down;
-    }
-    let body = answer.text().await.unwrap_or_default();
-    let body = body.trim();
-    if body.starts_with("ok") {
-        Probe::Up {
-            body: body.chars().take(64).collect(),
-            ms: started.elapsed().as_millis(),
-        }
-    } else {
-        Probe::Down
-    }
-}
 /// Fits the log's page size to the browser's own viewport: measured against
 /// the first rendered row, never against a guess at the row height. A fit
 /// that would change the page size reloads once through a fresh
@@ -2622,7 +2590,7 @@ mod tests {
         let http = reqwest::Client::new();
 
         // A stand-in service answering the deploy body.
-        use super::{Probe, probe_healthz};
+        use crate::health::{Probe, probe_healthz};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
         let addr = listener.local_addr().unwrap();
@@ -2688,5 +2656,74 @@ mod tests {
             assert!(body.contains(">xy</td>"), "the fixture row renders: {body}");
             assert!(body.contains("Unreachable"), "the dark row reads Down: {body}");
         }
+    }
+
+    /// The signed-in flyout marks each sibling with the same health the
+    /// admin table reads: a sibling answering `ok` renders `health-on`,
+    /// a dark port `health-off`, dots only — no body, no latency — and
+    /// im's own row stays out of the flyout.
+    #[tokio::test]
+    async fn family_flyout_marks_siblings_with_health_dots() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let setup = setup().await;
+
+        // A live sibling answering the deploy body, and a dark one.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live_url = format!("http://{}", listener.local_addr().unwrap());
+        let talker = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nok dev")
+                .await
+                .unwrap();
+        });
+        let dark = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dark_url = format!("http://{}", dark.local_addr().unwrap());
+        drop(dark);
+        // `im` gets a row too — one the flyout must leave out.
+        for (key, url) in [("iz", live_url), ("in", dark_url.clone()), ("im", dark_url)] {
+            im_core::services::add(
+                &setup.store,
+                &im_core::services::Service {
+                    key: key.into(),
+                    name: "Fixture".into(),
+                    url,
+                    owner: None,
+                    client_id: None,
+                    storage_limit_bytes: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        let (_, _, body) = get_full(&setup.router, "/", Some(&setup.plain_cookie)).await;
+        talker.await.unwrap();
+        assert!(body.contains("service-trio"), "{body}");
+        assert!(
+            body.contains(r#"<a class="trio-mark" href="http://127.0.0.1:"#),
+            "the marks stay links: {body}"
+        );
+        assert!(body.contains("health-dot health-on"), "the ok sibling reads on: {body}");
+        assert!(body.contains(">iz</a>"), "the live sibling renders: {body}");
+        assert!(body.contains("health-dot health-off"), "the dark sibling reads off: {body}");
+        assert!(body.contains(">in</a>"), "the dark sibling renders: {body}");
+        assert!(!body.contains(">im</a>"), "im's own row stays out: {body}");
+        assert!(!body.contains("ok dev"), "the flyout carries dots only: {body}");
+        assert!(!body.contains(" ms</span>"), "the flyout carries no latency: {body}");
+    }
+
+    /// A family with no siblings is the bare mark: no flyout in the DOM
+    /// at all, so there is nothing to reveal and nothing to probe.
+    #[tokio::test]
+    async fn family_flyout_without_siblings_is_the_bare_mark() {
+        let setup = setup().await;
+        let (_, _, body) = get_full(&setup.router, "/", Some(&setup.plain_cookie)).await;
+        assert!(!body.contains("service-trio"), "{body}");
+        assert!(!body.contains("wordmark-family"), "{body}");
+        assert!(!body.contains("health-dot"), "{body}");
+        assert!(body.contains("wordmark-text"), "the bare mark stays: {body}");
     }
 }

@@ -7,6 +7,7 @@ use topcoat::asset::{Asset, asset};
 use topcoat::context::Cx;
 use topcoat::view::{BoxView, Child, View, ViewExt, view};
 
+use crate::health::{Probe, probe_healthz};
 use crate::i18n::{Key, Lang, lang_of, t};
 use crate::server;
 
@@ -27,25 +28,44 @@ pub async fn wordmark(cx: &Cx) -> Result<impl View + '_> {
 /// The signed-in chrome's wordmark with the family behind it: the `im`
 /// mark as above, and the sibling services' wordmarks in a flyout that
 /// opens under it on hover and on keyboard focus (the mark is focusable
-/// for that), middots between, each a plain link. No script: the flyout
-/// is CSS on `:hover` / `:focus-within`. A family with no siblings renders
-/// the bare mark — nothing to reveal. The list is the stored one, the same
-/// rows `/family` serves, minus im's own row.
+/// for that), middots between, each a plain link carrying a health dot —
+/// the same `/healthz` reading the admin panel's table takes its rows
+/// from, green while the sibling answers `ok`, muted while it does not.
+/// No script: the flyout is CSS on `:hover` / `:focus-within`. A family
+/// with no siblings renders the bare mark — nothing to reveal, nothing
+/// to probe. The list is the stored one, the same rows `/family` serves,
+/// minus im's own row.
 pub async fn family_wordmark(cx: &Cx) -> Result<BoxView<'_>> {
     let services = im_core::services::list(&server::app(cx).store).await?;
     let siblings = services
         .iter()
         .filter(|service| service.key != "im")
-        .map(|service| {
-            let key = crate::pages::escape(&service.key);
-            let url = crate::pages::escape(&service.url);
-            format!(r#"<a class="trio-mark" href="{url}">{key}</a>"#)
-        })
         .collect::<Vec<_>>();
     if siblings.is_empty() {
         return wordmark(cx).await.map(ViewExt::boxed);
     }
-    let marks = siblings.join(r#"<span class="trio-sep">·</span>"#);
+    // Every probe at once: a family member that is down costs its two
+    // seconds, not two seconds each.
+    let http = reqwest::Client::new();
+    let mut probes = Vec::new();
+    for service in &siblings {
+        let http = http.clone();
+        let url = format!("{}/healthz", service.url.trim_end_matches('/'));
+        probes.push(tokio::spawn(async move { probe_healthz(&http, &url).await }));
+    }
+    let mut marks = Vec::new();
+    for (service, probe) in siblings.iter().zip(probes) {
+        let key = crate::pages::escape(&service.key);
+        let url = crate::pages::escape(&service.url);
+        let dot = match probe.await.unwrap_or(Probe::Down) {
+            Probe::Up { .. } => "health-on",
+            Probe::Down => "health-off",
+        };
+        marks.push(format!(
+            r#"<a class="trio-mark" href="{url}"><span class="health-dot {dot}"></span>{key}</a>"#
+        ));
+    }
+    let marks = marks.join(r#"<span class="trio-sep">·</span>"#);
     Ok(view! {
         cx =>
         <div class="wordmark-family">

@@ -340,7 +340,7 @@ body:has(.auth-stage) > .auth-stage::-webkit-scrollbar {
   left: 50%;
   z-index: 2;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   padding: 6px 12px;
   background: var(--surface);
