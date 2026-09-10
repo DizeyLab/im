@@ -1000,6 +1000,21 @@ body:has(.log-list) .admin-card:has(.log-list) {
   color: var(--muted);
 }
 
+.health-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  vertical-align: baseline;
+}
+.health-dot.health-on {
+  background: #2e9e5b;
+}
+.health-dot.health-off {
+  background: var(--muted);
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

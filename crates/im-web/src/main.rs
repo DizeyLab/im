@@ -20,6 +20,7 @@ mod layout;
 mod live;
 mod mailer;
 mod oidc;
+mod pack;
 mod pages;
 mod people;
 mod photo;
@@ -29,7 +30,10 @@ use config::Config;
 
 #[route(GET "/healthz")]
 async fn healthz() -> Result<&'static str> {
-    Ok("ok")
+    // The build's commit, baked by build.rs — the deploy asserts the exact
+    // body after the restart, so a stale process holding the port cannot
+    // pass for this one.
+    Ok(concat!("ok ", env!("IM_BUILD_SHA")))
 }
 
 #[tokio::main]
@@ -111,9 +115,68 @@ async fn main() {
             };
             revoke_client(config, id).await;
         }
+        Some("pack") => {
+            let mut root = None;
+            let mut out = None;
+            let mut rest = args[2..].iter();
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--root" => match rest.next() {
+                        Some(value) => root = Some(value.clone()),
+                        None => {
+                            eprintln!("usage: im-web pack [--root DIR] [--out FILE]");
+                            eprintln!("im: --root needs a directory");
+                            std::process::exit(2);
+                        }
+                    },
+                    "--out" => match rest.next() {
+                        Some(value) => out = Some(value.clone()),
+                        None => {
+                            eprintln!("usage: im-web pack [--root DIR] [--out FILE]");
+                            eprintln!("im: --out needs a file");
+                            std::process::exit(2);
+                        }
+                    },
+                    other => {
+                        eprintln!("usage: im-web pack [--root DIR] [--out FILE]");
+                        eprintln!("im: unexpected argument {other}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            pack::pack_command(&config, root.as_deref(), out.as_deref()).await;
+        }
+        Some("unpack") => {
+            let Some(archive) = args.get(2) else {
+                eprintln!("usage: im-web unpack FILE [--root DIR] [--force]");
+                std::process::exit(2);
+            };
+            let mut root: Option<String> = None;
+            let mut force = false;
+            let mut rest = args[3..].iter();
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--force" => force = true,
+                    "--root" => match rest.next() {
+                        Some(value) => root = Some(value.clone()),
+                        None => {
+                            eprintln!("usage: im-web unpack FILE [--root DIR] [--force]");
+                            eprintln!("im: --root needs a directory");
+                            std::process::exit(2);
+                        }
+                    },
+                    other => {
+                        eprintln!("usage: im-web unpack FILE [--root DIR] [--force]");
+                        eprintln!("im: unexpected argument {other}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            pack::unpack_command(archive, root.as_deref(), force);
+        }
         Some(other) => {
             eprintln!(
-                "im: unknown command {other:?} (expected: invite, revoke, promote, demote, create-client, rotate-client, revoke-client, or none to serve)"
+                "im: unknown command {other:?} (expected: invite, revoke, promote, demote, create-client, rotate-client, revoke-client, pack, unpack, or none to serve)"
             );
             std::process::exit(2);
         }

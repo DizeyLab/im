@@ -1039,6 +1039,21 @@ body:has(.log-list) {
 .mono { font-family: var(--font-mono); }
 .muted { color: var(--muted); }
 
+// The admin Health section's per-service state dot: green while the
+// service's /healthz answers ok, muted when it does not. The green is
+// iz's connection card's — the same light across the family's panels.
+.health-dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  margin-right: 0.4rem;
+  vertical-align: baseline;
+
+  &.health-on { background: #2e9e5b; }
+  &.health-off { background: var(--muted); }
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

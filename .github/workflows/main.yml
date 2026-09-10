@@ -28,6 +28,10 @@ env:
   # moves the path with it — a baked-in absolute path once kept pointing at
   # the previous user's home and failed the deploy on permissions.
   DEPLOY_SUBDIR: im
+  # Baked into the binary by build.rs and asserted against after the
+  # deploy restart: a /healthz answered by a stale process from an old
+  # deploy now fails and rolls back instead of reporting green.
+  IM_BUILD_SHA: ${{ github.sha }}
 
 jobs:
   deploy:
@@ -143,10 +147,11 @@ jobs:
 
           # bash -s for the same reason as above: the login shell is not
           # bash and must never see this script.
-          ssh "$ssh_target" "bash -se -- '$DEPLOY_SUBDIR' '$SERVICE'" <<'REMOTE'
+          ssh "$ssh_target" "bash -se -- '$DEPLOY_SUBDIR' '$SERVICE' '$GITHUB_SHA'" <<'REMOTE'
           set -euo pipefail
           deploy_path=$HOME/$1
           service=$2
+          expected="ok $3"
           export XDG_RUNTIME_DIR=/run/user/$(id -u)
           # Read before anything moves: a config the health check cannot
           # read is a failure to stop on, not one to roll back from.
@@ -155,6 +160,12 @@ jobs:
             echo "no listen address in $deploy_path/config/im.toml" >&2
             exit 1
           fi
+          # The config directory carries secrets: the toml and any keys
+          # files are held to 0600, and the editor's stray secret-bearing
+          # backups go away — every deploy, the same way.
+          chmod 0600 -- "$deploy_path/config/"*.toml 2>/dev/null || true
+          chmod 0600 -- "$deploy_path/config/"*.keys 2>/dev/null || true
+          find "$deploy_path/config" -maxdepth 1 -type f \( -name '*.bak*' -o -name '*.pre-*' \) -delete
           chmod +x -- "$deploy_path/current.new/im-web"
           rm -rf -- "$deploy_path/current.previous"
           if [ -e "$deploy_path/current" ]; then
@@ -169,20 +180,29 @@ jobs:
           systemctl --user daemon-reload
           systemctl --user enable -- "$service"
           systemctl --user restart "$service"
-          # The unit is Type=simple, so a restart returns before the process
-          # has bound its port. Wait for the health route rather than a clock.
+          # The unit is Type=simple, so a restart returns before the new
+          # process has bound its port — and before an old one has let go
+          # of it. Wait for the health route rather than a clock, and
+          # check the answer names this commit: a stale process can still
+          # answer, and did once on a sibling deploy.
+          rollback() {
+            rm -rf -- "$deploy_path/current"
+            mv -- "$deploy_path/current.previous" "$deploy_path/current"
+            systemctl --user restart "$service"
+          }
           for _ in $(seq 1 30); do
-            if curl -fsS "http://$listen/healthz" >/dev/null 2>&1; then
-              echo 'im is up'
-              rm -rf -- "$deploy_path/current.previous"
-              exit 0
+            served=$(curl -fsS "http://$listen/healthz" 2>/dev/null) || { sleep 1; continue; }
+            if [ "$served" != "$expected" ]; then
+              echo "/healthz answered '$served', wanted '$expected'; rolling back" >&2
+              rollback
+              exit 1
             fi
-            sleep 1
+            echo 'im is up'
+            rm -rf -- "$deploy_path/current.previous"
+            exit 0
           done
           echo 'im did not answer /healthz; rolling back' >&2
-          rm -rf -- "$deploy_path/current"
-          mv -- "$deploy_path/current.previous" "$deploy_path/current"
-          systemctl --user restart "$service"
+          rollback
           exit 1
           REMOTE
 

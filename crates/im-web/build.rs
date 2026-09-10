@@ -15,4 +15,13 @@ fn main() {
     let out_dir = format!("{manifest_dir}/assets");
     std::fs::create_dir_all(&out_dir).expect("failed to create assets/");
     std::fs::write(format!("{out_dir}/main.css"), &css).expect("failed to write assets/main.css");
+
+    // The commit this binary was built from, served by `/healthz` and
+    // asserted against after the deploy restart, so a stale process
+    // holding the port cannot pass for this deploy. "dev" locally, where
+    // nothing asserts it. The rerun-if-env-changed line is load-bearing:
+    // without it a rust-cache hit would ship last deploy's sha.
+    let sha = std::env::var("IM_BUILD_SHA").unwrap_or_else(|_| "dev".into());
+    println!("cargo:rustc-env=IM_BUILD_SHA={sha}");
+    println!("cargo:rerun-if-env-changed=IM_BUILD_SHA");
 }

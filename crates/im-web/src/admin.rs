@@ -149,6 +149,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
             ("message", t(lang, Key::NavMessage)),
             ("settings", t(lang, Key::NavSettings)),
             ("logs", t(lang, Key::NavLogs)),
+            ("health", t(lang, Key::NavHealth)),
         ]
         .into_iter()
         .map(|(id, label)| {
@@ -165,6 +166,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         "message" => message_section(cx, lang).await?,
         "settings" => settings_section(cx, lang).await?,
         "logs" => logs_section(cx, lang).await?,
+        "health" => health_section(cx, lang).await?,
         // `section=clients` lands here too — the sections are one table
         // now, and the old address keeps working.
         "services" | "clients" => services_section(cx, shown, lang).await?,
@@ -1431,6 +1433,95 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
     ))
     .map(|card| card + LOG_FIT_SCRIPT)
 }
+
+/// The read-only family health panel. One row per services-table entry —
+/// self included, im's own row lives on the same table — probed where it
+/// stands: `GET {url}/healthz`, no credentials, two seconds to answer.
+/// A fourth registered service appears here on its own; nothing on this
+/// section takes input, and the live morph brings the next reading the
+/// way it refreshes every other section.
+async fn health_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
+    let services = im_core::services::list(&app(cx).store).await?;
+    // Every probe at once: a family member that is down costs its two
+    // seconds, not two seconds each.
+    let http = reqwest::Client::new();
+    let mut probes = Vec::new();
+    for service in &services {
+        let http = http.clone();
+        let url = format!("{}/healthz", service.url.trim_end_matches('/'));
+        probes.push(tokio::spawn(async move { probe_healthz(&http, &url).await }));
+    }
+
+    let mut rows = String::new();
+    for (service, probe) in services.iter().zip(probes) {
+        let key = escape(&service.key);
+        let name = escape(&service.name);
+        let url = escape(&service.url);
+        let state = match probe.await.unwrap_or(Probe::Down) {
+            Probe::Up { body, ms } => format!(
+                r#"<span class="health-dot health-on"></span>{} <span class="muted">· {ms} ms</span>"#,
+                escape(&body)
+            ),
+            Probe::Down => format!(
+                r#"<span class="health-dot health-off"></span><span class="muted">{}</span>"#,
+                t(lang, Key::HealthUnreachable),
+            ),
+        };
+        rows.push_str(&format!(
+            r#"<tr><td class="mono">{key}</td><td>{name}</td><td class="mono"><a href="{url}" target="_blank" rel="noopener noreferrer">{url}</a></td><td>{state}</td></tr>"#,
+        ));
+    }
+    Ok(format!(
+        r#"<div class="admin-card">
+  <div class="auth-title">{title}</div>
+  <div class="admin-table-wrap">
+  <table class="admin-table">
+    <thead><tr><th>{key_label}</th><th>{name_label}</th><th>{url_label}</th><th>{state_label}</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  </div>
+</div>"#,
+        title = t(lang, Key::HealthTitle),
+        key_label = t(lang, Key::ServiceKeyLabel),
+        name_label = t(lang, Key::NameCol),
+        url_label = t(lang, Key::AddressLabel),
+        state_label = t(lang, Key::HealthStateCol),
+    ))
+}
+
+/// One `/healthz` reading. `Up` carries the body — the deploy contract's
+/// `ok <build sha>` — and the answer's latency; everything else, refused
+/// or wrong status or a body that does not begin ok or the two-second
+/// ceiling, is `Down`.
+enum Probe {
+    Up { body: String, ms: u128 },
+    Down,
+}
+
+async fn probe_healthz(http: &reqwest::Client, url: &str) -> Probe {
+    let started = std::time::Instant::now();
+    let Ok(answer) = http
+        .get(url)
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+    else {
+        return Probe::Down;
+    };
+    if !answer.status().is_success() {
+        return Probe::Down;
+    }
+    let body = answer.text().await.unwrap_or_default();
+    let body = body.trim();
+    if body.starts_with("ok") {
+        Probe::Up {
+            body: body.chars().take(64).collect(),
+            ms: started.elapsed().as_millis(),
+        }
+    } else {
+        Probe::Down
+    }
+}
 /// Fits the log's page size to the browser's own viewport: measured against
 /// the first rendered row, never against a guess at the row height. A fit
 /// that would change the page size reloads once through a fresh
@@ -2505,6 +2596,97 @@ mod tests {
                 body.contains("name=\"limit_amount\" min=\"0\" step=\"any\" value=\"\""),
                 "a no-limit row edits empty: {body}"
             );
+        }
+    }
+
+    /// The deploy asserts this body after the restart — the answer must
+    /// carry the baked build sha, `dev` in a plain build.
+    #[tokio::test]
+    async fn healthz_answers_the_baked_sha() {
+        let setup = setup().await;
+        let (status, _, body) = get_full(&setup.router, "/healthz", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body.starts_with("ok "),
+            "healthz must answer `ok <build sha>`, got {body:?}"
+        );
+    }
+
+    /// The probe reads a service answering the deploy body as Up with the
+    /// body carried, and a service with nobody home as Down — not a hang,
+    /// not an error.
+    #[tokio::test]
+    async fn health_probe_reads_ok_and_refuses_the_rest() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let http = reqwest::Client::new();
+
+        // A stand-in service answering the deploy body.
+        use super::{Probe, probe_healthz};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+
+        let addr = listener.local_addr().unwrap();
+        let talker = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf).await;
+            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\nok dev")
+                .await
+                .unwrap();
+        });
+        let probe = probe_healthz(&http, &format!("http://{addr}/healthz")).await;
+        talker.await.unwrap();
+        let Probe::Up { body, .. } = probe else {
+            panic!("a service answering `ok dev` must read Up");
+        };
+        assert_eq!(body, "ok dev");
+
+        // Nobody home: refused connection, Down.
+        let dark = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = dark.local_addr().unwrap();
+        drop(dark);
+        let probe = probe_healthz(&http, &format!("http://{addr}/healthz")).await;
+        assert!(matches!(probe, Probe::Down), "a dark port must read Down");
+    }
+
+    /// The section is admin-only and, a bundle permitting, renders the
+    /// health table with its nav slot.
+    #[tokio::test]
+    async fn health_section_is_admin_only_and_renders() {
+        let setup = setup().await;
+        // A family row to render: a port nobody listens on refuses the
+        // probe instantly, so the row reads Down without waiting it out.
+        // A fixture key, not a sibling's — the panel renders whatever the
+        // table holds.
+        let dark = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dead_url = format!("http://{}", dark.local_addr().unwrap());
+        drop(dark);
+        im_core::services::add(
+            &setup.store,
+            &im_core::services::Service {
+                key: "xy".into(),
+                name: "Fixture".into(),
+                url: dead_url,
+                owner: None,
+                client_id: None,
+                storage_limit_bytes: None,
+            },
+        )
+        .await
+        .unwrap();
+        let (status, location, _) =
+            get_full(&setup.router, "/admin?section=health", Some(&setup.plain_cookie)).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/"));
+        if setup.assets {
+            let (status, _, body) =
+                get_full(&setup.router, "/admin?section=health", Some(&setup.admin_cookie)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(body.contains("Family health"), "{body}");
+            assert!(body.contains("/admin?section=health"), "the nav carries the section: {body}");
+            assert!(body.contains("health-dot"), "{body}");
+            assert!(body.contains(">xy</td>"), "the fixture row renders: {body}");
+            assert!(body.contains("Unreachable"), "the dark row reads Down: {body}");
         }
     }
 }
