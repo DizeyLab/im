@@ -5,8 +5,8 @@
 //!   `/directory` answers it;
 //! * [`DirectoryClient::photo`] — one member's photo bytes, for an
 //!   `<img src>` served out of the app's own hands;
-//! * [`DirectoryClient::open_stream`] — the `/directory/live` feed, one
-//!   event per changed member, parsed by hand from the byte stream.
+//!   event per changed member and one per sign-out in motion, parsed by
+//!   hand from the byte stream.
 //!
 //! [`spawn_sync`] is the whole loop most apps want: a full pass through
 //! [`DirectoryClient::directory`], then the stream through the same
@@ -50,6 +50,10 @@ pub struct DirectoryMember {
     /// Defaulted: rows mirrored before im carried the field still read.
     #[serde(default = "default_timezone")]
     pub timezone: String,
+    /// Whether im has switched the member off. Defaulted: a row mirrored
+    /// before im carried the field reads as present-and-enabled.
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 /// The timezone im starts every account on, and the one this SDK assumes
@@ -58,14 +62,24 @@ fn default_timezone() -> String {
     "UTC+03:00".to_string()
 }
 
-/// One event off the directory stream. The only thing `/directory/live`
-/// announces today is a changed member; the enum leaves room for the feed
-/// to grow without a breaking change to consumers.
+/// One event off the directory stream: a member's row, or a sign-out in
+/// motion. The enum leaves room for the feed to grow without a breaking
+/// change to consumers — unknown frame kinds are skipped, not fatal.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DirectoryEvent {
     /// The named member's row changed — upload, address, admin flag, any
     /// of it. The payload is the row as it now stands.
     Profile(DirectoryMember),
+    /// The named subject's sessions were revoked: im's broadcast on any
+    /// logout-everywhere, disable, or delete. The app's cue to send that
+    /// subject's signed-in tabs home.
+    Revoked { sub: String },
+}
+
+/// The body of a `revoked` frame: the subject whose sessions died.
+#[derive(Deserialize)]
+struct RevokedFrame {
+    sub: String,
 }
 
 /// The directory client: issuer plus the same `client_id:client_secret`
@@ -257,14 +271,17 @@ impl SseParser {
     fn take_event(&mut self) -> Option<DirectoryEvent> {
         let data = std::mem::take(&mut self.data);
         let event = self.event.take();
-        if let Some(kind) = event
-            && kind != "profile"
-        {
-            return None;
+        match event.as_deref() {
+            Some("revoked") => serde_json::from_str::<RevokedFrame>(&data)
+                .ok()
+                .map(|frame| DirectoryEvent::Revoked { sub: frame.sub }),
+            // A nameless frame (the retry hint, a tick) carries no member.
+            Some("profile") | None => serde_json::from_str::<DirectoryMember>(&data)
+                .ok()
+                .map(DirectoryEvent::Profile),
+            // The feed may grow: an unknown kind is skipped, not fatal.
+            Some(_) => None,
         }
-        serde_json::from_str::<DirectoryMember>(&data)
-            .ok()
-            .map(DirectoryEvent::Profile)
     }
 }
 
@@ -339,6 +356,12 @@ where
                         // at the short wait.
                         backoff = BACKOFF_FLOOR;
                     }
+                    // A sign-out in motion: this loop's door carries
+                    // members only. The frame is read and dropped — the
+                    // app that needs the event reads the stream itself.
+                    Ok(DirectoryEvent::Revoked { .. }) => {
+                        backoff = BACKOFF_FLOOR;
+                    }
                     Err(_) => break,
                 }
             }
@@ -382,6 +405,7 @@ mod tests {
                 name: "Ann".into(),
                 admin: false,
                 photo_version: 3,
+                disabled: false,
             })]
         );
     }
@@ -404,6 +428,7 @@ mod tests {
                 name: "Ann".into(),
                 admin: false,
                 photo_version: 7,
+                disabled: false,
             }));
             parser = SseParser::default();
         }
@@ -421,6 +446,7 @@ mod tests {
             name: "Ann".into(),
             admin: false,
             photo_version: 1,
+            disabled: false,
         }));
     }
 
@@ -448,6 +474,7 @@ mod tests {
                 name: "Ann".into(),
                 admin: false,
                 photo_version: 2,
+                disabled: false,
             })
         );
     }
@@ -463,5 +490,51 @@ mod tests {
         let _ = bytes; // (the folded literal above is documentation only)
         let joined = "event: profile\ndata: {\"sub\":\"five\",\ndata: \"x\"}\n\n";
         assert!(parser.feed(joined.as_bytes()).is_empty(), "invalid JSON is skipped, not fatal");
+    }
+
+    #[test]
+    fn a_revoked_frame_names_the_subject() {
+        let mut parser = SseParser::default();
+        let bytes = b"event: revoked\ndata: {\"sub\":\"seven\"}\n\n";
+        let events = parser.feed(bytes);
+        assert_eq!(
+            events,
+            vec![DirectoryEvent::Revoked { sub: "seven".into() }]
+        );
+    }
+
+    #[test]
+    fn a_member_carries_the_disabled_flag_and_defaults_it() {
+        let mut parser = SseParser::default();
+        let bytes = b"event: profile\ndata: {\"sub\":\"gone\",\"email\":\"g\",\
+                      \"name\":\"G\",\"admin\":false,\"photo_version\":0,\
+                      \"disabled\":true}\n\n";
+        let events = parser.feed(bytes);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], DirectoryEvent::Profile(member) if member.disabled),
+            "the flag the frame carries is the flag the member reads"
+        );
+
+        // An older im's row predates the flag: it reads as enabled.
+        let mut parser = SseParser::default();
+        let events = parser.feed(frame("back", 1).as_bytes());
+        assert!(
+            matches!(&events[0], DirectoryEvent::Profile(member) if !member.disabled),
+            "a row without the field defaults to present-and-enabled"
+        );
+    }
+
+    #[test]
+    fn an_unknown_event_kind_is_skipped_and_the_stream_stays_alive() {
+        let mut parser = SseParser::default();
+        let bytes = format!(
+            "event: somethingnew\ndata: {{\"whatever\":1}}\n\n{}",
+            frame("after", 9)
+        )
+        .into_bytes();
+        let events = parser.feed(&bytes);
+        assert_eq!(events.len(), 1, "the unknown frame is not fatal");
+        assert!(matches!(&events[0], DirectoryEvent::Profile(member) if member.sub == "after"));
     }
 }
