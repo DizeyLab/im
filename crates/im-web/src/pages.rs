@@ -491,8 +491,9 @@ pub(crate) fn escape(raw: &str) -> String {
 
 /// What the agent string means to a person — "Chrome on Linux", not the raw
 /// header. The full string stays one click away in the session's detail.
-/// Substring matching in precedence order (Edge before Chrome before Safari:
-/// each carries the later one's token too); shared with the admin panel.
+/// Substring matching in precedence order (Edge, then Chromium before Chrome,
+/// then Safari: each carries the later one's token too); shared with the
+/// admin panel.
 /// Browser and system names are proper nouns and stay as the agent spelled
 /// them; the connector and the generic fallback follow the viewer's language
 /// (`i18n::device_summary`, `Key::BrowserWord`).
@@ -504,6 +505,8 @@ pub(crate) fn device_label(agent: Option<&str>, lang: Lang) -> String {
         "Edge"
     } else if agent.contains("Firefox/") {
         "Firefox"
+    } else if agent.contains("Chromium/") {
+        "Chromium"
     } else if agent.contains("Chrome/") {
         "Chrome"
     } else if agent.contains("Safari/") {
@@ -1127,4 +1130,25 @@ async fn email_change_page(cx: &Cx) -> Result<Response> {
         .first()
         .await?
         .into_response(cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_label;
+    use crate::i18n::Lang;
+
+    // Token overlap is the bug class: a Chromium agent also carries
+    // "Chrome/", an Edge agent carries both — the match order is the
+    // contract, so pin it with real-world agent strings.
+    #[test]
+    fn device_label_respects_token_precedence() {
+        let chromium = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chromium/140.0.0.0 Chrome/140.0.0.0 Safari/537.36";
+        assert_eq!(device_label(Some(chromium), Lang::En), "Chromium on Linux");
+        let chrome = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
+        assert_eq!(device_label(Some(chrome), Lang::En), "Chrome on Linux");
+        let edge = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0";
+        assert_eq!(device_label(Some(edge), Lang::En), "Edge on Windows");
+        let safari = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+        assert_eq!(device_label(Some(safari), Lang::En), "Safari on iPhone");
+    }
 }
