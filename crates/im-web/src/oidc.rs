@@ -63,7 +63,9 @@ fn authorize_error(
     let sep = if redirect_uri.contains('?') { '&' } else { '?' };
     let mut location = format!("{redirect_uri}{sep}error={error}");
     if let Some(state) = state {
-        location.push_str(&format!("&state={state}"));
+        // The state is the caller's bytes: encoded as a query pair or it
+        // could carry `&`, `=`, or a whole second parameter of its own.
+        location.push_str(&format!("&state={}", urlencode(state)));
     }
     (
         StatusCode::SEE_OTHER,
@@ -171,7 +173,9 @@ async fn authorize(cx: &Cx) -> Result<Response> {
     let sep = if redirect_uri.contains('?') { '&' } else { '?' };
     let mut location = format!("{redirect_uri}{sep}code={}", code.expose());
     if let Some(state) = state {
-        location.push_str(&format!("&state={state}"));
+        // Same pair discipline as [`authorize_error`]: the caller's state
+        // is a value, never raw query syntax.
+        location.push_str(&format!("&state={}", urlencode(&state)));
     }
     let location = HeaderValue::from_str(&location)?;
     (
@@ -272,15 +276,22 @@ async fn exchange(cx: &Cx, Form(input): Form<TokenForm>) -> Result<Response> {
             else {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_request");
             };
-            let Some(consumed) = oidc::consume_auth_code(&app(cx).store, &code).await? else {
+            // Judge before spending: the peek says what the code is, and a
+            // presentation that fails its client, redirect, or PKCE check
+            // leaves the code alive for its rightful holder. `consume` is
+            // still the atomic exactly-once act that settles a race.
+            let Some(staged) = oidc::peek_auth_code(&app(cx).store, &code).await? else {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
             };
-            if consumed.client_id != client.client_id
-                || consumed.redirect_uri != redirect_uri
-                || !oidc::pkce_matches(&consumed.code_challenge, &verifier)
+            if staged.client_id != client.client_id
+                || staged.redirect_uri != redirect_uri
+                || !oidc::pkce_matches(&staged.code_challenge, &verifier)
             {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
             }
+            let Some(consumed) = oidc::consume_auth_code(&app(cx).store, &code).await? else {
+                return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
+            };
             let Some(user) =
                 im_core::accounts::user_by_id(&app(cx).store, &consumed.user_id).await?
             else {
@@ -323,19 +334,27 @@ async fn exchange(cx: &Cx, Form(input): Form<TokenForm>) -> Result<Response> {
             let Some(presented) = input.refresh_token else {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_request");
             };
-            let Some((fresh, old)) = oidc::rotate_refresh(&app(cx).store, &presented).await? else {
+            // Ownership before rotation: a token presented by a client it
+            // was never issued to is judged by the peek, so a wrong-client
+            // presentation cannot burn the rightful holder's chain. The
+            // rotate that follows re-checks everything atomically and
+            // settles a race between two refreshes of the same client.
+            let Some(record) = oidc::peek_refresh(&app(cx).store, &presented).await? else {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
             };
-            if old.client_id != client.client_id {
+            if record.client_id != client.client_id {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
             }
-            let Some(user) = im_core::accounts::user_by_id(&app(cx).store, &old.user_id).await?
+            let Some(user) = im_core::accounts::user_by_id(&app(cx).store, &record.user_id).await?
             else {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
             };
             if user.disabled {
                 return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
             }
+            let Some((fresh, _)) = oidc::rotate_refresh(&app(cx).store, &presented).await? else {
+                return oidc_error(cx, StatusCode::BAD_REQUEST, "invalid_grant");
+            };
             let (access, id) = mint_tokens(cx, &user, &client.client_id, None).await?;
             token_answer(cx, access, id, fresh.expose().to_string(), None)
         }
@@ -420,4 +439,250 @@ async fn userinfo(cx: &Cx) -> Result<Response> {
         "name": user.name,
     }))
     .into_response(cx)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use topcoat::cookie::RouterBuilderCookieExt as _;
+    use topcoat::router::{Body, Router, RouterBuilderDiscoverExt as _, StatusCode, header, to_bytes};
+    use im_core::accounts::{create_invite, create_user_from_invite};
+    use im_core::oidc::{create_auth_code, create_client, issue_refresh};
+    use im_core::sessions::{SessionMeta, create_session};
+    use im_core::store::Store;
+
+    use crate::config::Config;
+    use crate::server::{self, SESSION_COOKIE};
+
+    /// The RFC 7636 Appendix B pair: `challenge` is `S256(verifier)`.
+    const VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    const CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
+
+    struct Setup {
+        router: Router,
+        store: Arc<Store>,
+        // The rightful client, its credential, and what it holds.
+        client_id: String,
+        secret: String,
+        // A second registered client — the attacker's seat.
+        other_id: String,
+        other_secret: String,
+        session_cookie: String,
+    }
+
+    async fn setup() -> Setup {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let (client_id, secret) =
+            create_client(&store, "drive", vec!["http://app/callback".into()])
+                .await
+                .unwrap();
+        let (other_id, other_secret) =
+            create_client(&store, "stranger", vec!["http://stranger/cb".into()])
+                .await
+                .unwrap();
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let session = create_session(&store, &user.id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let (live, _) = tokio::sync::broadcast::channel(64);
+        let store = Arc::new(store);
+        let app = server::App {
+            store: store.clone(),
+            config: Config {
+                database: ":memory:".into(),
+                listen: "127.0.0.1:7650".parse().unwrap(),
+                issuer: "http://127.0.0.1:7650".into(),
+                services: Vec::new(),
+            },
+            live,
+        };
+        let router = Router::builder()
+            .discover()
+            .cookies()
+            .app_context(app)
+            .build();
+        Setup {
+            router,
+            store,
+            client_id: client_id.to_string(),
+            secret: secret.expose().to_string(),
+            other_id: other_id.to_string(),
+            other_secret: other_secret.expose().to_string(),
+            session_cookie: format!("{SESSION_COOKIE}={}", session.expose()),
+        }
+    }
+
+    /// POSTs a token form, answered as (status, body).
+    async fn post_token(router: &Router, form: &str) -> (StatusCode, String) {
+        let response = router
+            .handle(
+                http::Request::builder()
+                    .method(http::Method::POST)
+                    .uri("/token")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(form.to_string()))
+                    .unwrap(),
+            )
+            .await;
+        let (parts, body) = response.into_parts();
+        let bytes = to_bytes(body, usize::MAX).await.unwrap().to_vec();
+        (parts.status, String::from_utf8(bytes).unwrap())
+    }
+
+    /// A `/authorize` GET carrying the central session, answered as
+    /// (status, Location) — the code handout for the signed-in browser.
+    async fn get_authorize(setup: &Setup) -> (StatusCode, Option<String>) {
+        let query = format!(
+            "response_type=code&client_id={}&redirect_uri=http%3A%2F%2Fapp%2Fcallback\
+             &scope=openid&state=st%26ate&code_challenge={}&code_challenge_method=S256",
+            setup.client_id, CHALLENGE
+        );
+        let response = setup
+            .router
+            .handle(
+                http::Request::builder()
+                    .uri(format!("/authorize?{query}"))
+                    .header(header::COOKIE, &setup.session_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let (parts, _) = response.into_parts();
+        let location = parts
+            .headers
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        (parts.status, location)
+    }
+
+    #[tokio::test]
+    async fn wrong_client_presentation_leaves_the_refresh_chain_alive() {
+        let setup = setup().await;
+        let token = issue_refresh(
+            &setup.store,
+            &announce_user(&setup).await,
+            &im_core::model::ClientId::from(setup.client_id.clone()),
+            &session_hash(&setup).await,
+        )
+        .await
+        .unwrap();
+
+        // The stranger presents the victim's token: refused — and, the
+        // point, nothing burns.
+        let form = format!(
+            "grant_type=refresh_token&client_id={}&client_secret={}\
+             &refresh_token={}",
+            setup.other_id,
+            setup.other_secret,
+            token.expose()
+        );
+        let (status, body) = post_token(&setup.router, &form).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"],
+            "invalid_grant"
+        );
+
+        // The rightful client refreshes with the very same token: the
+        // chain stands. (Before the peek-first ordering this burned.)
+        let form = format!(
+            "grant_type=refresh_token&client_id={}&client_secret={}\
+             &refresh_token={}",
+            setup.client_id,
+            setup.secret,
+            token.expose()
+        );
+        let (status, body) = post_token(&setup.router, &form).await;
+        assert_eq!(status, StatusCode::OK);
+        let answer: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(answer["refresh_token"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn wrong_client_presentation_leaves_the_code_redeemable() {
+        let setup = setup().await;
+        let user = announce_user(&setup).await;
+        let code = create_auth_code(
+            &setup.store,
+            &im_core::model::ClientId::from(setup.client_id.clone()),
+            &user,
+            "http://app/callback",
+            None,
+            CHALLENGE,
+            &session_hash(&setup).await,
+        )
+        .await
+        .unwrap();
+
+        // The stranger presents the victim's code with its redirect and
+        // PKCE pair complete: refused without spending it.
+        let form = format!(
+            "grant_type=authorization_code&client_id={}&client_secret={}\
+             &code={}&redirect_uri=http%3A%2F%2Fapp%2Fcallback&code_verifier={}",
+            setup.other_id,
+            setup.other_secret,
+            code.expose(),
+            VERIFIER
+        );
+        let (status, body) = post_token(&setup.router, &form).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["error"],
+            "invalid_grant"
+        );
+
+        // The rightful client exchanges the very same code.
+        let form = format!(
+            "grant_type=authorization_code&client_id={}&client_secret={}\
+             &code={}&redirect_uri=http%3A%2F%2Fapp%2Fcallback&code_verifier={}",
+            setup.client_id,
+            setup.secret,
+            code.expose(),
+            VERIFIER
+        );
+        let (status, body) = post_token(&setup.router, &form).await;
+        assert_eq!(status, StatusCode::OK);
+        let answer: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(answer["access_token"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn authorize_encodes_the_state_it_hands_back() {
+        let setup = setup().await;
+        let (status, location) = get_authorize(&setup).await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let location = location.unwrap();
+        assert!(location.starts_with("http://app/callback?code="));
+        // The decoded `st&ate` rides back as one pair's value, not two.
+        assert!(location.ends_with("&state=st%26ate"), "{location}");
+        assert!(!location.contains("&ate="), "{location}");
+    }
+
+    /// The signed-in person behind the fixture session.
+    async fn announce_user(setup: &Setup) -> im_core::model::UserId {
+        im_core::accounts::user_by_email(&setup.store, "ann@example.com")
+            .await
+            .unwrap()
+            .unwrap()
+            .id
+    }
+
+    /// The fixture session's hash — the binding refresh tokens and codes
+    /// carry toward the central session.
+    async fn session_hash(setup: &Setup) -> String {
+        im_core::accounts::hash_token(
+            setup
+                .session_cookie
+                .strip_prefix(&format!("{SESSION_COOKIE}="))
+                .unwrap(),
+        )
+    }
 }

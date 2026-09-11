@@ -241,9 +241,11 @@ fn see(cx: &Cx, location: &str) -> Result<Response, topcoat::Error> {
         .into_response(cx)
 }
 
-/// A `next` worth honoring: a local absolute path, never `//elsewhere`.
+/// A `next` worth honoring: a local absolute path, never `//elsewhere` —
+/// and never a backslash, which browsers normalize like a slash, so
+/// `/\elsewhere` would leave the host just the same.
 fn safe_next(raw: &str) -> &str {
-    if raw.starts_with('/') && !raw.starts_with("//") {
+    if raw.starts_with('/') && !raw.starts_with("//") && !raw.contains('\\') {
         raw
     } else {
         "/"
@@ -683,6 +685,18 @@ mod tests {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         let challenge = b64url.encode(Sha256::digest(verifier.as_bytes()));
         assert_eq!(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    }
+
+    #[test]
+    fn next_rejects_scheme_relative_and_backslash_paths() {
+        assert_eq!(safe_next("/files"), "/files");
+        assert_eq!(safe_next("/files?sort=name"), "/files?sort=name");
+        assert_eq!(safe_next("//evil.example/path"), "/");
+        // Browsers normalize the backslash into a slash: `/\evil.example`
+        // navigates off-host exactly like `//evil.example`.
+        assert_eq!(safe_next("/\\evil.example"), "/");
+        assert_eq!(safe_next("https://evil.example"), "/");
+        assert_eq!(safe_next("relative"), "/");
     }
 
     #[test]

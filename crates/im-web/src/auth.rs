@@ -34,10 +34,12 @@ fn urlencode(raw: &str) -> String {
     out
 }
 
-/// A `back` worth honoring: a local absolute path, never `//elsewhere`.
-/// Anything else — including a full URL — becomes the front door.
+/// A `back` worth honoring: a local absolute path, never `//elsewhere` —
+/// and never a backslash, which browsers normalize like a slash, so
+/// `/\evil.com` would ride the guard out to a foreign host. Anything
+/// else — including a full URL — becomes the front door.
 fn safe_back(raw: &str) -> &str {
-    if raw.starts_with('/') && !raw.starts_with("//") {
+    if raw.starts_with('/') && !raw.starts_with("//") && !raw.contains('\\') {
         raw
     } else {
         "/"
@@ -53,7 +55,9 @@ fn logout_target(raw: Option<&str>, services: &[im_core::services::Service]) -> 
     let Some(raw) = raw else {
         return "/".to_string();
     };
-    if raw.starts_with('/') && !raw.starts_with("//") {
+    if raw.starts_with('/') && !raw.starts_with("//") && !raw.contains('\\') {
+        // The backslash rule is [`safe_back`]'s: browsers normalize
+        // `/\evil.com` into a foreign navigation.
         return raw.to_string();
     }
     if let Some(origin) = url_origin(raw)
@@ -177,12 +181,18 @@ async fn login_totp(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
     let ok = match accounts::user_by_id(store, &user_id).await? {
         Some(user) => match im_core::totp::totp_secret(store, &user.id).await? {
             Some((secret, confirmed)) => {
+                // `consume_totp`, not a bare verify: the accepted timestep
+                // is burned atomically, so a code cannot mint a second
+                // session inside its drift window.
                 confirmed
-                    && im_core::totp::verify_totp(
+                    && im_core::totp::consume_totp(
+                        store,
+                        &user.id,
                         &secret,
                         input.code.trim(),
                         time::OffsetDateTime::now_utc(),
                     )
+                    .await?
             }
             None => false,
         },
@@ -277,7 +287,17 @@ async fn enroll(cx: &Cx, Form(input): Form<TotpForm>) -> Redirect {
     let Some((secret, _)) = im_core::totp::totp_secret(store, &user.id).await? else {
         return see("/enroll".to_string());
     };
-    if !im_core::totp::verify_totp(&secret, input.code.trim(), time::OffsetDateTime::now_utc()) {
+    // The proving code burns its timestep too — the same replay rule the
+    // login enforces, applied at the moment TOTP turns on.
+    if !im_core::totp::consume_totp(
+        store,
+        &user.id,
+        &secret,
+        input.code.trim(),
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?
+    {
         return see("/enroll?error=bad_code".to_string());
     }
     im_core::totp::confirm_totp(store, &user.id).await?;
@@ -361,11 +381,21 @@ pub struct ForgotForm {
 /// The self-serve reset ask. It answers every address the same — the mail
 /// either exists or it doesn't, and the page never says which. Each ask
 /// retires the address's previous live link: the newest mail is the only
-/// door.
+/// door. The asks themselves carry the login limiter's per-hour ceiling,
+/// keyed on the address, so a stranger cannot turn the form into a
+/// mail-bomb — and a throttled ask still answers exactly like a sent one.
 #[route(POST "/forgot")]
 async fn forgot(cx: &Cx, Form(input): Form<ForgotForm>) -> Redirect {
     let store = &server::app(cx).store;
     let email = input.email.trim().to_string();
+    let key = format!("forgot:{}", email.to_lowercase());
+    if accounts::login_blocked(store, &key).await? {
+        server::log_event(cx, "forgot_limited", Some(&email), None).await;
+        return see("/forgot?ok=sent".to_string());
+    }
+    // Every ask spends from the same budget, account or not — the mails
+    // are the thing being rationed, and existence is never the answer.
+    let _ = accounts::record_login_failure(store, &key).await;
     if let Some(token) = accounts::create_reset(store, &email).await? {
         let issuer = server::app(cx).config.issuer.clone();
         // The mail follows the account's language; a missing account still
@@ -667,4 +697,59 @@ async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Redirect {
     }
     server::log_event(cx, "password_changed", Some(&me.email), None).await;
     see("/?section=password&ok=password".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn back_rejects_scheme_relative_and_backslash_paths() {
+        assert_eq!(safe_back("/dashboard"), "/dashboard");
+        assert_eq!(safe_back("/authorize?client_id=x"), "/authorize?client_id=x");
+        assert_eq!(safe_back("//evil.example/path"), "/");
+        // Browsers normalize the backslash into a slash: `/\evil.example`
+        // navigates off-host exactly like `//evil.example`.
+        assert_eq!(safe_back("/\\evil.example"), "/");
+        assert_eq!(safe_back("/settings\\..\\..\\evil"), "/");
+        assert_eq!(safe_back("https://evil.example"), "/");
+        assert_eq!(safe_back("relative"), "/");
+    }
+
+    #[test]
+    fn logout_target_judges_local_paths_by_the_back_rule() {
+        let services: Vec<im_core::services::Service> = Vec::new();
+        assert_eq!(logout_target(None, &services), "/");
+        assert_eq!(logout_target(Some("/settings"), &services), "/settings");
+        assert_eq!(logout_target(Some("//evil.example"), &services), "/");
+        assert_eq!(logout_target(Some("/\\evil.example"), &services), "/");
+        assert_eq!(
+            logout_target(Some("https://stranger.example/bye"), &services),
+            "/"
+        );
+    }
+
+    #[test]
+    fn logout_target_hands_the_browser_to_a_known_family_service() {
+        let sibling = im_core::services::Service {
+            key: "in".into(),
+            name: "in".into(),
+            url: "https://in.example".into(),
+            owner: None,
+            client_id: None,
+            storage_limit_bytes: None,
+        };
+        let services = vec![sibling];
+        assert_eq!(
+            logout_target(Some("https://in.example/goodbye"), &services),
+            "https://in.example/goodbye"
+        );
+        // A look-alike origin is still a stranger.
+        assert_eq!(
+            logout_target(Some("https://in.example.evil/bye"), &services),
+            "/"
+        );
+        // The local-path rule stands beside the origin rule.
+        assert_eq!(logout_target(Some("/\\in.example"), &services), "/");
+    }
 }

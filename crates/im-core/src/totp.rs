@@ -63,18 +63,26 @@ fn code_at_step(secret: &[u8; 20], step: u64) -> String {
     format!("{:06}", binary % 1_000_000)
 }
 
-/// Checks a user-typed code, accepting one step of drift either way. The
-/// comparison runs over every candidate regardless of where the match is, so
-/// the answer's timing does not narrow the search.
-pub fn verify_totp(secret: &[u8; 20], code: &str, at: OffsetDateTime) -> bool {
+/// The timestep whose code the user presented, accepting one step of drift
+/// either way. The comparison runs over every candidate regardless of where
+/// the match is, so the answer's timing does not narrow the search.
+fn match_step(secret: &[u8; 20], code: &str, at: OffsetDateTime) -> Option<u64> {
     let step = at.unix_timestamp() as u64 / STEP_SECONDS;
-    let mut found = false;
+    let mut found = None;
     for candidate in [step.wrapping_sub(1), step, step.wrapping_add(1)] {
         let expected = code_at_step(secret, candidate);
-        found |=
+        let hit =
             subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), code.as_bytes()).unwrap_u8() == 1;
+        if hit {
+            found = Some(candidate);
+        }
     }
     found
+}
+
+/// Checks a user-typed code, accepting one step of drift either way.
+pub fn verify_totp(secret: &[u8; 20], code: &str, at: OffsetDateTime) -> bool {
+    match_step(secret, code, at).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -87,12 +95,69 @@ pub async fn set_totp(store: &Store, user: &UserId, secret_bytes: &[u8; 20]) -> 
     let conn = store.conn.lock().await;
     let sealed = secret::seal(store.key(), secret_bytes);
     conn.execute(
-        "UPDATE users SET totp_secret = ?1, totp_confirmed = 0 WHERE id = ?2",
+        "UPDATE users SET totp_secret = ?1, totp_confirmed = 0, totp_last_step = NULL \
+         WHERE id = ?2",
         turso::params![sealed, user.to_string()],
     )
     .await
     .map_err(backend)?;
     Ok(())
+}
+
+/// Verifies a code AND burns its timestep in one atomic step — the login's
+/// answer to replay. A code that verifies is accepted only when its timestep
+/// is strictly newer than the last accepted one, and the acceptance is
+/// recorded in the same immediate transaction, so two presentations of the
+/// same code within its drift window cannot both mint a session. `false`
+/// for a wrong code and for a replayed one; the caller reads them the same.
+pub async fn consume_totp(
+    store: &Store,
+    user: &UserId,
+    secret: &[u8; 20],
+    code: &str,
+    at: OffsetDateTime,
+) -> Result<bool> {
+    let Some(step) = match_step(secret, code, at) else {
+        return Ok(false);
+    };
+    let conn = store.conn.lock().await;
+    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
+    let outcome = async {
+        let mut rows = conn
+            .query(
+                "SELECT totp_last_step FROM users WHERE id = ?1",
+                turso::params![user.to_string()],
+            )
+            .await
+            .map_err(backend)?;
+        let Some(row) = rows.next().await.map_err(backend)? else {
+            return Ok(false);
+        };
+        if let Some(last) = store::opt_int(&row, 0)?
+            && (step as i64) <= last
+        {
+            // Seen — or older than what was seen. Never again.
+            return Ok(false);
+        }
+        conn.execute(
+            "UPDATE users SET totp_last_step = ?1 WHERE id = ?2",
+            turso::params![step as i64, user.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+        Ok(true)
+    }
+    .await;
+    match outcome {
+        Ok(accepted) => {
+            conn.execute("COMMIT", ()).await.map_err(backend)?;
+            Ok(accepted)
+        }
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            Err(e)
+        }
+    }
 }
 
 /// Marks the stored secret confirmed — called after one successful code.
@@ -194,4 +259,72 @@ mod tests {
         let (_, confirmed) = totp_secret(&store, &user.id).await.unwrap().unwrap();
         assert!(confirmed);
     }
+    #[tokio::test]
+    async fn consumed_code_cannot_mint_a_second_session() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let secret = generate_secret();
+        set_totp(&store, &user.id, &secret).await.unwrap();
+
+        let at = datetime!(2026-09-03 12:00:00 UTC);
+        let code = totp_code(&secret, at);
+        assert!(consume_totp(&store, &user.id, &secret, &code, at)
+            .await
+            .unwrap());
+        // The same code — even one drift-step away, still inside the
+        // window — is spent.
+        let replay_at = at + time::Duration::seconds(STEP_SECONDS as i64);
+        assert!(!consume_totp(&store, &user.id, &secret, &code, replay_at)
+            .await
+            .unwrap());
+        // A genuinely newer timestep still gets in.
+        let next = totp_code(&secret, replay_at + time::Duration::seconds(1));
+        assert!(
+            consume_totp(&store, &user.id, &secret, &next, replay_at)
+                .await
+                .unwrap()
+        );
+        // And a wrong code never records anything.
+        assert!(
+            !consume_totp(&store, &user.id, &secret, "000000", replay_at)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn re_enroll_forgets_the_old_timestep() {
+        let store = Store::open(Path::new(":memory:")).await.unwrap();
+        let invite = create_invite(&store, "ann@example.com", None, false)
+            .await
+            .unwrap();
+        let user = create_user_from_invite(&store, invite.expose(), "Ann", "tDLr9!mZQ2xv")
+            .await
+            .unwrap();
+        let at = datetime!(2026-09-03 12:00:00 UTC);
+
+        let old_secret = generate_secret();
+        set_totp(&store, &user.id, &old_secret).await.unwrap();
+        let code = totp_code(&old_secret, at);
+        assert!(consume_totp(&store, &user.id, &old_secret, &code, at)
+            .await
+            .unwrap());
+
+        // A fresh secret forgets the old acceptance: the same timestep is
+        // acceptable again under the new enrollment.
+        let new_secret = generate_secret();
+        set_totp(&store, &user.id, &new_secret).await.unwrap();
+        let new_code = totp_code(&new_secret, at);
+        assert!(
+            consume_totp(&store, &user.id, &new_secret, &new_code, at)
+                .await
+                .unwrap()
+        );
+    }
 }
+

@@ -302,6 +302,42 @@ pub async fn consume_auth_code(store: &Store, code: &str) -> Result<Option<AuthC
     }
 }
 
+/// Reads a code without spending it — the `/token` handler's pre-flight, so
+/// a presentation that fails its client, redirect, or PKCE check cannot
+/// burn the code for its rightful owner. The same validity rules as
+/// [`consume_auth_code`] apply: unknown, consumed, and expired codes read
+/// as `None`. The code is still consumable afterwards; [`consume_auth_code`]
+/// remains the only spender, and its transaction decides a race.
+pub async fn peek_auth_code(store: &Store, code: &str) -> Result<Option<AuthCode>> {
+    let conn = store.conn.lock().await;
+    let mut rows = conn
+        .query(
+            "SELECT client_id, user_id, redirect_uri, nonce, code_challenge, session_hash, \
+             expires_at, consumed_at FROM auth_codes WHERE code_hash = ?1",
+            turso::params![hash_token(code)],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    if store::opt_text(&row, 7)?.is_some() {
+        return Ok(None);
+    }
+    if store::parse_stamp(&store::text(&row, 6)?)? < store::now() {
+        return Ok(None);
+    }
+    Ok(Some(AuthCode {
+        client_id: ClientId::from(store::text(&row, 0)?),
+        user_id: UserId::from(store::text(&row, 1)?),
+        redirect_uri: store::text(&row, 2)?,
+        nonce: store::opt_text(&row, 3)?,
+        code_challenge: store::text(&row, 4)?,
+        session_hash: store::text(&row, 5)?,
+        expires_at: store::parse_stamp(&store::text(&row, 6)?)?,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // Refresh tokens
 // ---------------------------------------------------------------------------
@@ -420,6 +456,57 @@ pub async fn rotate_refresh(store: &Store, token: &str) -> Result<Option<(Token,
             Err(e)
         }
     }
+}
+
+/// Reads a refresh token without rotating it — the `/token` handler's
+/// pre-flight, so a token presented by the wrong client is judged before
+/// any rotation can burn its owner's chain. The same validity rules as
+/// [`rotate_refresh`] apply: unknown, revoked, and expired tokens — and
+/// tokens whose central session is gone — read as `None`.
+pub async fn peek_refresh(store: &Store, token: &str) -> Result<Option<RefreshToken>> {
+    let conn = store.conn.lock().await;
+    let mut rows = conn
+        .query(
+            "SELECT user_id, client_id, session_hash, expires_at, revoked_at \
+             FROM refresh_tokens WHERE token_hash = ?1",
+            turso::params![hash_token(token)],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(row) = rows.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    if store::opt_text(&row, 4)?.is_some() {
+        return Ok(None);
+    }
+    if store::parse_stamp(&store::text(&row, 3)?)? < store::now() {
+        return Ok(None);
+    }
+    let record = RefreshToken {
+        user_id: UserId::from(store::text(&row, 0)?),
+        client_id: ClientId::from(store::text(&row, 1)?),
+        session_hash: store::text(&row, 2)?,
+        expires_at: store::parse_stamp(&store::text(&row, 3)?)?,
+    };
+    drop(rows);
+    // The session that minted this token must still be alive.
+    let mut sessions = conn
+        .query(
+            "SELECT expires_at, revoked_at FROM sessions WHERE token_hash = ?1",
+            turso::params![record.session_hash.clone()],
+        )
+        .await
+        .map_err(backend)?;
+    let Some(session) = sessions.next().await.map_err(backend)? else {
+        return Ok(None);
+    };
+    if store::opt_text(&session, 1)?.is_some() {
+        return Ok(None);
+    }
+    if store::parse_stamp(&store::text(&session, 0)?)? < store::now() {
+        return Ok(None);
+    }
+    Ok(Some(record))
 }
 
 // ---------------------------------------------------------------------------
@@ -779,6 +866,81 @@ mod tests {
         // A tampered payload must not verify.
         let forged = format!("{}.{}", parts[0], b64url.encode(r#"{"sub":"mallory"}"#));
         assert!(verifying.verify(forged.as_bytes(), &signature).is_err());
+    }
+
+    #[tokio::test]
+    async fn peek_judges_without_spending() {
+        let (store, client_id, user_id) = fixture().await;
+        let session = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+
+        // A peeked code survives its peek: the rightful exchange still wins.
+        let code = create_auth_code(
+            &store,
+            &client_id,
+            &user_id,
+            "http://app/callback",
+            None,
+            "challenge",
+            &session.hash(),
+        )
+        .await
+        .unwrap();
+        let seen = peek_auth_code(&store, code.expose()).await.unwrap().unwrap();
+        assert_eq!(seen.client_id, client_id);
+        assert!(
+            consume_auth_code(&store, code.expose())
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        // A peeked refresh token survives its peek: the chain still rotates.
+        let token = issue_refresh(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+        let record = peek_refresh(&store, token.expose()).await.unwrap().unwrap();
+        assert_eq!(record.client_id, client_id);
+        assert!(
+            rotate_refresh(&store, token.expose())
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn peek_reads_the_same_validity_as_spend() {
+        let (store, client_id, user_id) = fixture().await;
+        let session = create_session(&store, &user_id, &SessionMeta::default())
+            .await
+            .unwrap();
+        let code = create_auth_code(
+            &store,
+            &client_id,
+            &user_id,
+            "http://app/callback",
+            None,
+            "challenge",
+            &session.hash(),
+        )
+        .await
+        .unwrap();
+        let token = issue_refresh(&store, &user_id, &client_id, &session.hash())
+            .await
+            .unwrap();
+
+        // A spent code reads as None to the peek, exactly as to the spend.
+        consume_auth_code(&store, code.expose()).await.unwrap();
+        assert!(peek_auth_code(&store, code.expose()).await.unwrap().is_none());
+
+        // A revoked central session reads as None to the peek, exactly as
+        // to the rotation.
+        crate::sessions::revoke_session(&store, session.expose())
+            .await
+            .unwrap();
+        assert!(peek_refresh(&store, token.expose()).await.unwrap().is_none());
     }
 
     #[tokio::test]

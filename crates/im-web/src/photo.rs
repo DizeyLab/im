@@ -27,7 +27,7 @@ fn sniff(bytes: &[u8]) -> Option<&'static str> {
         Some("image/png")
     } else if bytes.starts_with(b"\xff\xd8\xff") {
         Some("image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF98a") {
+    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
         Some("image/gif")
     } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
         Some("image/webp")
@@ -222,6 +222,7 @@ async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
 
 #[cfg(test)]
 mod tests {
+    use super::sniff;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -758,5 +759,15 @@ mod tests {
             wire.contains("\"photo_version\":2"),
             "the removal bumps and announces the version: {wire}"
         );
+    }
+
+    /// The sniffer reads real signatures, not nearly-real ones: both GIF
+    /// versions pass, and the transposed look-alike does not.
+    #[test]
+    fn sniff_accepts_both_real_gif_magics_only() {
+        assert_eq!(sniff(b"GIF89a-anything-after"), Some("image/gif"));
+        assert_eq!(sniff(b"GIF87a-anything-after"), Some("image/gif"));
+        assert_eq!(sniff(b"GIF98a-anything-after"), None);
+        assert_eq!(sniff(b"GIF89"), None);
     }
 }

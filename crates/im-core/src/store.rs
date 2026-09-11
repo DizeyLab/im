@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   totp_secret BLOB,
   totp_confirmed INTEGER NOT NULL DEFAULT 0,
+  totp_last_step INTEGER,
   admin INTEGER NOT NULL DEFAULT 0,
   disabled INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
@@ -310,6 +311,14 @@ impl Store {
             }
             if !has_column(&conn, "sessions", "seen_at").await? {
                 conn.execute("ALTER TABLE sessions ADD COLUMN seen_at TEXT", ())
+                    .await
+                    .map_err(backend)?;
+            }
+            // The last TOTP timestep a code was accepted at: a code may
+            // never mint a second session within its drift window. NULL
+            // states nothing accepted yet.
+            if !has_column(&conn, "users", "totp_last_step").await? {
+                conn.execute("ALTER TABLE users ADD COLUMN totp_last_step INTEGER", ())
                     .await
                     .map_err(backend)?;
             }

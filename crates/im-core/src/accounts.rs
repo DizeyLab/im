@@ -462,24 +462,40 @@ pub async fn create_reset(
     let now = store::now();
     let expires = now + time::Duration::minutes(crate::settings::reset_minutes(store).await?);
     let conn = store.conn.lock().await;
-    conn.execute(
-        "DELETE FROM reset_links WHERE user_id = ?1 AND used_at IS NULL",
-        turso::params![user.id.to_string()],
-    )
-    .await
-    .map_err(backend)?;
-    conn.execute(
-        "INSERT INTO reset_links (token, user_id, created_at, expires_at) \
-             VALUES (?1, ?2, ?3, ?4)",
-        turso::params![
-            token.hash(),
-            user.id.to_string(),
-            store::stamp(now)?,
-            store::stamp(expires)?,
-        ],
-    )
-    .await
-    .map_err(backend)?;
+    // Retirement and minting are one transaction: two live links can never
+    // exist, not even for the instant between the DELETE and the INSERT.
+    conn.execute("BEGIN IMMEDIATE", ()).await.map_err(backend)?;
+    let outcome = async {
+        conn.execute(
+            "DELETE FROM reset_links WHERE user_id = ?1 AND used_at IS NULL",
+            turso::params![user.id.to_string()],
+        )
+        .await
+        .map_err(backend)?;
+        conn.execute(
+            "INSERT INTO reset_links (token, user_id, created_at, expires_at) \
+                 VALUES (?1, ?2, ?3, ?4)",
+            turso::params![
+                token.hash(),
+                user.id.to_string(),
+                store::stamp(now)?,
+                store::stamp(expires)?,
+            ],
+        )
+        .await
+        .map_err(backend)?;
+        Ok::<_, StoreError>(())
+    }
+    .await;
+    match outcome {
+        Ok(()) => {
+            conn.execute("COMMIT", ()).await.map_err(backend)?;
+        }
+        Err(e) => {
+            let _ = conn.execute("ROLLBACK", ()).await;
+            return Err(e.into());
+        }
+    }
     Ok(Some(token))
 }
 
