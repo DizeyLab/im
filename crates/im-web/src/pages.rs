@@ -972,7 +972,7 @@ async fn signed_in<'a>(cx: &'a Cx, user: im_core::model::User) -> Result<BoxView
         </main>
         (crate::layout::avatar_script(cx, lang).await?.first().await?)
     };
-    shell(cx, "im", Some(user), Child::new(stage)).await.map(ViewExt::boxed)
+    shell(cx, t(lang, Key::TitleAccount), Some(user), Child::new(stage)).await.map(ViewExt::boxed)
 }
 
 /// "Forgot it?" — the self-serve reset ask. It answers the same whether the

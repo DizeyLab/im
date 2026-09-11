@@ -129,6 +129,7 @@ pub enum Key {
     TitleForgot,
     TitleReset,
     TitleAdmin,
+    TitleAccount,
 
     // Signed-in landing and person page, shared.
     TwoFaOn,
@@ -500,6 +501,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (TitleReset, Tr) => "Yeni parola · im",
         (TitleAdmin, En) => "Admin · im",
         (TitleAdmin, Tr) => "Yönetici · im",
+        (TitleAccount, En) => "Account · im",
+        (TitleAccount, Tr) => "Hesap · im",
 
         (TwoFaOn, En) => "2FA on",
         (TwoFaOn, Tr) => "2FA açık",
@@ -608,8 +611,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (EmailChangeButton, Tr) => "Adresi değiştir",
         (EmailChangeNote, En) => "Both addresses confirm: one mail to the old one, one to the new.",
         (EmailChangeNote, Tr) => "İki adres de onaylar: eskiye bir, yeniye bir posta.",
-        (EmailConfirmTitle, En) => "Confirm email change",
-        (EmailConfirmTitle, Tr) => "E-posta değişikliğini onayla",
+        (EmailConfirmTitle, En) => "Confirm email change · im",
+        (EmailConfirmTitle, Tr) => "E-posta değişikliğini onayla · im",
         (ConfirmEmailButton, En) => "Confirm",
         (ConfirmEmailButton, Tr) => "Onayla",
         (OkRevoked, En) => "Sessions revoked — every device is signed out.",
