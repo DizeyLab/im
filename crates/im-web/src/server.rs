@@ -39,11 +39,17 @@ pub struct App {
 
 /// What travels the live channel. `Tick` is the panel's "something moved —
 /// re-read"; `Profile` is the directory's own news: this member's row, as it
-/// now stands, serialized exactly as `/directory` would have answered it.
+/// now stands, serialized exactly as `/directory` would have answered it;
+/// `Revoked` is a sign-out in motion: this user's session(s) just died, the
+/// one named by hash when the revocation was session-targeted.
 #[derive(Clone, Debug)]
 pub enum LiveEvent {
     Tick,
     Profile(crate::directory::DirectoryMember),
+    Revoked {
+        user_id: String,
+        session_hash: Option<String>,
+    },
 }
 
 /// Announce that the panel's data moved. Sends are lossy on purpose: nobody
@@ -63,6 +69,19 @@ pub async fn notify_profile(cx: &Cx, user_id: &im_core::model::UserId) {
     let _ = app(cx).live.send(LiveEvent::Profile(
         crate::directory::DirectoryMember::of(&user),
     ));
+}
+
+/// Announce that `user`'s sessions died — one of them when `session_hash`
+/// names a session, all of them when it does not. Every write path that ends
+/// sessions speaks here, so the dead sessions' open tabs hear their own
+/// eviction on the live channel and leave without waiting out the stream
+/// window. Sent right after the write commits and before the tick, so a
+/// connection that swallows the tick has already missed nothing.
+pub async fn note_revoked(cx: &Cx, user_id: &str, session_hash: Option<&str>) {
+    let _ = app(cx).live.send(LiveEvent::Revoked {
+        user_id: user_id.to_string(),
+        session_hash: session_hash.map(str::to_string),
+    });
 }
 
 /// Log the event, then tick the live channel — the two travel together so

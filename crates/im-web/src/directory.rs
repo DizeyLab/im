@@ -34,6 +34,11 @@ pub struct DirectoryMember {
     /// side only serializes — the field is always written — so the serde
     /// default lives on the SDK's reading half.
     pub timezone: String,
+    /// Whether im has switched the member off. Always written; older
+    /// readers take the serde default — a member whose flag they cannot
+    /// see reads as present-and-enabled, which it was.
+    #[serde(default)]
+    pub disabled: bool,
 }
 
 impl DirectoryMember {
@@ -46,6 +51,7 @@ impl DirectoryMember {
             admin: user.admin,
             photo_version: user.photo_version,
             timezone: user.timezone.clone(),
+            disabled: user.disabled,
         }
     }
 }
@@ -80,7 +86,8 @@ async fn directory(cx: &Cx) -> topcoat::Result<topcoat::router::response::Respon
 /// frame's row never runs ahead of `/directory` itself. A lagged reader
 /// gets no frame — which rows dropped is unknowable — and heals the gap
 /// the way any disconnect does: wait out the retry hint, re-list the
-/// whole roster, resume.
+/// whole roster, resume. A `revoked` frame carries only the subject whose
+/// sessions died — the cue for an app to send that subject's tabs home.
 #[route(GET "/directory/live")]
 async fn directory_live(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
     if server::app_client(cx).await.is_none() {
@@ -144,6 +151,18 @@ async fn directory_live(cx: &Cx) -> topcoat::Result<topcoat::router::response::R
                         continue;
                     }
                     Ok(Some(Ok(server::LiveEvent::Profile(member)))) => member,
+                    // A sign-out in motion: every app watching the roster
+                    // hears which subject just lost its sessions, and sends
+                    // its own signed-in tabs of that subject home. Which
+                    // session died is im's own business.
+                    Ok(Some(Ok(server::LiveEvent::Revoked { user_id, .. }))) => {
+                        return Some((
+                            Ok(Event::new().event("revoked").data(
+                                serde_json::json!({ "sub": user_id }).to_string(),
+                            )),
+                            (rx, deadline, stopping, first),
+                        ));
+                    }
                 };
                 // A member that will not serialize cannot happen — plain
                 // fields all the way down — but a stream cannot panic on
@@ -1531,5 +1550,112 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(reloaded.timezone, "UTC-05:00", "nothing half-written");
+    }
+
+    /// The eviction rides the roster stream too: a revoke announces the
+    /// subject whose sessions died, and a disable follows with a Profile
+    /// frame whose `disabled` flag is set — the two cues a sibling needs
+    /// to send that subject's tabs home and drop them from its copy.
+    #[tokio::test]
+    async fn a_revoke_and_a_disable_ride_the_directory_stream() {
+        /// The next body frame off the stream, as text. Bounded, so a
+        /// regression fails loudly instead of hanging the suite.
+        async fn next_chunk(
+            stream: &mut std::pin::Pin<Box<topcoat::router::BodyDataStream>>,
+        ) -> String {
+            use futures_util::StreamExt as _;
+            let chunk = tokio::time::timeout(
+                std::time::Duration::from_secs(20),
+                stream.as_mut().next(),
+            )
+            .await
+            .expect("a frame arrives in time")
+            .expect("stream stays open")
+            .expect("frames succeed");
+            String::from_utf8_lossy(&chunk).into_owned()
+        }
+
+        let Setup {
+            router,
+            client_id,
+            secret,
+            store,
+            ..
+        } = setup().await;
+        let ada = im_core::accounts::user_by_email(&store, "ada@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let ben = im_core::accounts::user_by_email(&store, "ben@example.com")
+            .await
+            .unwrap()
+            .unwrap();
+        let ada_session =
+            im_core::sessions::create_session(&store, &ada.id, &Default::default())
+                .await
+                .unwrap();
+
+        // Open the roster stream as an app would, past the reconnection hint.
+        let response = router
+            .handle(
+                http::Request::builder()
+                    .uri("/directory/live")
+                    .header(header::AUTHORIZATION, basic(&client_id, &secret))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let (parts, body) = response.into_parts();
+        assert_eq!(parts.status, StatusCode::OK);
+        let mut stream = Box::pin(body.into_data_stream());
+        let mut wire = String::new();
+        while !wire.contains("retry: 5000") {
+            wire.push_str(&next_chunk(&mut stream).await);
+        }
+
+        // Revoke ben everywhere: the roster names the subject, nothing more.
+        let admin_cookie = format!("{SESSION_COOKIE}={}", ada_session.expose());
+        let (status, location, _) = post_form(
+            &router,
+            "/admin/revoke",
+            &format!("user={}", ben.id),
+            Some(&admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(location.as_deref(), Some("/admin?section=users&ok=revoked"));
+        wire.clear();
+        while !wire.contains("event: revoked") {
+            wire.push_str(&next_chunk(&mut stream).await);
+        }
+        assert!(wire.contains(&format!("\"sub\":\"{}\"", ben.id)));
+
+        // Disable ben: the revoked cue again, then the row itself with the
+        // flag set — and the roster no longer lists them.
+        let (status, _, _) = post_form(
+            &router,
+            "/admin/disable",
+            &format!("user={}", ben.id),
+            Some(&admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        wire.clear();
+        while !wire.contains("\"disabled\":true") {
+            wire.push_str(&next_chunk(&mut stream).await);
+        }
+        assert!(wire.contains("event: profile"), "{wire}");
+
+        let (status, body) = get(&router, Some(basic(&client_id, &secret))).await;
+        assert_eq!(status, StatusCode::OK);
+        let roster: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(
+            !roster
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|member| member["sub"] == ben.id.to_string()),
+            "the disabled member leaves the roster"
+        );
     }
 }

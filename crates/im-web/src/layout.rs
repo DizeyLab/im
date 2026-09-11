@@ -462,7 +462,9 @@ pub async fn soft_nav_script(cx: &Cx) -> Result<impl View + '_> {
 /// moved; the page re-fetches itself through the ordinary route — where the
 /// ordinary gate answers — and morphs with fields and scroll intact. A
 /// focused field freezes the refresh mid-typing. Mounted only for a signed-in
-/// viewer, so auth screens never reconnect against a 401.
+/// viewer, so auth screens never reconnect against a 401. A `revoked`
+/// frame — the eviction news, addressed — or a probe answering 401 sends
+/// the tab home instead of re-reading.
 pub async fn live_script(cx: &Cx) -> Result<impl View + '_> {
     use topcoat::view::Unescaped;
     const JS: &str = r#"(function () {
@@ -476,6 +478,16 @@ pub async fn live_script(cx: &Cx) -> Result<impl View + '_> {
   try {
     var src = new EventSource('/live');
     src.onmessage = function () { schedule(); };
+    // A sign-out in motion: this tab's own session was revoked — go home.
+    src.addEventListener('revoked', function () { location.href = '/'; });
+    // A dropped stream reconnects by itself, but one that keeps dying
+    // against a revoked session is news: the bare probe says whether the
+    // session still stands.
+    src.onerror = function () {
+      fetch('/api/me').then(function (r) {
+        if (r.status === 401) { location.href = '/'; }
+      }).catch(function () {});
+    };
   } catch (err) {}
 })();"#;
     Ok(view! { cx => <script>(Unescaped::new_unchecked(JS))</script> })

@@ -298,12 +298,15 @@ pub async fn revoke_user_sessions(store: &Store, user: &UserId) -> Result<u64> {
 
 /// A password change's revoke: every session dies except the one holding the
 /// form — the browser that just proved the old password stays signed in, and
-/// every other device (and every app token born of them) is out.
+/// every other device (and every app token born of them) is out. The dead
+/// sessions' token hashes come back, so the caller can address the eviction
+/// news: a live connection only leaves when the hash it holds is among
+/// these, and the asking browser's never is.
 pub async fn revoke_user_sessions_except(
     store: &Store,
     user: &UserId,
     keep_token: &str,
-) -> Result<u64> {
+) -> Result<Vec<String>> {
     let keep = hash_token(keep_token);
     let hashes = {
         let conn = store.conn.lock().await;
@@ -321,7 +324,6 @@ pub async fn revoke_user_sessions_except(
         }
         hashes
     };
-    let count = hashes.len() as u64;
     for hash in &hashes {
         revoke_session_hash(store, hash).await?;
     }
@@ -343,7 +345,7 @@ pub async fn revoke_user_sessions_except(
     )
     .await
     .map_err(backend)?;
-    Ok(count)
+    Ok(hashes)
 }
 
 #[cfg(test)]
@@ -400,10 +402,10 @@ mod tests {
             .await
             .unwrap();
 
-        let count = revoke_user_sessions_except(&store, &user_id, mine.expose())
+        let revoked = revoke_user_sessions_except(&store, &user_id, mine.expose())
             .await
             .unwrap();
-        assert_eq!(count, 1);
+        assert_eq!(revoked, vec![hash_token(other.expose())]);
         assert!(
             resolve_session(&store, mine.expose())
                 .await

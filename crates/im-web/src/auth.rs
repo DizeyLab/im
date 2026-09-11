@@ -8,6 +8,7 @@ use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::Form;
+use topcoat::router::response::IntoResponse as _;
 use topcoat::router::{HeaderName, StatusCode, header, route};
 
 use crate::server::{self, PendingPurpose};
@@ -300,11 +301,24 @@ async fn logout(cx: &Cx) -> Redirect {
 /// tidied. Where the browser goes next is each route's own business.
 async fn sign_out_everywhere(cx: &Cx) -> Result<()> {
     if let Some(token) = server::presented_session(cx) {
-        let email = im_core::sessions::resolve_session(&server::app(cx).store, &token)
+        let user = im_core::sessions::resolve_session(&server::app(cx).store, &token)
             .await?
-            .map(|u| u.email);
+            .map(|u| (u.id, u.email));
         im_core::sessions::revoke_session(&server::app(cx).store, &token).await?;
-        server::log_event(cx, "logout", email.as_deref(), None).await;
+        // The eviction news is addressed to the dying session's own
+        // connection, so its tab leaves at once instead of at the next
+        // full refetch.
+        if let Some((id, _)) = &user {
+            server::note_revoked(cx, id.as_str(), Some(&im_core::accounts::hash_token(&token)))
+                .await;
+        }
+        server::log_event(
+            cx,
+            "logout",
+            user.as_ref().map(|(_, email)| email.as_str()),
+            None,
+        )
+        .await;
     }
     server::clear_session_cookie(cx);
     Ok(())
@@ -324,6 +338,19 @@ async fn logout_return(cx: &Cx) -> Redirect {
     sign_out_everywhere(cx).await?;
     let services = im_core::services::list(&server::app(cx).store).await?;
     see(logout_target(back.as_deref(), &services))
+}
+
+/// The signed-in probe behind the live channel's error path: a tab whose
+/// stream died asks here whether its session still stands, and the bare
+/// status — no HTML, no redirect — is the whole answer. 204 signed in,
+/// 401 not.
+#[route(GET "/api/me")]
+async fn me_probe(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response> {
+    if server::current_user(cx).await.is_some() {
+        (StatusCode::NO_CONTENT, "").into_response(cx)
+    } else {
+        (StatusCode::UNAUTHORIZED, "").into_response(cx)
+    }
 }
 
 #[derive(Deserialize)]
@@ -374,6 +401,9 @@ async fn reset(cx: &Cx, Form(input): Form<ResetForm>) -> Redirect {
     let store = &server::app(cx).store;
     match accounts::redeem_reset(store, &input.token, &input.password).await {
         Ok(user) => {
+            // redeem_reset swept every session of theirs inside the core;
+            // their tabs hear the eviction here.
+            server::note_revoked(cx, user.id.as_str(), None).await;
             server::log_event(cx, "password_reset", Some(&user.email), None).await;
             see("/login?ok=reset".to_string())
         }
@@ -522,6 +552,9 @@ async fn revoke_session(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Redire
         && im_core::accounts::hash_token(&presented) == input.session
     {
         im_core::sessions::revoke_session(store, &presented).await?;
+        // The news is addressed to this very session; this tab hears its
+        // own eviction and goes home like any other.
+        server::note_revoked(cx, user.id.as_str(), Some(&input.session)).await;
         server::clear_session_cookie(cx);
         return see("/".to_string());
     }
@@ -535,6 +568,7 @@ async fn revoke_session(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Redire
     if !im_core::sessions::revoke_owned_session(store, &user.id, &input.session).await? {
         return see("/?section=sessions&error=session_unknown".to_string());
     }
+    server::note_revoked(cx, user.id.as_str(), Some(&input.session)).await;
     server::log_event(cx, "session_revoked", Some(&user.email), ip.as_deref()).await;
     see("/?section=sessions&ok=session_revoked".to_string())
 }
@@ -623,7 +657,13 @@ async fn password(cx: &Cx, Form(input): Form<PasswordForm>) -> Redirect {
         Err(e) => return Err(topcoat::Error::from(std::io::Error::other(e.to_string()))),
     }
     if let Some(token) = server::presented_session(cx) {
-        im_core::sessions::revoke_user_sessions_except(store, &me.id, &token).await?;
+        let revoked = im_core::sessions::revoke_user_sessions_except(store, &me.id, &token)
+            .await?;
+        // Each dead session's own tab hears its eviction; the asking
+        // browser's hash is never among them, so this tab stays.
+        for hash in &revoked {
+            server::note_revoked(cx, me.id.as_str(), Some(hash)).await;
+        }
     }
     server::log_event(cx, "password_changed", Some(&me.email), None).await;
     see("/?section=password&ok=password".to_string())

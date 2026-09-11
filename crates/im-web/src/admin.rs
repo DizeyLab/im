@@ -1677,6 +1677,9 @@ async fn delete(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
         .await?
         .map(|u| u.email);
     accounts::delete_user(store, &user_id).await?;
+    // The person is gone; their sessions went with them, and their tabs
+    // hear it here.
+    server::note_revoked(cx, user_id.as_str(), None).await;
     server::log_event(cx, "user_deleted", Some(&me.email), email.as_deref()).await;
     back(cx, "users", "&ok=deleted")
 }
@@ -1694,6 +1697,8 @@ async fn revoke(cx: &Cx, Form(input): Form<UserAction>) -> Result<Response> {
     let store = &app(cx).store;
     let user_id = UserId::from(input.user);
     let sessions = im_core::sessions::revoke_user_sessions(store, &user_id).await?;
+    // Every session of theirs died; their open tabs each hear it and leave.
+    server::note_revoked(cx, user_id.as_str(), None).await;
     let email = accounts::user_by_id(store, &user_id)
         .await?
         .map(|u| u.email);
@@ -1728,6 +1733,7 @@ async fn session_revoke(cx: &Cx, Form(input): Form<SessionRevokeForm>) -> Result
     if !im_core::sessions::revoke_owned_session(&app(cx).store, &user_id, &input.session).await? {
         return back(cx, "users", "&error=session_unknown");
     }
+    server::note_revoked(cx, user_id.as_str(), Some(&input.session)).await;
     server::log_event(cx, "session_revoked", Some(&me.email), Some(&input.user)).await;
     back(cx, "users", "&ok=session_revoked")
 }
@@ -1749,9 +1755,15 @@ async fn set_disabled(cx: &Cx, input: UserAction, disabled: bool) -> Result<Resp
     };
     let store = &app(cx).store;
     let user_id = UserId::from(input.user);
+    // The flag moves first: the announcements below — the eviction news and
+    // the member's row — must describe the account as it now stands.
+    accounts::set_disabled(store, &user_id, disabled).await?;
     if disabled {
         // A disabled account keeps no sessions either.
         im_core::sessions::revoke_user_sessions(store, &user_id).await?;
+        // The disable ends every session; the disabled flag itself rides the
+        // Profile announcement right below.
+        server::note_revoked(cx, user_id.as_str(), None).await;
     }
     // Announced whether the flag moved either way: the disable drops the
     // member from the next roster read, the enable restores it.
