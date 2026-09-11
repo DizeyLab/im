@@ -493,8 +493,9 @@ pub(crate) fn escape(raw: &str) -> String {
 /// header. The full string stays one click away in the session's detail.
 /// Substring matching in precedence order (Edge before Chrome before Safari:
 /// each carries the later one's token too); shared with the admin panel.
-/// Browser and system names are proper nouns and stay untranslated; only the
-/// unknown-device fallback follows the viewer's language.
+/// Browser and system names are proper nouns and stay as the agent spelled
+/// them; the connector and the generic fallback follow the viewer's language
+/// (`i18n::device_summary`, `Key::BrowserWord`).
 pub(crate) fn device_label(agent: Option<&str>, lang: Lang) -> String {
     let Some(agent) = agent.filter(|agent| !agent.is_empty()) else {
         return t(lang, Key::UnknownDevice).to_string();
@@ -508,7 +509,7 @@ pub(crate) fn device_label(agent: Option<&str>, lang: Lang) -> String {
     } else if agent.contains("Safari/") {
         "Safari"
     } else {
-        "Browser"
+        return t(lang, Key::BrowserWord).to_string();
     };
     let system = if agent.contains("iPhone") {
         "iPhone"
@@ -527,7 +528,7 @@ pub(crate) fn device_label(agent: Option<&str>, lang: Lang) -> String {
     } else {
         return browser.to_string();
     };
-    format!("{browser} on {system}")
+    crate::i18n::device_summary(lang, browser, system)
 }
 
 /// `2026-09-04 10:22`: the last-seen stamp. An unrenderable stamp falls back

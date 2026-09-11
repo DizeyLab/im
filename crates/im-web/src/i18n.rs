@@ -156,6 +156,7 @@ pub enum Key {
     ViewPhotoAria,
     ThisSessionChip,
     UnknownDevice,
+    BrowserWord,
     DeviceLabel,
     AddressLabel,
     SignedInLabel,
@@ -552,6 +553,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ThisSessionChip, Tr) => "Bu oturum",
         (UnknownDevice, En) => "Unknown device",
         (UnknownDevice, Tr) => "Bilinmeyen cihaz",
+        (BrowserWord, En) => "Browser",
+        (BrowserWord, Tr) => "Tarayıcı",
         (DeviceLabel, En) => "Device",
         (DeviceLabel, Tr) => "Cihaz",
         (AddressLabel, En) => "Address",
@@ -926,6 +929,17 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (Remove, Tr) => "Kaldır",
         (CancelUploadLabel, En) => "Cancel upload",
         (CancelUploadLabel, Tr) => "Yüklemeyi iptal et",
+    }
+}
+
+/// A session's device summary — "Chrome on Linux". The browser and system
+/// names are proper nouns and stay as the agent spelled them; only the
+/// connector between them follows the viewer's language, and Turkish reads
+/// it as a location: "Linux üzerinde Chrome".
+pub fn device_summary(lang: Lang, browser: &str, system: &str) -> String {
+    match lang {
+        Lang::En => format!("{browser} on {system}"),
+        Lang::Tr => format!("{system} üzerinde {browser}"),
     }
 }
 
