@@ -150,9 +150,10 @@ async fn authorize(cx: &Cx) -> Result<Response> {
     let Some(user) = user else {
         let back = format!("/authorize?{query}");
         let location = format!("/login?back={}", urlencode(&back));
+        let location = HeaderValue::from_str(&location)?;
         return (
             StatusCode::SEE_OTHER,
-            [(header::LOCATION, HeaderValue::from_str(&location).unwrap())],
+            [(header::LOCATION, location)],
         )
             .into_response(cx);
     };
@@ -172,9 +173,10 @@ async fn authorize(cx: &Cx) -> Result<Response> {
     if let Some(state) = state {
         location.push_str(&format!("&state={state}"));
     }
+    let location = HeaderValue::from_str(&location)?;
     (
         StatusCode::SEE_OTHER,
-        [(header::LOCATION, HeaderValue::from_str(&location).unwrap())],
+        [(header::LOCATION, location)],
     )
         .into_response(cx)
 }

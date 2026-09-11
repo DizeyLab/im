@@ -68,7 +68,8 @@ async fn directory(cx: &Cx) -> topcoat::Result<topcoat::router::response::Respon
         .filter(|user| !user.disabled)
         .map(|user| DirectoryMember::of(&user))
         .collect();
-    Json(serde_json::to_value(members).unwrap()).into_response(cx)
+    let members = serde_json::to_value(members)?;
+    Json(members).into_response(cx)
 }
 /// `GET /directory/live`: the roster's change feed, as server-sent events.
 /// The same Basic pair `/directory` takes is the only credential. The
@@ -144,10 +145,15 @@ async fn directory_live(cx: &Cx) -> topcoat::Result<topcoat::router::response::R
                     }
                     Ok(Some(Ok(server::LiveEvent::Profile(member)))) => member,
                 };
+                // A member that will not serialize cannot happen — plain
+                // fields all the way down — but a stream cannot panic on
+                // the impossible: ending is the honest answer, and the
+                // client heals the gap the way it heals any disconnect.
+                let Ok(json) = serde_json::to_string(&member) else {
+                    return None;
+                };
                 return Some((
-                    Ok(Event::new()
-                        .event("profile")
-                        .data(serde_json::to_string(&member).expect("member JSON"))),
+                    Ok(Event::new().event("profile").data(json)),
                     (rx, deadline, stopping, first),
                 ));
             }
@@ -177,7 +183,8 @@ async fn family(cx: &Cx) -> topcoat::Result<topcoat::router::response::Response>
     }
     let store = server::app(cx).store.clone();
     let services = im_core::services::list(&store).await?;
-    Json(serde_json::to_value(services).unwrap()).into_response(cx)
+    let services = serde_json::to_value(services)?;
+    Json(services).into_response(cx)
 }
 
 /// The body a sibling posts to keep its own row: its wordmark key, the
@@ -216,7 +223,10 @@ async fn family_register(
     )
     .await
     {
-        Ok(service) => Json(serde_json::to_value(service).unwrap()).into_response(cx),
+        Ok(service) => {
+            let service = serde_json::to_value(&service)?;
+            Json(service).into_response(cx)
+        }
         Err(im_core::store::StoreError::Conflict(_)) => (
             StatusCode::CONFLICT,
             Json(serde_json::json!({ "error": "owned" })),

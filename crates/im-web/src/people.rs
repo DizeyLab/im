@@ -38,8 +38,7 @@ async fn people_page(cx: &Cx) -> Result<impl View + '_> {
     // The stage template moves every value it mentions, so the account's
     // template data is staged here as owned values first; the markup below
     // never names `person` itself.
-    let face_button = avatar(cx, &person).await?.first().await?;
-    let face_plain = avatar(cx, &person).await?.first().await?;
+    let face = avatar(cx, &person).await?.first().await?;
     let display_name = person.name.clone();
     let email_shown = person.email.clone();
     let has_photo = person.has_photo;
@@ -57,10 +56,10 @@ async fn people_page(cx: &Cx) -> Result<impl View + '_> {
                             // The face opens the viewer here too — same as
                             // the landing, same as iz's person page.
                             <button class="avatar-view" type="button" aria-label=(t(lang, Key::ViewPhotoAria))>
-                                (face_button)
+                                (face)
                             </button>
                         } else {
-                            (face_plain)
+                            (face)
                         }
                         <div class="profile-heading">
                             <div class="auth-title">(display_name)</div>

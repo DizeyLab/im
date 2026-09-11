@@ -115,23 +115,23 @@ fn bytes_response(
     content_type: &str,
     cache: &'static str,
     version: u64,
-) -> (StatusCode, HeaderMap, Vec<u8>) {
+) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
     let etag = format!("\"p{version}\"");
     let mut headers = HeaderMap::new();
-    headers.insert(header::ETAG, HeaderValue::from_str(&etag).unwrap());
+    headers.insert(header::ETAG, HeaderValue::from_str(&etag)?);
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static(cache));
     let if_none_match = request_headers(cx)
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok());
     if if_none_match == Some(etag.as_str()) {
-        return (StatusCode::NOT_MODIFIED, headers, Vec::new());
+        return Ok((StatusCode::NOT_MODIFIED, headers, Vec::new()));
     }
     headers.insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(content_type)
             .unwrap_or(HeaderValue::from_static("application/octet-stream")),
     );
-    (StatusCode::OK, headers, bytes)
+    Ok((StatusCode::OK, headers, bytes))
 }
 
 /// The default face, as an image: the name's first letter on a quiet tile —
@@ -203,7 +203,7 @@ async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
         } else {
             "private, no-cache"
         };
-        return Ok(bytes_response(cx, bytes, &mime, cache, version));
+        return bytes_response(cx, bytes, &mime, cache, version);
     }
     let initial = user
         .as_ref()
@@ -211,13 +211,13 @@ async fn serve(cx: &Cx) -> topcoat::Result<(StatusCode, HeaderMap, Vec<u8>)> {
         .unwrap_or('?')
         .to_uppercase()
         .to_string();
-    Ok(bytes_response(
+    bytes_response(
         cx,
         default_avatar(&initial),
         "image/svg+xml",
         "private, no-cache",
         version,
-    ))
+    )
 }
 
 #[cfg(test)]

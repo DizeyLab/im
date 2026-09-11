@@ -15,7 +15,7 @@ use topcoat::router::response::{IntoResponse, Response};
 use topcoat::router::{HeaderValue, StatusCode, header, route};
 use topcoat::view::{Child, ViewExt, view};
 
-use crate::health::{Probe, probe_healthz};
+use crate::health::{Probe, probe_family};
 use crate::i18n::{self, Key, lang_of, t};
 use crate::layout::shell;
 use crate::mailer;
@@ -48,6 +48,7 @@ fn escape(raw: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// One row action as a two-step disclosure — iz's `confirm-details` idiom:
@@ -205,7 +206,7 @@ async fn admin_page(cx: &Cx) -> Result<Response> {
         _ => None,
     };
 
-    let my_email = escape(&me.email);
+    let my_email = me.email.clone();
     let stage = view! {
         cx =>
         <main class="admin-shell">
@@ -256,6 +257,12 @@ fn sessions_row(
                     "[year]-[month]-[day] [hour]:[minute]"
                 ))
                 .unwrap_or_else(|_| seen_at.date().to_string());
+            let created = session
+                .created_at
+                .format(&time::macros::format_description!(
+                    "[year]-[month]-[day] [hour]:[minute]"
+                ))
+                .unwrap_or_else(|_| session.created_at.date().to_string());
             rows.push_str(&format!(
                 concat!(
                     r#"<tr><td title="{}">{}</td>"#,
@@ -283,7 +290,7 @@ fn sessions_row(
                     .as_deref()
                     .map(escape)
                     .unwrap_or_else(|| "—".to_string()),
-                session.created_at.date(),
+                created,
                 seen,
                 escape(&session.token_hash),
                 t(lang, Key::RevokeButton),
@@ -640,13 +647,13 @@ async fn services_section(
   <form method="post" action="/admin/services_add" class="admin-invite">
     <input class="auth-input auth-input-mono" type="text" name="key" placeholder="in" aria-label="{key_label}" required>
     <input class="auth-input" type="text" name="name" placeholder="{name_label}" aria-label="{name_label}" required>
-    <input class="auth-input auth-input-mono" type="text" name="url" placeholder="https://in.dizey.sh" aria-label="{url_label}" required>
+    <input class="auth-input auth-input-mono" type="text" name="url" placeholder="{url_placeholder}" aria-label="{url_label}" required>
     <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{add}</span></button>
   </form>
   <div class="muted">{client_add_label}</div>
   <form method="post" action="/admin/clients_add" class="admin-invite">
     <input class="auth-input" type="text" name="name" placeholder="drive" aria-label="{name_label}" required>
-    <input class="auth-input auth-input-mono" type="text" name="redirect_uris" placeholder="http://127.0.0.1:9000/callback https://drive.dizey.sh/callback" aria-label="{uris_label}" required>
+    <input class="auth-input auth-input-mono" type="text" name="redirect_uris" placeholder="{uris_placeholder}" aria-label="{uris_label}" required>
     <button class="auth-submit admin-invite-go" type="submit"><span class="auth-submit-text">{client_add}</span></button>
   </form>
 </div>"#,
@@ -654,8 +661,10 @@ async fn services_section(
         key_label = t(lang, Key::ServiceKeyLabel),
         name_label = t(lang, Key::NameCol),
         url_label = t(lang, Key::AddressLabel),
+        url_placeholder = t(lang, Key::ServiceUrlPlaceholder),
         id_label = t(lang, Key::ClientIdLabel),
         uris_label = t(lang, Key::RedirectUrisLabel),
+        uris_placeholder = t(lang, Key::RedirectUrisPlaceholder),
         registered_label = t(lang, Key::RegisteredCol),
         service_add_label = t(lang, Key::ServiceAdd),
         add = t(lang, Key::ServiceAdd),
@@ -1443,22 +1452,21 @@ async fn logs_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Erro
 /// way it refreshes every other section.
 async fn health_section(cx: &Cx, lang: i18n::Lang) -> Result<String, topcoat::Error> {
     let services = im_core::services::list(&app(cx).store).await?;
-    // Every probe at once: a family member that is down costs its two
-    // seconds, not two seconds each.
-    let http = reqwest::Client::new();
-    let mut probes = Vec::new();
-    for service in &services {
-        let http = http.clone();
-        let url = format!("{}/healthz", service.url.trim_end_matches('/'));
-        probes.push(tokio::spawn(async move { probe_healthz(&http, &url).await }));
-    }
+    // One shared reading: this table and the chrome's flyout share the
+    // cached probe round, so a family member that is down costs its two
+    // seconds once per window, not once per page view.
+    let urls = services
+        .iter()
+        .map(|service| format!("{}/healthz", service.url.trim_end_matches('/')))
+        .collect::<Vec<_>>();
+    let probes = probe_family(&urls).await;
 
     let mut rows = String::new();
     for (service, probe) in services.iter().zip(probes) {
         let key = escape(&service.key);
         let name = escape(&service.name);
         let url = escape(&service.url);
-        let state = match probe.await.unwrap_or(Probe::Down) {
+        let state = match probe {
             Probe::Up { body, ms } => format!(
                 r#"<span class="health-dot health-on"></span>{} <span class="muted">· {ms} ms</span>"#,
                 escape(&body)

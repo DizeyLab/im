@@ -7,7 +7,7 @@ use topcoat::asset::{Asset, asset};
 use topcoat::context::Cx;
 use topcoat::view::{BoxView, Child, View, ViewExt, view};
 
-use crate::health::{Probe, probe_healthz};
+use crate::health::{Probe, probe_family};
 use crate::i18n::{Key, Lang, lang_of, t};
 use crate::server;
 
@@ -44,20 +44,19 @@ pub async fn family_wordmark(cx: &Cx) -> Result<BoxView<'_>> {
     if siblings.is_empty() {
         return wordmark(cx).await.map(ViewExt::boxed);
     }
-    // Every probe at once: a family member that is down costs its two
-    // seconds, not two seconds each.
-    let http = reqwest::Client::new();
-    let mut probes = Vec::new();
-    for service in &siblings {
-        let http = http.clone();
-        let url = format!("{}/healthz", service.url.trim_end_matches('/'));
-        probes.push(tokio::spawn(async move { probe_healthz(&http, &url).await }));
-    }
-    let mut rows = Vec::new();
-    for (service, probe) in siblings.iter().zip(probes) {
-        let probe = probe.await.unwrap_or(Probe::Down);
-        rows.push((service.key.as_str(), service.url.as_str(), probe));
-    }
+    // One shared reading: a render inside the cache window reuses the
+    // last probe round, so a family member that is down costs its two
+    // seconds once per window, not once per page view.
+    let urls = siblings
+        .iter()
+        .map(|service| format!("{}/healthz", service.url.trim_end_matches('/')))
+        .collect::<Vec<_>>();
+    let probes = probe_family(&urls).await;
+    let rows = siblings
+        .iter()
+        .zip(probes)
+        .map(|(service, probe)| (service.key.as_str(), service.url.as_str(), probe))
+        .collect::<Vec<_>>();
     let marks = trio_marks(rows);
     Ok(view! {
         cx =>
@@ -366,7 +365,9 @@ pub async fn soft_nav_script(cx: &Cx) -> Result<impl View + '_> {
     var a = e.target.closest ? e.target.closest('a') : null;
     if (!a || a.target || a.hasAttribute('download') || a.hasAttribute('data-hard')) { return; }
     var href = a.getAttribute('href') || '';
-    if (href.indexOf('/') !== 0) { return; }
+    // Same-app paths only: `//host` is protocol-relative — another origin —
+    // and goes the browser's own way.
+    if (href.indexOf('/') !== 0 || href.indexOf('//') === 0) { return; }
     e.preventDefault();
     go(href, true, true);
   }, true);

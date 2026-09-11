@@ -63,6 +63,7 @@ pub enum Key {
     ErrPhotoTooBig,
     ErrNotAnImage,
     ErrNoFile,
+    ErrUnavailable,
     ErrResetInvalid,
     ErrSessionUnknown,
     ErrBadTheme,
@@ -144,6 +145,7 @@ pub enum Key {
     ServicesTitle,
     ServiceKeyLabel,
     ServiceAdd,
+    ServiceUrlPlaceholder,
     ServiceKept,
     ServiceMoveUp,
     ServiceMoveDown,
@@ -251,6 +253,7 @@ pub enum Key {
     RedirectUrisLabel,
     RegisteredCol,
     ClientAdd,
+    RedirectUrisPlaceholder,
     RotateWord,
     RevokeWord,
     ConfirmRotate,
@@ -377,6 +380,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ErrNotAnImage, Tr) => "Bu dosya bir görsel değil.",
         (ErrNoFile, En) => "Choose an image first.",
         (ErrNoFile, Tr) => "Önce bir görsel seç.",
+        (ErrUnavailable, En) => "That could not be saved right now — try again.",
+        (ErrUnavailable, Tr) => "Bu şu anda kaydedilemedi — yeniden dene.",
         (ErrResetInvalid, En) => "This reset link is not valid — ask for a fresh one.",
         (ErrResetInvalid, Tr) => "Bu sıfırlama bağlantısı geçerli değil — yenisini iste.",
         (ErrSessionUnknown, En) => "That session is already gone.",
@@ -524,6 +529,8 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (ServiceKeyLabel, Tr) => "Anahtar",
         (ServiceAdd, En) => "Add service",
         (ServiceAdd, Tr) => "Hizmet ekle",
+        (ServiceUrlPlaceholder, En) => "https://in.dizey.sh",
+        (ServiceUrlPlaceholder, Tr) => "https://in.dizey.sh",
         (ServiceKept, En) => "kept by the app",
         (ServiceKept, Tr) => "uygulaması koruyor",
         (ServiceMoveUp, En) => "Move up",
@@ -749,6 +756,12 @@ pub fn t(lang: Lang, key: Key) -> &'static str {
         (RegisteredCol, Tr) => "Kayıt",
         (ClientAdd, En) => "Register client",
         (ClientAdd, Tr) => "İstemci kaydet",
+        (RedirectUrisPlaceholder, En) => {
+            "http://127.0.0.1:9000/callback https://drive.dizey.sh/callback"
+        }
+        (RedirectUrisPlaceholder, Tr) => {
+            "http://127.0.0.1:9000/callback https://drive.dizey.sh/callback"
+        }
         (RotateWord, En) => "Rotate",
         (RotateWord, Tr) => "Yenile",
         (RevokeWord, En) => "Revoke",

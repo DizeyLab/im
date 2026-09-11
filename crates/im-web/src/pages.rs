@@ -40,6 +40,7 @@ pub fn error_text(code: &str, lang: Lang) -> &'static str {
         "photo_too_big" => t(lang, Key::ErrPhotoTooBig),
         "not_an_image" => t(lang, Key::ErrNotAnImage),
         "no_file" => t(lang, Key::ErrNoFile),
+        "unavailable" => t(lang, Key::ErrUnavailable),
         "session_unknown" => t(lang, Key::ErrSessionUnknown),
         "bad_theme" => t(lang, Key::ErrBadTheme),
         "bad_ui" => t(lang, Key::ErrBadUi),
@@ -485,6 +486,7 @@ pub(crate) fn escape(raw: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// What the agent string means to a person — "Chrome on Linux", not the raw
@@ -832,7 +834,7 @@ async fn signed_in<'a>(cx: &'a Cx, user: im_core::model::User) -> Result<BoxView
                         <div class="auth-title">(t(lang, Key::EmailCardTitle))</div>
                         if let Some(pending) = pending_email.as_deref() {
                             <div class="auth-sub">
-                                (crate::i18n::email_pending_line(lang, &escape(pending)))
+                                (crate::i18n::email_pending_line(lang, pending))
                             </div>
                         }
                         if let Some(links) = query_value(&query, "links") {
@@ -1105,7 +1107,7 @@ async fn email_change_page(cx: &Cx) -> Result<Response> {
                     <div class="auth-head">
                         <div class="auth-title">(t(lang, Key::EmailConfirmTitle))</div>
                         <div class="auth-sub">
-                            (crate::i18n::email_confirm_sub(lang, &escape(&new_email)))
+                            (crate::i18n::email_confirm_sub(lang, &new_email))
                         </div>
                     </div>
                     <form method="post" action="/email" data-hard="">
