@@ -4,7 +4,6 @@ members = [
     "crates/im-core",
     "crates/im-web",
     "crates/im-client",
-    "crates/im-migrate",
 ]
 
 [workspace.package]

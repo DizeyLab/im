@@ -1875,18 +1875,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "im-migrate"
-version = "0.1.0"
-dependencies = [
- "tempfile",
- "thiserror",
- "time",
- "tokio",
- "turso",
- "ulid",
-]
-
-[[package]]
 name = "im-web"
 version = "0.1.0"
 dependencies = [

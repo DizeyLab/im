@@ -92,14 +92,11 @@ jobs:
         run: |
           set -euo pipefail
           # One compile: this builds im-web and writes out the asset bundle
-          # for the binary it produced. im-migrate rides along for the
-          # one-time İzlek import (run by hand on the server).
+          # for the binary it produced.
           topcoat asset bundle --package im-web --profile "$PROFILE" --out stage/assets
-          cargo build --package im-migrate --profile "$PROFILE"
           cp "target/$TARGET/$PROFILE/im-web" stage/im-web
           cp deploy/im.service stage/im.service
-          cp "target/$TARGET/$PROFILE/im-migrate" stage/im-migrate
-          strip stage/im-web stage/im-migrate
+          strip stage/im-web
           ls -l stage stage/assets
 
       - name: Install SSH keys
