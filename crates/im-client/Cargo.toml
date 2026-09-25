@@ -15,7 +15,7 @@ default = ["oidc"]
 oidc = []
 
 [dependencies]
-topcoat = { version = "0.8.0", default-features = false, features = [
+topcoat = { version = "0.9.0", default-features = false, features = [
   "router",
   "cookie",
 ] }
@@ -45,7 +45,7 @@ name = "demo"
 required-features = ["oidc"]
 
 [dev-dependencies]
-topcoat = { version = "0.8.0", default-features = false, features = [
+topcoat = { version = "0.9.0", default-features = false, features = [
   "router",
   "cookie",
   "view",
