@@ -16,6 +16,7 @@ use im_core::model::User;
 use im_core::store::Store;
 use topcoat::context::{Cx, try_app_context};
 use topcoat::cookie::{Cookie, Cookies, cookie, cookies};
+use topcoat::router::request::client_ip;
 
 use crate::config::Config;
 
@@ -32,6 +33,19 @@ pub const PENDING_MINUTES: i64 = 10;
 pub fn trusted_proxies() -> topcoat::router::TrustedProxies {
     topcoat::router::TrustedProxies::new().nearest(1)
 }
+
+/// A stable-enough label for the client.
+///
+/// [`client_ip`] under [`trusted_proxies`]: the address the one trusted hop
+/// reported, or the peer when the request did not come through it. `unknown`
+/// when neither is there. A client-supplied `x-forwarded-for` is not read
+/// unless that hop appended it.
+pub fn client_label(cx: &Cx) -> String {
+    client_ip(cx)
+        .map(|ip| ip.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
 pub struct App {
     pub store: Arc<Store>,
     pub config: Config,
@@ -287,4 +301,61 @@ pub async fn app_client(cx: &Cx) -> Option<String> {
         .await
         .ok()??;
     im_core::oidc::verify_client_secret(&client, secret).then(|| client_id.to_string())
+}
+
+#[cfg(test)]
+mod client_label_tests {
+    use std::net::SocketAddr;
+
+    use topcoat::router::response::IntoResponse;
+    use topcoat::router::{
+        Body, Method, RemoteAddr, RouteFn, RouteFuture, Router, request::Request, to_bytes,
+    };
+
+    use super::{client_label, trusted_proxies};
+
+    fn echo(cx: &topcoat::context::Cx, _body: Body) -> RouteFuture<'_> {
+        Box::pin(async move { client_label(cx).into_response(cx) })
+    }
+
+    fn router(trust_one_hop: bool) -> Router {
+        let builder = Router::builder().route(RouteFn::new(Method::GET, "/label", echo));
+        if trust_one_hop {
+            builder.trusted_proxies(trusted_proxies()).build()
+        } else {
+            builder.build()
+        }
+    }
+
+    async fn label(trust_one_hop: bool, peer: &str, forwarded: Option<&str>) -> String {
+        let mut builder = Request::builder()
+            .method(Method::GET)
+            .uri("/label")
+            .extension(RemoteAddr(peer.parse::<SocketAddr>().unwrap()));
+        if let Some(value) = forwarded {
+            builder = builder.header("x-forwarded-for", value);
+        }
+        let response = router(trust_one_hop)
+            .handle(builder.body(Body::empty()).unwrap())
+            .await;
+        String::from_utf8(to_bytes(response.into_body(), 64).await.unwrap().to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn one_trusted_hop_reports_the_client_not_the_proxy() {
+        let got = label(true, "10.0.0.1:4242", Some("198.51.100.1")).await;
+        assert_eq!(got, "198.51.100.1");
+    }
+
+    #[tokio::test]
+    async fn a_missing_header_falls_back_to_the_peer() {
+        let got = label(true, "203.0.113.9:4242", None).await;
+        assert_eq!(got, "203.0.113.9");
+    }
+
+    #[tokio::test]
+    async fn an_untrusted_peer_cannot_spoof_the_forwarded_header() {
+        let got = label(false, "203.0.113.9:4242", Some("198.51.100.1")).await;
+        assert_eq!(got, "203.0.113.9");
+    }
 }
