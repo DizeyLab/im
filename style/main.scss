@@ -1190,55 +1190,47 @@ body:has(.log-list) {
   &:hover { background: var(--danger-tint-alt); }
 }
 
-// The two-step row action, iz's confirm-details: the summary wears the
-// button skin; the popover names the cost and holds the real button.
-.admin-confirm {
-  position: relative;
-  display: inline-flex;
-
-  // The summary wears the button skin verbatim — a native summary is a
-  // list-item, and without inline-flex it stands a few pixels off the real
-  // buttons beside it.
-  summary {
-    list-style: none;
-    display: inline-flex;
-    align-items: center;
-    box-sizing: border-box;
-
-    &::-webkit-details-marker { display: none; }
-  }
-
-  &[open] summary { background: var(--panel-sunken); }
-}
-
-.admin-confirm-pop {
-  // Viewport-fixed and centered, iz's delete-confirm model: position:fixed
-  // escapes every overflow ancestor, and the table wrap is a scroll
-  // container (it takes the tables' sideways scroll) — an absolutely
-  // anchored pop inside it would grow that scroll area instead of
-  // overlaying the page. Centered also reads as the page's one dialog and
-  // is row-agnostic: the first row's pop and the last row's pop land the
-  // same, at any width.
-  position: fixed;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 30;
-  width: 240px;
+// Admin overlays are top-layer popovers. Do not position one with
+// `top`/`left`/`transform`: a `position: fixed` panel inside
+// `.admin-table-wrap` (overflow) or a table cell resolves those against
+// that box as soon as an ancestor creates a containing block, and the
+// confirm lands off the page. Centering here is the top layer's own
+// `inset: 0; margin: auto`. New row overlays go through `admin_dialog`.
+.admin-dialog {
+  width: min(240px, calc(100vw - 32px));
+  height: fit-content;
+  max-height: min(85vh, 85dvh);
+  margin: auto;
+  inset: 0;
   padding: 12px;
-  background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
   box-shadow: var(--shadow-2);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  font-size: 12px;
+  overflow: auto;
+
+  &::backdrop { background: rgb(0 0 0 / 0.45); }
 
   .admin-action { width: 100%; height: 30px; }
 }
 
-.admin-confirm-title { font-weight: 600; color: var(--ink); }
+.admin-dialog-wide { width: min(420px, calc(100vw - 32px)); }
+
+// Flex only while open. An author `display` on the closed popover can beat
+// the UA `[popover]:not(:popover-open) { display: none }` and leave the
+// panel sitting in the row.
+.admin-dialog:popover-open {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-dialog-title { font-weight: 600; color: var(--ink); }
+
+.admin-action:has(+ .admin-dialog:popover-open) {
+  background: var(--panel-sunken);
+}
 
 // Under each person's row two folds share one strip — the live sessions and
 // the address edit. Each details sits inline so the summaries read as a row

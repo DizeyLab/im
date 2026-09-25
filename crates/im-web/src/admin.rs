@@ -51,11 +51,50 @@ fn escape(raw: &str) -> String {
         .replace('\'', "&#39;")
 }
 
-/// One row action as a two-step disclosure — iz's `confirm-details` idiom:
-/// the summary is the word ("Delete"), the opened panel says what it costs
-/// and holds the button that actually does it. The eight `&str`s travel as
+/// One admin overlay. The panel is a top-layer popover, not a positioned
+/// descendant of the row. `position: fixed` inside `.admin-table-wrap` (a
+/// scroll container) or a table cell resolves `top`/`left` against that box
+/// as soon as an ancestor creates a containing block — a transform, a
+/// filter, or the table itself in some engines — so a "centered" confirm
+/// lands off the page. The top layer's containing block is the viewport.
+/// Every admin overlay goes through [`admin_dialog`]. Do not emit a
+/// positioned panel inside a row.
+struct AdminDialog<'a> {
+    id: &'a str,
+    word: &'a str,
+    extra_class: &'a str,
+    title: &'a str,
+    body: &'a str,
+    wide: bool,
+}
+
+/// Stable, attribute-safe id. The field value may be escaped HTML; the
+/// popover id must not be, and two different values must not collide.
+fn dialog_id(action: &str, field: &str, id: &str) -> String {
+    let raw = format!("{action}\0{field}\0{id}");
+    let hash = raw.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("d{hash:x}")
+}
+
+fn admin_dialog(ask: AdminDialog<'_>) -> String {
+    let wide = if ask.wide { " admin-dialog-wide" } else { "" };
+    format!(
+        r#"<button type="button" class="admin-action{extra}" popovertarget="{id}">{word}</button><div id="{id}" popover="auto" class="admin-dialog{wide}"><div class="admin-dialog-title">{title}</div>{body}</div>"#,
+        extra = ask.extra_class,
+        id = ask.id,
+        word = ask.word,
+        title = ask.title,
+        body = ask.body,
+        wide = wide,
+    )
+}
+
+/// One row action as a two-step confirm. The word opens the dialog; the
+/// dialog holds the button that actually posts. Eight `&str`s travel as
 /// named fields: eight positional parameters tripped the too-many-arguments
-/// lint, and the names read better at the call sites anyway.
+/// lint.
 struct ConfirmAction<'a> {
     field: &'a str,
     id: &'a str,
@@ -77,28 +116,25 @@ fn confirm_action(ask: ConfirmAction<'_>) -> String {
         cost,
         confirm,
     } = ask;
-    format!(
-        r#"<details class="admin-confirm"><summary class="admin-action{extra_class}">{word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{title}</div><div class="muted">{cost}</div><form method="post" action="{action}"><input type="hidden" name="{field}" value="{id}"><button class="admin-action{extra_class}" type="submit">{confirm}</button></form></div></details>"#
-    )
+    let dialog = dialog_id(action, field, id);
+    let body = format!(
+        r#"<div class="muted">{cost}</div><form method="post" action="{action}"><input type="hidden" name="{field}" value="{id}"><button class="admin-action{extra_class}" type="submit">{confirm}</button></form>"#
+    );
+    admin_dialog(AdminDialog {
+        id: &dialog,
+        word,
+        extra_class,
+        title,
+        body: &body,
+        wide: false,
+    })
 }
-/// The panel's live wiring moved into the shell: `layout::live_script` runs
-/// on every signed-in page and morphs through `__imRefresh`. What stays here
-/// is the one bit of behavior the no-script markup cannot do itself — an open
-/// confirm disclosure closes on outside click and Escape.
+/// Outside-click and Escape on a confirm are the popover's own light
+/// dismiss — no script. What stays here is the one bit the markup cannot do
+/// itself: the show-once banner's copy button.
 const ADMIN_SCRIPT: &str = r#"<script>(function () {
   if (window.__imAdmin) { return; }
   window.__imAdmin = true;
-  document.addEventListener('click', function (e) {
-    document.querySelectorAll('.admin-confirm[open]').forEach(function (d) {
-      if (!d.contains(e.target)) { d.removeAttribute('open'); }
-    });
-  }, true);
-  document.addEventListener('keydown', function (e) {
-    if (e.key !== 'Escape') { return; }
-    document.querySelectorAll('.admin-confirm[open]').forEach(function (d) { d.removeAttribute('open'); });
-  }, true);
-  // The show-once banner's copy button: copies the secret beside it, flips
-  // its label, and works without script too — the value is selectable text.
   document.addEventListener('click', function (e) {
     var b = e.target.closest && e.target.closest('.admin-copy');
     if (!b) { return; }
@@ -352,10 +388,8 @@ async fn users_section(
         let actions = if user.id == me.id {
             format!(r#"<span class="muted">{}</span>"#, t(lang, Key::YouWord))
         } else {
-            // Every row action is a two-step disclosure — iz's
-            // confirm-details idiom: the summary is the word, the panel holds
-            // the button that actually does it. No script required; the live
-            // script adds outside-click closing on top.
+            // Every row action opens the shared top-layer dialog. The word
+            // is the trigger; the dialog holds the button that posts.
             let toggle = if user.disabled {
                 confirm_action(ConfirmAction {
                     field: "user",
@@ -526,15 +560,21 @@ async fn services_section(
             mib = if limit_unit == "MiB" { " selected" } else { "" },
             gib = if limit_unit == "GiB" { " selected" } else { "" },
         );
-        let edit = format!(
-            r#"<details class="admin-confirm"><summary class="admin-action">{edit_word}</summary><div class="admin-confirm-pop"><div class="admin-confirm-title">{edit_title}</div><form method="post" action="/admin/services_edit" class="admin-form"><input type="hidden" name="key" value="{key}"><label class="auth-field"><span class="auth-label">{name_label}</span><input class="auth-input auth-input-mono" type="text" name="name" value="{name}" required></label>{address_field}{limit_field}<button class="admin-action" type="submit">{save}</button></form></div></details>"#,
-            edit_word = t(lang, Key::EditWord),
-            edit_title = i18n::edit_service_title(lang, &name),
+        let edit_body = format!(
+            r#"<form method="post" action="/admin/services_edit" class="admin-form"><input type="hidden" name="key" value="{key}"><label class="auth-field"><span class="auth-label">{name_label}</span><input class="auth-input auth-input-mono" type="text" name="name" value="{name}" required></label>{address_field}{limit_field}<button class="admin-action" type="submit">{save}</button></form>"#,
             key = key,
             name = name,
             name_label = t(lang, Key::NameCol),
             save = t(lang, Key::SaveButton),
         );
+        let edit = admin_dialog(AdminDialog {
+            id: &dialog_id("/admin/services_edit", "key", &key),
+            word: t(lang, Key::EditWord),
+            extra_class: "",
+            title: &i18n::edit_service_title(lang, &name),
+            body: &edit_body,
+            wide: true,
+        });
         let up = format!(
             r#"<form method="post" action="/admin/services_move"><input type="hidden" name="key" value="{key}"><input type="hidden" name="dir" value="up"><button class="admin-action" type="submit" aria-label="{up_label}">&#8593;</button></form>"#,
             key = key,
@@ -673,7 +713,7 @@ async fn services_section(
     ))
 }
 
-/// A client's Rotate/Revoke pair, as the two-step disclosures — the same
+/// A client's Rotate/Revoke pair, both top-layer confirms — the same
 /// controls on a linked service row and on a credential-only row.
 fn client_controls(client_id: &str, name_html: &str, lang: i18n::Lang) -> String {
     let rotate = confirm_action(ConfirmAction {
