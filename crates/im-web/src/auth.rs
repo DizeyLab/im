@@ -89,26 +89,13 @@ fn url_origin(raw: &str) -> Option<String> {
 }
 
 /// Creation-time facts for the session row: the address the browser came
-/// through and the agent it claims to be. The accept loop discards the peer
-/// address, so the proxy headers are the only source — the first
-/// `x-forwarded-for` hop, else `x-real-ip`, else nothing known.
+/// through and the agent it claims to be. The address is `client_ip` under
+/// the router's one trusted hop: the address that hop appended, or the peer
+/// on a direct connection. A forwarding header a client supplies itself is
+/// never read.
 fn session_meta(cx: &Cx) -> im_core::sessions::SessionMeta {
     let headers = topcoat::router::request::headers(cx);
-    let ip = headers
-        .get("x-forwarded-for")
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .map(str::trim)
-        .filter(|hop| !hop.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|value| value.to_str().ok())
-                .map(str::trim)
-                .filter(|ip| !ip.is_empty())
-                .map(str::to_string)
-        });
+    let ip = topcoat::router::request::client_ip(cx).map(|ip| ip.to_string());
     let agent = headers
         .get("user-agent")
         .and_then(|value| value.to_str().ok())
@@ -751,5 +738,68 @@ mod tests {
         );
         // The local-path rule stands beside the origin rule.
         assert_eq!(logout_target(Some("/\\in.example"), &services), "/");
+    }
+
+    mod session_meta_ip {
+        use std::net::SocketAddr;
+
+        use topcoat::context::Cx;
+        use topcoat::router::response::IntoResponse as _;
+        use topcoat::router::{
+            Body, Method, RemoteAddr, RouteFn, RouteFuture, Router, request::Request, to_bytes,
+        };
+
+        use super::session_meta;
+        use crate::server::trusted_proxies;
+
+        fn echo(cx: &Cx, _body: Body) -> RouteFuture<'_> {
+            Box::pin(async move {
+                session_meta(cx)
+                    .ip
+                    .unwrap_or_else(|| "none".to_string())
+                    .into_response(cx)
+            })
+        }
+
+        fn router(trust_one_hop: bool) -> Router {
+            let builder = Router::builder().route(RouteFn::new(Method::GET, "/meta", echo));
+            if trust_one_hop {
+                builder.trusted_proxies(trusted_proxies()).build()
+            } else {
+                builder.build()
+            }
+        }
+
+        async fn ip(trust_one_hop: bool, peer: &str, forwarded: Option<&str>) -> String {
+            let mut builder = Request::builder()
+                .method(Method::GET)
+                .uri("/meta")
+                .extension(RemoteAddr(peer.parse::<SocketAddr>().unwrap()));
+            if let Some(value) = forwarded {
+                builder = builder.header("x-forwarded-for", value);
+            }
+            let response = router(trust_one_hop)
+                .handle(builder.body(Body::empty()).unwrap())
+                .await;
+            String::from_utf8(to_bytes(response.into_body(), 64).await.unwrap().to_vec()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn one_trusted_hop_reports_the_client_not_the_proxy() {
+            let got = ip(true, "10.0.0.1:4242", Some("198.51.100.1")).await;
+            assert_eq!(got, "198.51.100.1");
+        }
+
+        #[tokio::test]
+        async fn a_missing_header_falls_back_to_the_peer() {
+            let got = ip(true, "203.0.113.9:4242", None).await;
+            assert_eq!(got, "203.0.113.9");
+        }
+
+        #[tokio::test]
+        async fn an_untrusted_peer_cannot_spoof_the_forwarded_header() {
+            let got = ip(false, "203.0.113.9:4242", Some("198.51.100.1")).await;
+            assert_eq!(got, "203.0.113.9");
+        }
     }
 }

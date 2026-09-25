@@ -26,6 +26,12 @@ pub const PENDING_COOKIE: &str = "im_pending";
 /// short enough to not be a session.
 pub const PENDING_MINUTES: i64 = 10;
 
+/// One proxy hop in front of the process. `im` is reached through that hop,
+/// so `client_ip` reads the address it appended rather than the hop's own.
+/// A direct connection, with no hop in front, is its own address.
+pub fn trusted_proxies() -> topcoat::router::TrustedProxies {
+    topcoat::router::TrustedProxies::new().nearest(1)
+}
 pub struct App {
     pub store: Arc<Store>,
     pub config: Config,

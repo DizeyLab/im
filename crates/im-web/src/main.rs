@@ -435,6 +435,7 @@ async fn serve(config: Config) {
         .layer(BodyLimit::max(photo::PHOTO_LIMIT_BYTES as usize + 4096).at("/api/profile_photo"))
         .cookies()
         .assets(bundle)
+        .trusted_proxies(server::trusted_proxies())
         .app_context(app)
         .app_context(live::Shutdown(stopping))
         .build();
